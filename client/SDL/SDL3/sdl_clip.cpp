@@ -1158,11 +1158,13 @@ const char* CliprdrFormat::formatName() const
 }
 
 #if defined(__EMSCRIPTEN__)
-/* Browser clipboard (text). The page calls freerdp_web_clipboard_offer() with the browser's
- * clipboard text when it changed; we announce CF_UNICODETEXT and answer the server's request
- * from that text. When the server announces text, we fetch it at once and hand it to the page
- * (Module.freerdpClipboardWrite), which writes it with navigator.clipboard.writeText(). */
-static const char s_web_mime[] = "x-freerdp-web-clipboard";
+/* Browser clipboard (text and images). The page calls freerdp_web_clipboard_offer() with what
+ * the browser clipboard holds (UTF-8 text and/or an image converted to CF_DIB); we announce the
+ * formats and answer the server's requests from that data. When the server announces text or a
+ * CF_DIB image, we fetch it at once and hand it to the page (Module.freerdpClipboardWrite /
+ * freerdpClipboardWriteImage), which writes it with the async Clipboard API (images as PNG). */
+static const char s_web_mime_text[] = "x-freerdp-web-text";
+static const char s_web_mime_dib[] = "x-freerdp-web-dib";
 
 // clang-format off
 EM_JS(void, freerdp_web_clipboard_write_js, (const char* utf8), {
@@ -1170,98 +1172,186 @@ EM_JS(void, freerdp_web_clipboard_write_js, (const char* utf8), {
 	if (Module.freerdpClipboardWrite)
 		Module.freerdpClipboardWrite(text);
 });
+EM_JS(void, freerdp_web_clipboard_write_image_js, (const BYTE* dib, size_t size), {
+	const bytes = HEAPU8.slice(dib, dib + size);
+	if (Module.freerdpClipboardWriteImage)
+		Module.freerdpClipboardWriteImage(bytes);
+});
 // clang-format on
+
+typedef struct
+{
+	char* text;
+	BYTE* dib;
+	size_t size;
+} web_write_job;
 
 static void web_write_on_main(void* arg)
 {
-	char* utf8 = static_cast<char*>(arg);
-	freerdp_web_clipboard_write_js(utf8);
-	free(utf8);
+	auto job = static_cast<web_write_job*>(arg);
+	if (job->text)
+		freerdp_web_clipboard_write_js(job->text);
+	if (job->dib)
+		freerdp_web_clipboard_write_image_js(job->dib, job->size);
+	free(job->text);
+	free(job->dib);
+	free(job);
 }
 
-bool sdlClip::webOfferText(const char* utf8)
+static void web_write(char* text, BYTE* dib, size_t size)
+{
+	auto job = static_cast<web_write_job*>(calloc(1, sizeof(web_write_job)));
+	if (!job)
+	{
+		free(text);
+		free(dib);
+		return;
+	}
+	job->text = text;
+	job->dib = dib;
+	job->size = size;
+	if (emscripten_is_main_browser_thread())
+		web_write_on_main(job);
+	else if (!emscripten_proxy_async(emscripten_proxy_get_system_queue(),
+	                                 emscripten_main_runtime_thread_id(), web_write_on_main, job))
+	{
+		free(text);
+		free(dib);
+		free(job);
+	}
+}
+
+bool sdlClip::webOffer(const char* utf8, const BYTE* dib, size_t dibSize)
 {
 	auto clip = s_web_clip;
-	if (!clip || !clip->_ctx || !clip->_ctx->ClientFormatList || !utf8)
+	if (!clip || !clip->_ctx || !clip->_ctx->ClientFormatList)
 		return false;
+	std::vector<CLIPRDR_FORMAT> formats;
 	{
 		std::scoped_lock lock(clip->_lock);
-		clip->_web_local = utf8;
+		clip->_web_local = utf8 ? utf8 : "";
+		clip->_web_local_dib.assign(dib, dib ? dib + dibSize : dib);
+		if (!clip->_web_local.empty())
+		{
+			formats.push_back({ CF_UNICODETEXT, nullptr });
+			formats.push_back({ CF_TEXT, nullptr });
+		}
+		if (!clip->_web_local_dib.empty())
+			formats.push_back({ CF_DIB, nullptr });
 	}
-	CLIPRDR_FORMAT formats[] = { { CF_UNICODETEXT, nullptr }, { CF_TEXT, nullptr } };
+	if (formats.empty())
+		return false;
 	CLIPRDR_FORMAT_LIST list = {};
 	list.common.msgType = CB_FORMAT_LIST;
-	list.numFormats = ARRAYSIZE(formats);
-	list.formats = formats;
+	list.numFormats = static_cast<UINT32>(formats.size());
+	list.formats = formats.data();
 	return clip->_ctx->ClientFormatList(clip->_ctx, &list) == CHANNEL_RC_OK;
 }
 
 bool sdlClip::webRequestServerText()
 {
 	bool has_text = false;
+	bool has_dib = false;
+	std::scoped_lock lock(_lock);
+	for (const auto& f : _serverFormats)
 	{
-		std::scoped_lock lock(_lock);
-		for (const auto& f : _serverFormats)
-			has_text |= (f.formatId() == CF_UNICODETEXT);
-		if (!has_text)
-			return false;
-		_web_local.clear(); /* the server owns the clipboard now */
-		return SendDataRequest(CF_UNICODETEXT, s_web_mime) == CHANNEL_RC_OK;
+		has_text |= (f.formatId() == CF_UNICODETEXT);
+		has_dib |= (f.formatId() == CF_DIB);
 	}
+	if (!has_text && !has_dib)
+		return false;
+	/* the server owns the clipboard now */
+	_web_local.clear();
+	_web_local_dib.clear();
+	bool ok = true;
+	if (has_text)
+		ok &= (SendDataRequest(CF_UNICODETEXT, s_web_mime_text) == CHANNEL_RC_OK);
+	if (has_dib)
+		ok &= (SendDataRequest(CF_DIB, s_web_mime_dib) == CHANNEL_RC_OK);
+	return ok;
 }
 
 bool sdlClip::webTakeDataResponse(const CLIPRDR_FORMAT_DATA_RESPONSE* response)
 {
-	std::scoped_lock lock(_lock);
-	if (_request_queue.empty() || _request_queue.front().mime() != s_web_mime)
-		return false;
-	_request_queue.pop();
+	std::string kind;
+	{
+		std::scoped_lock lock(_lock);
+		if (_request_queue.empty())
+			return false;
+		kind = _request_queue.front().mime();
+		if ((kind != s_web_mime_text) && (kind != s_web_mime_dib))
+			return false;
+		_request_queue.pop();
+	}
 
 	if (!(response->common.msgFlags & CB_RESPONSE_OK) || !response->requestedFormatData)
 		return true;
-	const size_t chars = response->common.dataLen / sizeof(WCHAR);
-	char* utf8 = ConvertWCharNToUtf8Alloc(
-	    reinterpret_cast<const WCHAR*>(response->requestedFormatData), chars, nullptr);
-	if (!utf8)
-		return true;
-	if (emscripten_is_main_browser_thread())
-		web_write_on_main(utf8);
-	else if (!emscripten_proxy_async(emscripten_proxy_get_system_queue(),
-	                                 emscripten_main_runtime_thread_id(), web_write_on_main, utf8))
-		free(utf8);
+	const BYTE* data = response->requestedFormatData;
+	const size_t size = response->common.dataLen;
+	if (kind == s_web_mime_text)
+	{
+		char* utf8 = ConvertWCharNToUtf8Alloc(reinterpret_cast<const WCHAR*>(data),
+		                                      size / sizeof(WCHAR), nullptr);
+		if (utf8)
+			web_write(utf8, nullptr, 0);
+	}
+	else if (size > 40) /* at least a BITMAPINFOHEADER */
+	{
+		auto copy = static_cast<BYTE*>(malloc(size));
+		if (copy)
+		{
+			memcpy(copy, data, size);
+			web_write(nullptr, copy, size);
+		}
+	}
 	return true;
 }
 
 bool sdlClip::webAnswerDataRequest(const CLIPRDR_FORMAT_DATA_REQUEST* request)
 {
 	std::string text;
+	std::vector<BYTE> dib;
 	{
 		std::scoped_lock lock(_lock);
-		if (_web_local.empty())
+		if (_web_local.empty() && _web_local_dib.empty())
 			return false;
 		text = _web_local;
+		dib = _web_local_dib;
 	}
-	if (request->requestedFormatId == CF_UNICODETEXT)
+	switch (request->requestedFormatId)
 	{
-		WCHAR* wstr = ConvertUtf8NToWCharAlloc(text.c_str(), text.size() + 1, nullptr);
-		if (!wstr)
+		case CF_UNICODETEXT:
+		{
+			if (text.empty())
+				return false;
+			WCHAR* wstr = ConvertUtf8NToWCharAlloc(text.c_str(), text.size() + 1, nullptr);
+			if (!wstr)
+				return false;
+			/* UTF-16 including the terminating NUL, as CF_UNICODETEXT requires */
+			std::ignore = SendDataResponse(reinterpret_cast<const BYTE*>(wstr),
+			                               (_wcslen(wstr) + 1) * sizeof(WCHAR));
+			free(wstr);
+			return true;
+		}
+		case CF_TEXT:
+			if (text.empty())
+				return false;
+			std::ignore =
+			    SendDataResponse(reinterpret_cast<const BYTE*>(text.c_str()), text.size() + 1);
+			return true;
+		case CF_DIB:
+			if (dib.empty())
+				return false;
+			std::ignore = SendDataResponse(dib.data(), dib.size());
+			return true;
+		default:
 			return false;
-		/* UTF-16 including the terminating NUL, as CF_UNICODETEXT requires */
-		std::ignore = SendDataResponse(reinterpret_cast<const BYTE*>(wstr),
-		                               (_wcslen(wstr) + 1) * sizeof(WCHAR));
-		free(wstr);
-		return true;
 	}
-	if (request->requestedFormatId == CF_TEXT)
-	{
-		std::ignore = SendDataResponse(reinterpret_cast<const BYTE*>(text.c_str()), text.size() + 1);
-		return true;
-	}
-	return false;
 }
 
-extern "C" EMSCRIPTEN_KEEPALIVE int freerdp_web_clipboard_offer(const char* utf8)
+extern "C" EMSCRIPTEN_KEEPALIVE int freerdp_web_clipboard_offer(const char* utf8, const BYTE* dib,
+                                                                size_t dibSize)
 {
-	return sdlClip::webOfferText(utf8) ? 1 : 0;
+	return sdlClip::webOffer(utf8, dib, dibSize) ? 1 : 0;
 }
 #endif
