@@ -67,7 +67,9 @@ EM_JS(int, av1_wc_js_available, (void), {
 });
 
 EM_JS(int, av1_wc_js_open, (void), {
-	const reg = (Module.freerdpAv1 ??= { next : 1, decoders : new Map() });
+	const reg = (Module.freerdpAv1 ??= { next : 1, decoders : new Map(),
+	                                      /* read by the page's connection info overlay */
+	                                      stats : { frames : 0, keyFrames : 0, bytes : 0, decodeMs : 0 } });
 	const handle = reg.next++;
 	reg.decoders.set(handle, { decoder : null, profile : -1, pending : null });
 	return handle;
@@ -84,7 +86,19 @@ EM_JS(void, av1_wc_js_close, (int handle), {
 
 /* Runs on the main browser thread; completes asynchronously through _freerdp_av1_wc_finish. */
 EM_JS(void, av1_wc_js_decode, (void* ctx, av1_wc_job* job), {
-	const finish = (rc) => { HEAP32[(job + 40) >> 2] = rc; _freerdp_av1_wc_finish(ctx); };
+	const t0 = performance.now();
+	const finish = (rc) => {
+		if (rc === 1) {
+			const st = Module.freerdpAv1.stats;
+			st.frames++;
+			st.bytes += HEAPU32[(job + 8) >> 2];
+			st.decodeMs += performance.now() - t0;
+			if (HEAP32[(job + 32) >> 2])
+				st.keyFrames++;
+		}
+		HEAP32[(job + 40) >> 2] = rc;
+		_freerdp_av1_wc_finish(ctx);
+	};
 	const handle = HEAP32[job >> 2];
 	const src = HEAPU32[(job + 4) >> 2], size = HEAPU32[(job + 8) >> 2];
 	const dst = HEAPU32[(job + 12) >> 2], format = UTF8ToString(HEAPU32[(job + 16) >> 2]);
