@@ -89,6 +89,18 @@ class sdlClip
 
 	[[nodiscard]] bool handleEvent(const SDL_ClipboardEvent& ev);
 
+#if defined(__EMSCRIPTEN__)
+	/* SDL3 has no clipboard driver for the browser: the page exchanges text with the
+	 * browser clipboard and these functions connect it to the cliprdr channel. */
+	[[nodiscard]] static bool webOfferText(const char* utf8);
+
+  private:
+	[[nodiscard]] bool webRequestServerText();
+	[[nodiscard]] bool webAnswerDataRequest(const CLIPRDR_FORMAT_DATA_REQUEST* request);
+	[[nodiscard]] bool webTakeDataResponse(const CLIPRDR_FORMAT_DATA_RESPONSE* response);
+	std::string _web_local; /* text from the browser clipboard, offered to the server */
+#endif
+
   private:
 	[[nodiscard]] UINT SendClientCapabilities();
 	void clearServerFormats();

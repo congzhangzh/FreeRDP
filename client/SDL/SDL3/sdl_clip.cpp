@@ -32,6 +32,15 @@
 #include "sdl_clip.hpp"
 #include "sdl_context.hpp"
 
+#if defined(__EMSCRIPTEN__)
+class sdlClip;
+static sdlClip* s_web_clip = nullptr;
+#include <emscripten.h>
+#include <emscripten/proxying.h>
+#include <emscripten/threading.h>
+#include <winpr/string.h>
+#endif
+
 #define TAG CLIENT_TAG("sdl.cliprdr")
 
 #define mime_text_plain "text/plain"
@@ -166,6 +175,9 @@ bool sdlClip::init(CliprdrClientContext* clip)
 	_ctx->ServerFormatListResponse = sdlClip::ReceiveFormatListResponse;
 	_ctx->ServerFormatDataRequest = sdlClip::ReceiveFormatDataRequest;
 	_ctx->ServerFormatDataResponse = sdlClip::ReceiveFormatDataResponse;
+#if defined(__EMSCRIPTEN__)
+	s_web_clip = this;
+#endif
 
 	return cliprdr_file_context_init(_file, _ctx);
 }
@@ -626,7 +638,12 @@ UINT sdlClip::ReceiveServerFormatList(CliprdrClientContext* context,
 	ev.clipboard.mime_types = clipboard->_current_mimetypes.data();
 
 	auto rc = (SDL_PushEvent(&ev) == 1);
-	return clipboard->SendFormatListResponse(rc);
+	const UINT ret = clipboard->SendFormatListResponse(rc);
+#if defined(__EMSCRIPTEN__)
+	if (ret == CHANNEL_RC_OK)
+		std::ignore = clipboard->webRequestServerText();
+#endif
+	return ret;
 }
 
 UINT sdlClip::ReceiveFormatListResponse(WINPR_ATTR_UNUSED CliprdrClientContext* context,
@@ -805,6 +822,10 @@ UINT sdlClip::ReceiveFormatDataRequest(CliprdrClientContext* context,
 	    cliprdr_file_context_get_context(static_cast<CliprdrFileContext*>(context->custom)));
 	WINPR_ASSERT(clipboard);
 
+#if defined(__EMSCRIPTEN__)
+	if (clipboard->webAnswerDataRequest(formatDataRequest))
+		return CHANNEL_RC_OK;
+#endif
 	uint32_t len = 0;
 	auto rc = ReceiveFormatDataRequestHandle(clipboard, formatDataRequest, len);
 	return clipboard->SendDataResponse(rc.get(), len);
@@ -823,6 +844,10 @@ UINT sdlClip::ReceiveFormatDataResponse(CliprdrClientContext* context,
 	    cliprdr_file_context_get_context(static_cast<CliprdrFileContext*>(context->custom)));
 	WINPR_ASSERT(clipboard);
 
+#if defined(__EMSCRIPTEN__)
+	if (clipboard->webTakeDataResponse(formatDataResponse))
+		return CHANNEL_RC_OK;
+#endif
 	ClipboardLockGuard systemlock(clipboard->_system);
 	std::scoped_lock lock(clipboard->_lock);
 	if (clipboard->_request_queue.empty())
@@ -1131,3 +1156,112 @@ const char* CliprdrFormat::formatName() const
 		return nullptr;
 	return _formatName.c_str();
 }
+
+#if defined(__EMSCRIPTEN__)
+/* Browser clipboard (text). The page calls freerdp_web_clipboard_offer() with the browser's
+ * clipboard text when it changed; we announce CF_UNICODETEXT and answer the server's request
+ * from that text. When the server announces text, we fetch it at once and hand it to the page
+ * (Module.freerdpClipboardWrite), which writes it with navigator.clipboard.writeText(). */
+static const char s_web_mime[] = "x-freerdp-web-clipboard";
+
+// clang-format off
+EM_JS(void, freerdp_web_clipboard_write_js, (const char* utf8), {
+	const text = UTF8ToString(utf8);
+	if (Module.freerdpClipboardWrite)
+		Module.freerdpClipboardWrite(text);
+});
+// clang-format on
+
+static void web_write_on_main(void* arg)
+{
+	char* utf8 = static_cast<char*>(arg);
+	freerdp_web_clipboard_write_js(utf8);
+	free(utf8);
+}
+
+bool sdlClip::webOfferText(const char* utf8)
+{
+	auto clip = s_web_clip;
+	if (!clip || !clip->_ctx || !clip->_ctx->ClientFormatList || !utf8)
+		return false;
+	{
+		std::scoped_lock lock(clip->_lock);
+		clip->_web_local = utf8;
+	}
+	CLIPRDR_FORMAT formats[] = { { CF_UNICODETEXT, nullptr }, { CF_TEXT, nullptr } };
+	CLIPRDR_FORMAT_LIST list = {};
+	list.common.msgType = CB_FORMAT_LIST;
+	list.numFormats = ARRAYSIZE(formats);
+	list.formats = formats;
+	return clip->_ctx->ClientFormatList(clip->_ctx, &list) == CHANNEL_RC_OK;
+}
+
+bool sdlClip::webRequestServerText()
+{
+	bool has_text = false;
+	{
+		std::scoped_lock lock(_lock);
+		for (const auto& f : _serverFormats)
+			has_text |= (f.formatId() == CF_UNICODETEXT);
+		if (!has_text)
+			return false;
+		_web_local.clear(); /* the server owns the clipboard now */
+		return SendDataRequest(CF_UNICODETEXT, s_web_mime) == CHANNEL_RC_OK;
+	}
+}
+
+bool sdlClip::webTakeDataResponse(const CLIPRDR_FORMAT_DATA_RESPONSE* response)
+{
+	std::scoped_lock lock(_lock);
+	if (_request_queue.empty() || _request_queue.front().mime() != s_web_mime)
+		return false;
+	_request_queue.pop();
+
+	if (!(response->common.msgFlags & CB_RESPONSE_OK) || !response->requestedFormatData)
+		return true;
+	const size_t chars = response->common.dataLen / sizeof(WCHAR);
+	char* utf8 = ConvertWCharNToUtf8Alloc(
+	    reinterpret_cast<const WCHAR*>(response->requestedFormatData), chars, nullptr);
+	if (!utf8)
+		return true;
+	if (emscripten_is_main_browser_thread())
+		web_write_on_main(utf8);
+	else if (!emscripten_proxy_async(emscripten_proxy_get_system_queue(),
+	                                 emscripten_main_runtime_thread_id(), web_write_on_main, utf8))
+		free(utf8);
+	return true;
+}
+
+bool sdlClip::webAnswerDataRequest(const CLIPRDR_FORMAT_DATA_REQUEST* request)
+{
+	std::string text;
+	{
+		std::scoped_lock lock(_lock);
+		if (_web_local.empty())
+			return false;
+		text = _web_local;
+	}
+	if (request->requestedFormatId == CF_UNICODETEXT)
+	{
+		WCHAR* wstr = ConvertUtf8NToWCharAlloc(text.c_str(), text.size() + 1, nullptr);
+		if (!wstr)
+			return false;
+		/* UTF-16 including the terminating NUL, as CF_UNICODETEXT requires */
+		std::ignore = SendDataResponse(reinterpret_cast<const BYTE*>(wstr),
+		                               (_wcslen(wstr) + 1) * sizeof(WCHAR));
+		free(wstr);
+		return true;
+	}
+	if (request->requestedFormatId == CF_TEXT)
+	{
+		std::ignore = SendDataResponse(reinterpret_cast<const BYTE*>(text.c_str()), text.size() + 1);
+		return true;
+	}
+	return false;
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE int freerdp_web_clipboard_offer(const char* utf8)
+{
+	return sdlClip::webOfferText(utf8) ? 1 : 0;
+}
+#endif
