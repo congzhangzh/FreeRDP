@@ -496,8 +496,21 @@ uint32_t sdlClip::serverIdForMime(const std::string& mime)
 			return format.formatId();
 	}
 
-	if (mime_is_image(mime))
-		return CF_DIB;
+	if (mime_is_image(mime) || mime_is_bmp(mime))
+	{
+		/* not offered under this name: CF_DIB, or any other image format of the server; the
+		 * WinPR clipboard converts it (see ClipDataCb) */
+		uint32_t named = 0;
+		for (auto& format : _serverFormats)
+		{
+			if ((format.formatId() == CF_DIB) || (format.formatId() == CF_DIBV5))
+				return format.formatId();
+			if (!named && format.formatName() &&
+			    (mime_is_image(format.formatName()) || mime_is_bmp(format.formatName())))
+				named = format.formatId();
+		}
+		return named ? named : CF_DIB;
+	}
 	if (mime_is_text(mime))
 		return CF_UNICODETEXT;
 
@@ -572,6 +585,11 @@ UINT sdlClip::ReceiveServerFormatList(CliprdrClientContext* context,
 			{
 				file = TRUE;
 				text = TRUE;
+			}
+			else if (mime_is_image(format->formatName) || mime_is_bmp(format->formatName))
+			{
+				/* e.g. GNOME Remote Desktop offers image/png alone for PNG-only sources */
+				image = TRUE;
 			}
 		}
 		else
@@ -950,6 +968,10 @@ UINT sdlClip::ReceiveFormatDataResponse(CliprdrClientContext* context,
 					{
 						srcFormatId = ClipboardGetFormatId(clipboard->_system, s_type_HtmlFormat);
 					}
+					else if (mime_is_image(name) || mime_is_bmp(name))
+					{
+						srcFormatId = ClipboardGetFormatId(clipboard->_system, name.c_str());
+					}
 				}
 			}
 			break;
@@ -1137,6 +1159,16 @@ const void* sdlClip::ClipDataCb(void* userdata, const char* mime_type, size_t* s
 		{
 			auto formatID = ClipboardRegisterFormat(clip->_system, mime_type);
 			auto data = ClipboardGetData(clip->_system, formatID, &len);
+			if (!data && (mime_is_image(mime_type) || mime_is_bmp(mime_type)))
+			{
+				/* WinPR only converts images to and from CF_DIB, one step at a time,
+				 * e.g. image/png -> CF_DIB -> image/bmp */
+				uint32_t dibLen = 0;
+				auto dib = ClipboardGetData(clip->_system, CF_DIB, &dibLen);
+				if (dib && ClipboardSetData(clip->_system, CF_DIB, dib, dibLen))
+					data = ClipboardGetData(clip->_system, formatID, &len);
+				free(dib);
+			}
 			if (!data)
 			{
 				WLog_Print(clip->_log, WLOG_ERROR, "error retrieving clipboard data");
