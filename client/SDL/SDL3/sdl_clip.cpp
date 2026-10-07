@@ -408,8 +408,15 @@ UINT sdlClip::SendClientCapabilities()
 
 void sdlClip::clearServerFormats()
 {
-	_serverFormats.clear();
-	_cache_data.clear();
+	{
+		ClipboardLockGuard systemlock(_system);
+		std::scoped_lock lock(_lock);
+		_serverFormats.clear();
+		_cache_data.clear();
+		/* The WinPR clipboard may still hold local data converted for an earlier server request.
+		 * ClipDataCb() would hand that out instead of requesting the new server data. */
+		ClipboardEmpty(_system);
+	}
 	cliprdr_file_context_clear(_file);
 }
 
@@ -979,7 +986,9 @@ const void* sdlClip::ClipDataCb(void* userdata, const char* mime_type, size_t* s
 		/* Can we convert the data from existing formats in the clibpard? */
 		uint32_t fsize = 0;
 		auto mimeFormatID = ClipboardRegisterFormat(clip->_system, mime_type);
-		auto fptr = ClipboardGetData(clip->_system, mimeFormatID, &fsize);
+		void* fptr = nullptr;
+		if (ClipboardCountFormats(clip->_system) > 0) /* empty: nothing to convert */
+			fptr = ClipboardGetData(clip->_system, mimeFormatID, &fsize);
 		if (fptr)
 		{
 			auto ptr = std::shared_ptr<void>(fptr, free);
