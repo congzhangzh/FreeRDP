@@ -973,6 +973,74 @@ UINT sdlClip::ReceiveFormatDataResponse(CliprdrClientContext* context,
 	return CHANNEL_RC_OK;
 }
 
+#if defined(_WIN32)
+/* SDL's Windows backend copies the header of the BMP we hand it 1:1 into CF_DIB, and Windows
+ * only turns a CF_DIB into an image (CF_BITMAP, CF_DIBV5) when it has a plain BITMAPINFOHEADER
+ * and is stored bottom-up. A top-down DIB or a BITMAPV4HEADER with BI_BITFIELDS, which GTK
+ * writes for images with alpha, is unusable for Windows applications. Rewrite such a BMP. */
+[[nodiscard]] static BYTE* plainBottomUpBmp(const BYTE* bmp, size_t size, size_t* outSize)
+{
+	const size_t fileHeader = 14;
+	if ((size < fileHeader + 40) || (bmp[0] != 'B') || (bmp[1] != 'M'))
+		return nullptr;
+
+	UINT32 biSize = 0;
+	INT32 height = 0;
+	UINT32 compression = 0;
+	memcpy(&biSize, &bmp[fileHeader], sizeof(biSize));
+	memcpy(&height, &bmp[fileHeader + 8], sizeof(height));
+	memcpy(&compression, &bmp[fileHeader + 16], sizeof(compression));
+	if ((biSize == 40) && (height > 0) && (compression == 0 /* BI_RGB */))
+		return nullptr;
+
+	wImage* image = winpr_image_new();
+	if (!image)
+		return nullptr;
+	BYTE* out = nullptr;
+	size_t outLen = 0;
+	if (winpr_image_read_buffer(image, bmp, size) > 0)
+		out = static_cast<BYTE*>(winpr_image_write_buffer(image, WINPR_IMAGE_BITMAP, &outLen));
+	winpr_image_free(image, TRUE);
+	if (!out || (outLen < fileHeader + 40))
+	{
+		free(out);
+		return nullptr;
+	}
+
+	/* the WinPR writer stores the rows top-down: flip them */
+	UINT32 offBits = 0;
+	INT32 width = 0;
+	UINT16 bpp = 0;
+	memcpy(&offBits, &out[10], sizeof(offBits));
+	memcpy(&width, &out[fileHeader + 4], sizeof(width));
+	memcpy(&height, &out[fileHeader + 8], sizeof(height));
+	memcpy(&bpp, &out[fileHeader + 14], sizeof(bpp));
+	if (height < 0)
+	{
+		const size_t rows = WINPR_ASSERTING_INT_CAST(size_t, -height);
+		const size_t stride = ((WINPR_ASSERTING_INT_CAST(size_t, width) * bpp + 31) / 32) * 4;
+		if ((width <= 0) || (offBits + rows * stride > outLen))
+		{
+			free(out);
+			return nullptr;
+		}
+		std::vector<BYTE> row(stride);
+		for (size_t y = 0; y < rows / 2; y++)
+		{
+			BYTE* a = &out[offBits + y * stride];
+			BYTE* b = &out[offBits + (rows - 1 - y) * stride];
+			memcpy(row.data(), a, stride);
+			memcpy(a, b, stride);
+			memcpy(b, row.data(), stride);
+		}
+		height = -height;
+		memcpy(&out[fileHeader + 8], &height, sizeof(height));
+	}
+	*outSize = outLen;
+	return out;
+}
+#endif
+
 const void* sdlClip::ClipDataCb(void* userdata, const char* mime_type, size_t* size)
 {
 	auto clip = static_cast<sdlClip*>(userdata);
@@ -1067,6 +1135,24 @@ const void* sdlClip::ClipDataCb(void* userdata, const char* mime_type, size_t* s
 				WLog_Print(clip->_log, WLOG_ERROR, "error retrieving clipboard data");
 				return nullptr;
 			}
+
+#if defined(_WIN32)
+			if (mime_is_bmp(mime_type))
+			{
+				size_t plainSize = 0;
+				auto plain = plainBottomUpBmp(static_cast<const BYTE*>(data), len, &plainSize);
+				if (plain)
+				{
+					WLog_Print(clip->_log, WLOG_DEBUG,
+					           "rewrote %s as a plain bottom-up BMP (%" PRIu32 " -> %" PRIuz
+					           " bytes)",
+					           mime_type, len, plainSize);
+					free(data);
+					data = plain;
+					len = WINPR_ASSERTING_INT_CAST(uint32_t, plainSize);
+				}
+			}
+#endif
 
 			auto ptr = std::shared_ptr<void>(data, free);
 			clip->_cache_data.insert({ mime_type, { len, ptr } });
