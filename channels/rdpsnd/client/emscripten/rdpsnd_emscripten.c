@@ -171,6 +171,26 @@ static UINT rdpsnd_emscripten_play(rdpsndDevicePlugin* device, const BYTE* data,
 	return (UINT)p->queued_ms;
 }
 
+/* Format as sent by the server (e.g. Opus), before FreeRDP decoded it to PCM: tag, Hz, channels.
+ * Read by the web page's info overlay. */
+static uint32_t s_web_audio_format[3];
+EMSCRIPTEN_KEEPALIVE uint32_t* freerdp_web_audio_format(void)
+{
+	return s_web_audio_format;
+}
+
+static UINT rdpsnd_emscripten_play_ex(rdpsndDevicePlugin* device, const AUDIO_FORMAT* format,
+                                      const BYTE* data, size_t size)
+{
+	if (format)
+	{
+		s_web_audio_format[0] = format->wFormatTag;
+		s_web_audio_format[1] = format->nSamplesPerSec;
+		s_web_audio_format[2] = format->nChannels;
+	}
+	return rdpsnd_emscripten_play(device, data, size);
+}
+
 static void rdpsnd_emscripten_free(rdpsndDevicePlugin* device)
 {
 	free(device);
@@ -189,6 +209,7 @@ FREERDP_ENTRY_POINT(UINT VCAPITYPE emscripten_freerdp_rdpsnd_client_subsystem_en
 	p->device.GetVolume = rdpsnd_emscripten_get_volume;
 	p->device.SetVolume = rdpsnd_emscripten_set_volume;
 	p->device.Play = rdpsnd_emscripten_play;
+	p->device.PlayEx = rdpsnd_emscripten_play_ex;
 	p->device.Close = rdpsnd_emscripten_close;
 	p->device.Free = rdpsnd_emscripten_free;
 	pEntryPoints->pRegisterRdpsndDevice(pEntryPoints->rdpsnd, &p->device);

@@ -33,6 +33,17 @@
 #include <freerdp/utils/gfx.h>
 #include <math.h>
 
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+/* Per-codec counters for a web front end: [0..15] surface commands, [16..31] bytes, indexed by
+ * codec id. They live in shared wasm memory, so the page reads them without messaging. */
+static uint32_t s_web_codec_stats[32];
+EMSCRIPTEN_KEEPALIVE uint32_t* freerdp_web_codec_stats(void)
+{
+	return s_web_codec_stats;
+}
+#endif
+
 #define TAG FREERDP_TAG("gdi")
 
 WINPR_ATTR_NODISCARD
@@ -1201,6 +1212,13 @@ static UINT gdi_SurfaceCommand(RdpgfxClientContext* context, const RDPGFX_SURFAC
 	           cmd->width, cmd->height, cmd->length, (void*)cmd->data, (void*)cmd->extra);
 #if defined(WITH_GFX_FRAME_DUMP)
 	dump_cmd(cmd, gdi->frameId);
+#endif
+#if defined(__EMSCRIPTEN__)
+	if (codecId < 16)
+	{
+		__atomic_fetch_add(&s_web_codec_stats[codecId], 1, __ATOMIC_RELAXED);
+		__atomic_fetch_add(&s_web_codec_stats[16 + codecId], cmd->length, __ATOMIC_RELAXED);
+	}
 #endif
 
 	switch (codecId)
