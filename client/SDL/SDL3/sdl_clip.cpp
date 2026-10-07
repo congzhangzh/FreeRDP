@@ -1053,10 +1053,17 @@ const void* sdlClip::ClipDataCb(void* userdata, const char* mime_type, size_t* s
 
 	if (mime_is_text(mime_type))
 	{
+#if defined(_WIN32)
+		/* SDL's Windows backend asks for the first text type it was given (text/plain) but always
+		 * converts the result from UTF-8, while text/plain from the WinPR clipboard is ASCII
+		 * with \u escapes for everything else. */
+		mime_type = mime_text_utf8;
+#else
 		if (mime_is_utf8(mime_type))
 			mime_type = mime_text_utf8;
 		else
 			mime_type = mime_text_plain;
+#endif
 	}
 
 	{
