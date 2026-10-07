@@ -188,6 +188,24 @@ bool sdlClip::contains(const char** mime_types, Sint32 count)
 	return false;
 }
 
+std::vector<const char*> sdlClip::probeMimeTypes()
+{
+	/* Only text and image types: backends that do not know a type may answer by its prefix
+	 * (Windows treats every text/... type as plain text), which would announce HTML or a file
+	 * list that the clipboard does not hold. */
+	std::vector<const char*> candidates = s_mime_text();
+	for (const auto& list : { s_mime_bitmap(), s_mime_image() })
+		candidates.insert(candidates.end(), list.begin(), list.end());
+
+	std::vector<const char*> mimes;
+	for (const auto& mime : candidates)
+	{
+		if (SDL_HasClipboardData(mime))
+			mimes.push_back(mime);
+	}
+	return mimes;
+}
+
 bool sdlClip::handleEvent(const SDL_ClipboardEvent& ev)
 {
 	if (!_ctx || !_sync || ev.owner)
@@ -215,12 +233,23 @@ bool sdlClip::handleEvent(const SDL_ClipboardEvent& ev)
 	const char** mime_types = ev.mime_types;
 	size_t nformats = WINPR_ASSERTING_INT_CAST(size_t, ev.num_mime_types);
 	std::unique_ptr<char*, decltype(&SDL_free)> current(nullptr, SDL_free);
+	std::vector<const char*> probed;
 	if (!mime_types)
 	{
 		current.reset(SDL_GetClipboardMimeTypes(&nformats));
 		mime_types = const_cast<const char**>(current.get());
 		if (!mime_types)
 			nformats = 0;
+	}
+	if (!mime_types || (nformats == 0))
+	{
+		/* SDL_GetClipboardMimeTypes() only returns the types SDL has cached from its last
+		 * clipboard update. The Windows backend only checks for one when a window gains focus,
+		 * so at connect the cache is usually empty. Ask for each known type instead, which
+		 * queries the system clipboard. */
+		probed = probeMimeTypes();
+		mime_types = probed.data();
+		nformats = probed.size();
 	}
 
 	if (contains(mime_types, WINPR_ASSERTING_INT_CAST(Sint32, nformats)))
