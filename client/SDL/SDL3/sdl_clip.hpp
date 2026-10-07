@@ -115,6 +115,7 @@ class sdlClip
 	[[nodiscard]] uint32_t serverIdForMime(const std::string& mime);
 
 	[[nodiscard]] bool contains(const char** mime_types, Sint32 count);
+	[[nodiscard]] static std::vector<const char*> probeMimeTypes();
 
 	[[nodiscard]] static UINT MonitorReady(CliprdrClientContext* context,
 	                                       const CLIPRDR_MONITOR_READY* monitorReady);
