@@ -1172,6 +1172,7 @@ const char* CliprdrFormat::formatName() const
  * freerdpClipboardWriteImage), which writes it with the async Clipboard API (images as PNG). */
 static const char s_web_mime_text[] = "x-freerdp-web-text";
 static const char s_web_mime_dib[] = "x-freerdp-web-dib";
+static const char s_web_mime_png[] = "x-freerdp-web-png";
 
 // clang-format off
 EM_JS(void, freerdp_web_clipboard_write_js, (const char* utf8), {
@@ -1179,10 +1180,10 @@ EM_JS(void, freerdp_web_clipboard_write_js, (const char* utf8), {
 	if (Module.freerdpClipboardWrite)
 		Module.freerdpClipboardWrite(text);
 });
-EM_JS(void, freerdp_web_clipboard_write_image_js, (const BYTE* dib, size_t size), {
-	const bytes = HEAPU8.slice(dib, dib + size);
+EM_JS(void, freerdp_web_clipboard_write_image_js, (const BYTE* data, size_t size, int png), {
+	const bytes = HEAPU8.slice(data, data + size);
 	if (Module.freerdpClipboardWriteImage)
-		Module.freerdpClipboardWriteImage(bytes);
+		Module.freerdpClipboardWriteImage(bytes, !!png); /* CF_DIB, or PNG as it is */
 });
 // clang-format on
 
@@ -1191,6 +1192,7 @@ typedef struct
 	char* text;
 	BYTE* dib;
 	size_t size;
+	bool png;
 } web_write_job;
 
 static void web_write_on_main(void* arg)
@@ -1199,13 +1201,13 @@ static void web_write_on_main(void* arg)
 	if (job->text)
 		freerdp_web_clipboard_write_js(job->text);
 	if (job->dib)
-		freerdp_web_clipboard_write_image_js(job->dib, job->size);
+		freerdp_web_clipboard_write_image_js(job->dib, job->size, job->png ? 1 : 0);
 	free(job->text);
 	free(job->dib);
 	free(job);
 }
 
-static void web_write(char* text, BYTE* dib, size_t size)
+static void web_write(char* text, BYTE* dib, size_t size, bool png = false)
 {
 	auto job = static_cast<web_write_job*>(calloc(1, sizeof(web_write_job)));
 	if (!job)
@@ -1217,6 +1219,7 @@ static void web_write(char* text, BYTE* dib, size_t size)
 	job->text = text;
 	job->dib = dib;
 	job->size = size;
+	job->png = png;
 	if (emscripten_is_main_browser_thread())
 		web_write_on_main(job);
 	else if (!emscripten_proxy_async(emscripten_proxy_get_system_queue(),
@@ -1267,13 +1270,17 @@ bool sdlClip::webRequestServerText()
 {
 	bool has_text = false;
 	bool has_dib = false;
+	UINT32 png_id = 0;
 	std::scoped_lock lock(_lock);
 	for (const auto& f : _serverFormats)
 	{
 		has_text |= (f.formatId() == CF_UNICODETEXT);
 		has_dib |= (f.formatId() == CF_DIB);
+		/* GNOME Remote Desktop announces a PNG-only clipboard as "image/png" alone */
+		if (f.formatName() && (strcmp(f.formatName(), s_mime_png) == 0))
+			png_id = f.formatId();
 	}
-	if (!has_text && !has_dib)
+	if (!has_text && !has_dib && !png_id)
 		return false;
 	/* Keep the browser data for now: servers often announce our own offer back (an echo, e.g.
 	 * GNOME's clipboard handling). Clearing it here left nothing to answer the following data
@@ -1283,6 +1290,8 @@ bool sdlClip::webRequestServerText()
 		ok &= (SendDataRequest(CF_UNICODETEXT, s_web_mime_text) == CHANNEL_RC_OK);
 	if (has_dib)
 		ok &= (SendDataRequest(CF_DIB, s_web_mime_dib) == CHANNEL_RC_OK);
+	else if (png_id) /* browsers write PNG anyway: take it as it is */
+		ok &= (SendDataRequest(png_id, s_web_mime_png) == CHANNEL_RC_OK);
 	return ok;
 }
 
@@ -1294,7 +1303,7 @@ bool sdlClip::webTakeDataResponse(const CLIPRDR_FORMAT_DATA_RESPONSE* response)
 		if (_request_queue.empty())
 			return false;
 		kind = _request_queue.front().mime();
-		if ((kind != s_web_mime_text) && (kind != s_web_mime_dib))
+		if ((kind != s_web_mime_text) && (kind != s_web_mime_dib) && (kind != s_web_mime_png))
 			return false;
 		_request_queue.pop();
 	}
@@ -1322,7 +1331,7 @@ bool sdlClip::webTakeDataResponse(const CLIPRDR_FORMAT_DATA_RESPONSE* response)
 		}
 		web_write(utf8, nullptr, 0);
 	}
-	else if (size > 40) /* at least a BITMAPINFOHEADER */
+	else if ((kind == s_web_mime_png) ? (size > 8) : (size > 40)) /* PNG signature, BITMAPINFOHEADER */
 	{
 		{
 			std::scoped_lock lock(_lock);
@@ -1337,7 +1346,7 @@ bool sdlClip::webTakeDataResponse(const CLIPRDR_FORMAT_DATA_RESPONSE* response)
 		if (copy)
 		{
 			memcpy(copy, data, size);
-			web_write(nullptr, copy, size);
+			web_write(nullptr, copy, size, kind == s_web_mime_png);
 		}
 	}
 	return true;
