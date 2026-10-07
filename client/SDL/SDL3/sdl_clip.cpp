@@ -39,6 +39,7 @@ static sdlClip* s_web_clip = nullptr;
 #include <emscripten/proxying.h>
 #include <emscripten/threading.h>
 #include <winpr/string.h>
+#include <pthread.h>
 #endif
 
 #define TAG CLIENT_TAG("sdl.cliprdr")
@@ -1349,9 +1350,56 @@ bool sdlClip::webAnswerDataRequest(const CLIPRDR_FORMAT_DATA_REQUEST* request)
 	}
 }
 
+/* Called by the page on the main browser thread. That thread also runs FreeRDP's main loop
+ * under Asyncify: when it is suspended in the middle of a transport write (e.g. waiting inside
+ * a TLS write), calling into the channel from here would re-enter the same TLS connection on the
+ * same thread; the transport lock does not stop that (same owner), the records interleave and
+ * the server fails the connection with "bad record mac". So copy the data and send the format
+ * list from a separate thread. */
+typedef struct
+{
+	char* text;
+	BYTE* dib;
+	size_t size;
+} web_offer_job;
+
+static void* web_offer_thread(void* arg)
+{
+	auto job = static_cast<web_offer_job*>(arg);
+	std::ignore = sdlClip::webOffer(job->text, job->dib, job->size);
+	free(job->text);
+	free(job->dib);
+	free(job);
+	return nullptr;
+}
+
 extern "C" EMSCRIPTEN_KEEPALIVE int freerdp_web_clipboard_offer(const char* utf8, const BYTE* dib,
                                                                 size_t dibSize)
 {
-	return sdlClip::webOffer(utf8, dib, dibSize) ? 1 : 0;
+	if (!s_web_clip)
+		return 0;
+	auto job = static_cast<web_offer_job*>(calloc(1, sizeof(web_offer_job)));
+	if (!job)
+		return 0;
+	job->text = utf8 ? _strdup(utf8) : nullptr;
+	if (dib && dibSize)
+	{
+		job->dib = static_cast<BYTE*>(malloc(dibSize));
+		if (job->dib)
+		{
+			memcpy(job->dib, dib, dibSize);
+			job->size = dibSize;
+		}
+	}
+	pthread_t tid = {};
+	if (pthread_create(&tid, nullptr, web_offer_thread, job) != 0)
+	{
+		free(job->text);
+		free(job->dib);
+		free(job);
+		return 0;
+	}
+	pthread_detach(tid);
+	return 1;
 }
 #endif
