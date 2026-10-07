@@ -698,6 +698,7 @@ std::shared_ptr<BYTE> sdlClip::ReceiveFormatDataRequestHandle(
 	UINT32 formatId = 0;
 
 	BOOL res = FALSE;
+	bool viaDib = false;
 
 	std::shared_ptr<BYTE> data;
 
@@ -767,6 +768,17 @@ std::shared_ptr<BYTE> sdlClip::ReceiveFormatDataRequestHandle(
 					localFormatId = ClipboardGetFormatId(clipboard->_system, formatName);
 					mime = formatName;
 				}
+				else if (formatName && (mime_is_image(formatName) || mime_is_bmp(formatName)))
+				{
+					/* We announce every image format WinPR can convert to, but the SDL backend
+					 * may only provide one of them (Windows: image/bmp). Take that one and let
+					 * the WinPR clipboard convert it to the requested format. */
+					mime = getCurrentImageMime();
+					if (!mime)
+						return data;
+					localFormatId = ClipboardGetFormatId(clipboard->_system, mime);
+					viaDib = true;
+				}
 				else
 					return data;
 			}
@@ -792,6 +804,16 @@ std::shared_ptr<BYTE> sdlClip::ReceiveFormatDataRequestHandle(
 
 	if (!res)
 		return data;
+
+	if (viaDib)
+	{
+		/* WinPR only converts images to and from CF_DIB, one step at a time */
+		uint32_t dibLen = 0;
+		auto dib = std::shared_ptr<BYTE>(
+		    static_cast<BYTE*>(ClipboardGetData(clipboard->_system, CF_DIB, &dibLen)), free);
+		if (!dib || !ClipboardSetData(clipboard->_system, CF_DIB, dib.get(), dibLen))
+			return data;
+	}
 
 	uint32_t ptrlen = 0;
 	auto ptr = static_cast<BYTE*>(ClipboardGetData(clipboard->_system, formatId, &ptrlen));
