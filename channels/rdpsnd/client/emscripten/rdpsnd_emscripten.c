@@ -82,9 +82,10 @@ EM_JS(void, rdpsnd_web_play, (BYTE* data, int size, int channels, int rate, int 
 			out[i] = pcm[i * channels + c] / 32768;
 	}
 	const now = ctx.currentTime;
-	/* start a little ahead to absorb jitter; drop the backlog if it grew too large */
-	if (a.next < now + 0.02 || a.next > now + 0.5)
-		a.next = now + 0.05;
+	/* Jitter buffer: after an underrun (or at start) begin 120 ms ahead, enough for internet
+	 * jitter; if more than 500 ms piled up, drop the backlog so audio never lags further. */
+	if (a.next < now || a.next > now + 0.5)
+		a.next = now + 0.12;
 	const src = ctx.createBufferSource();
 	src.buffer = buffer;
 	src.connect(a.gain);
