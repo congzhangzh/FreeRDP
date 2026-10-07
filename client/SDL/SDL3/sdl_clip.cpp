@@ -29,6 +29,7 @@
 #include <winpr/wlog.h>
 #include <winpr/image.h>
 
+#include <string_view>
 #include "sdl_clip.hpp"
 #include "sdl_context.hpp"
 
@@ -824,8 +825,13 @@ UINT sdlClip::ReceiveFormatDataRequest(CliprdrClientContext* context,
 	WINPR_ASSERT(clipboard);
 
 #if defined(__EMSCRIPTEN__)
-	if (clipboard->webAnswerDataRequest(formatDataRequest))
-		return CHANNEL_RC_OK;
+	/* In the browser, never fall through to the SDL path below: SDL has no browser clipboard,
+	 * its internal one ends in ClipDataCb(), which requests the data from the server and waits
+	 * for the reply on this very channel thread, so nothing can arrive (the server times out and
+	 * all clipboard traffic stalls). Answer from the browser data, or fail at once. */
+	if (!clipboard->webAnswerDataRequest(formatDataRequest))
+		return clipboard->SendDataResponse(nullptr, 0);
+	return CHANNEL_RC_OK;
 #endif
 	uint32_t len = 0;
 	auto rc = ReceiveFormatDataRequestHandle(clipboard, formatDataRequest, len);
@@ -1232,6 +1238,14 @@ bool sdlClip::webOffer(const char* utf8, const BYTE* dib, size_t dibSize)
 		std::scoped_lock lock(clip->_lock);
 		clip->_web_local = utf8 ? utf8 : "";
 		clip->_web_local_dib.assign(dib, dib ? dib + dibSize : dib);
+		/* remember what we offered: the server may announce it back much later */
+		if (!clip->_web_local.empty())
+			clip->_web_recent.push_back(std::hash<std::string>{}(clip->_web_local));
+		if (dib && dibSize)
+			clip->_web_recent.push_back(std::hash<std::string_view>{}(
+			    std::string_view(reinterpret_cast<const char*>(dib), dibSize)));
+		while (clip->_web_recent.size() > 16)
+			clip->_web_recent.pop_front();
 		if (!clip->_web_local.empty())
 		{
 			formats.push_back({ CF_UNICODETEXT, nullptr });
@@ -1261,9 +1275,9 @@ bool sdlClip::webRequestServerText()
 	}
 	if (!has_text && !has_dib)
 		return false;
-	/* the server owns the clipboard now */
-	_web_local.clear();
-	_web_local_dib.clear();
+	/* Keep the browser data for now: servers often announce our own offer back (an echo, e.g.
+	 * GNOME's clipboard handling). Clearing it here left nothing to answer the following data
+	 * request with. webTakeDataResponse() compares and only then hands over ownership. */
 	bool ok = true;
 	if (has_text)
 		ok &= (SendDataRequest(CF_UNICODETEXT, s_web_mime_text) == CHANNEL_RC_OK);
@@ -1293,11 +1307,32 @@ bool sdlClip::webTakeDataResponse(const CLIPRDR_FORMAT_DATA_RESPONSE* response)
 	{
 		char* utf8 = ConvertWCharNToUtf8Alloc(reinterpret_cast<const WCHAR*>(data),
 		                                      size / sizeof(WCHAR), nullptr);
-		if (utf8)
-			web_write(utf8, nullptr, 0);
+		if (!utf8)
+			return true;
+		{
+			std::scoped_lock lock(_lock);
+			const auto hv = std::hash<std::string>{}(std::string(utf8));
+			if (std::find(_web_recent.begin(), _web_recent.end(), hv) != _web_recent.end())
+			{
+				free(utf8); /* one of our own offers announced back: keep serving ours */
+				return true;
+			}
+			_web_local.clear(); /* new content from the server: it owns the clipboard now */
+			_web_local_dib.clear();
+		}
+		web_write(utf8, nullptr, 0);
 	}
 	else if (size > 40) /* at least a BITMAPINFOHEADER */
 	{
+		{
+			std::scoped_lock lock(_lock);
+			const auto hv = std::hash<std::string_view>{}(
+			    std::string_view(reinterpret_cast<const char*>(data), size));
+			if (std::find(_web_recent.begin(), _web_recent.end(), hv) != _web_recent.end())
+				return true; /* one of our own images announced back */
+			_web_local.clear();
+			_web_local_dib.clear();
+		}
 		auto copy = static_cast<BYTE*>(malloc(size));
 		if (copy)
 		{

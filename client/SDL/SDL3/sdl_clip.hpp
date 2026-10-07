@@ -22,6 +22,7 @@
 
 #include <utility>
 #include <vector>
+#include <deque>
 #include <atomic>
 #include <queue>
 #include <map>
@@ -100,6 +101,7 @@ class sdlClip
 	[[nodiscard]] bool webTakeDataResponse(const CLIPRDR_FORMAT_DATA_RESPONSE* response);
 	std::string _web_local;          /* text from the browser clipboard, offered to the server */
 	std::vector<BYTE> _web_local_dib; /* image from the browser clipboard as CF_DIB */
+	std::deque<size_t> _web_recent; /* hashes of recent offers, to recognise late echoes */
 #endif
 
   private:
