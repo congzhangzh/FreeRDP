@@ -459,7 +459,7 @@ int TestFreeRDPCodecH264(int argc, char* argv[])
 		return -1;
 	if (!testDecode(FALSE))
 		return -1;
-#ifdef WITH_APPLE_VIDEOTOOLBOX
+#if defined(WITH_APPLE_VIDEOTOOLBOX) || defined(WITH_H264_WEBCODECS)
 	if (!testDecode(TRUE))
 		return -1;
 #endif
