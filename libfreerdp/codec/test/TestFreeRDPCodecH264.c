@@ -9,6 +9,10 @@
 #include <freerdp/freerdp.h>
 #include <freerdp/codec/color.h>
 
+#if defined(WITH_H264_WEBCODECS)
+#include <emscripten.h>
+#endif
+
 WINPR_ATTR_NODISCARD
 static const char* print_ns(UINT64 start, UINT64 end, char* buffer, size_t len)
 {
@@ -454,12 +458,25 @@ int TestFreeRDPCodecH264(int argc, char* argv[])
 	return 0;
 #endif
 
+#if defined(WITH_H264_WEBCODECS)
+	/* The browser decoder lives on the main thread; node (ctest) has no VideoDecoder. */
+	/* clang-format off */
+	const int hasVideoDecoder = MAIN_THREAD_EM_ASM_INT({ return typeof VideoDecoder === "function"; });
+	/* clang-format on */
+	if (!hasVideoDecoder)
+	{
+		(void)fprintf(stderr, "[%s] skipping, no WebCodecs VideoDecoder in this runtime\n",
+		              __func__);
+		return 0;
+	}
+#endif
+
 	/* Decoder tests also run when no encoder backend is configured. */
 	if (!testContextOptions(FALSE, width, height))
 		return -1;
 	if (!testDecode(FALSE))
 		return -1;
-#ifdef WITH_APPLE_VIDEOTOOLBOX
+#if defined(WITH_APPLE_VIDEOTOOLBOX) || defined(WITH_H264_WEBCODECS)
 	if (!testDecode(TRUE))
 		return -1;
 #endif
