@@ -500,38 +500,6 @@ int win_shadow_dxgi_uninit(winShadowSubsystem* subsystem)
 	return 1;
 }
 
-/* A new duplication of the output, on the calling thread's desktop: after a
- * switch between the user's desktop and the secure one (logon, lock screen,
- * UAC), or when an earlier attempt failed. The device is kept when there is
- * one. */
-int win_shadow_dxgi_restart_duplication(winShadowSubsystem* subsystem)
-{
-	if (!subsystem->dxgiDevice)
-		return win_shadow_dxgi_init(subsystem);
-
-	(void)win_shadow_dxgi_release_frame_data(subsystem);
-
-	if (subsystem->dxgiDesktopImage)
-	{
-		subsystem->dxgiDesktopImage->lpVtbl->Release(subsystem->dxgiDesktopImage);
-		subsystem->dxgiDesktopImage = nullptr;
-	}
-
-	if (subsystem->dxgiOutputDuplication)
-	{
-		subsystem->dxgiOutputDuplication->lpVtbl->Release(subsystem->dxgiOutputDuplication);
-		subsystem->dxgiOutputDuplication = nullptr;
-	}
-
-	if (subsystem->dxgiStage)
-	{
-		subsystem->dxgiStage->lpVtbl->Release(subsystem->dxgiStage);
-		subsystem->dxgiStage = nullptr;
-	}
-
-	return win_shadow_dxgi_init_duplication(subsystem);
-}
-
 int win_shadow_dxgi_fetch_frame_data(winShadowSubsystem* subsystem, BYTE** ppDstData,
                                      int* pnDstStep, int x, int y, int width, int height)
 {
@@ -639,6 +607,38 @@ int win_shadow_dxgi_release_frame_data(winShadowSubsystem* subsystem)
 	subsystem->pendingFrames = 0;
 
 	return 1;
+}
+
+/* A new duplication of the output, on the calling thread's desktop: after a
+ * switch between the user's desktop and the secure one (logon, lock screen,
+ * UAC), or when an earlier attempt failed. The device is kept when there is
+ * one. */
+int win_shadow_dxgi_restart_duplication(winShadowSubsystem* subsystem)
+{
+	if (!subsystem->dxgiDevice)
+		return win_shadow_dxgi_init(subsystem);
+
+	(void)win_shadow_dxgi_release_frame_data(subsystem);
+
+	if (subsystem->dxgiDesktopImage)
+	{
+		subsystem->dxgiDesktopImage->lpVtbl->Release(subsystem->dxgiDesktopImage);
+		subsystem->dxgiDesktopImage = nullptr;
+	}
+
+	if (subsystem->dxgiOutputDuplication)
+	{
+		subsystem->dxgiOutputDuplication->lpVtbl->Release(subsystem->dxgiOutputDuplication);
+		subsystem->dxgiOutputDuplication = nullptr;
+	}
+
+	if (subsystem->dxgiStage)
+	{
+		subsystem->dxgiStage->lpVtbl->Release(subsystem->dxgiStage);
+		subsystem->dxgiStage = nullptr;
+	}
+
+	return win_shadow_dxgi_init_duplication(subsystem);
 }
 
 int win_shadow_dxgi_get_next_frame(winShadowSubsystem* subsystem)
