@@ -83,6 +83,16 @@ static BOOL win_shadow_follow_input_desktop(void)
 	return TRUE;
 }
 
+/* SendInput, without ending the session when Windows refuses the event: it
+ * does while the input desktop switches (the secure desktop comes or goes)
+ * and for a window above our integrity level, and FreeRDP drops the client
+ * when an input handler fails */
+static void win_shadow_send_input(INPUT* event)
+{
+	if (SendInput(1, event, sizeof(INPUT)) == 0)
+		WLog_WARN(TAG, "SendInput refused the event (0x%08lX), it is dropped", GetLastError());
+}
+
 /* Ctrl+Alt+Del: asks freerdp-shadow-service for the secure attention
  * sequence (win_sas.h) */
 static void win_shadow_send_sas(void)
@@ -149,9 +159,7 @@ static BOOL win_shadow_input_keyboard_event(rdpShadowSubsystem* subsystem, rdpSh
 	if (flags & KBD_FLAGS_EXTENDED)
 		ki->dwFlags |= KEYEVENTF_EXTENDEDKEY;
 
-	const UINT rc = SendInput(1, &event, sizeof(INPUT));
-	if (rc == 0)
-		return FALSE;
+	win_shadow_send_input(&event);
 	return TRUE;
 }
 
@@ -177,9 +185,7 @@ static BOOL win_shadow_input_unicode_keyboard_event(rdpShadowSubsystem* subsyste
 	if (flags & KBD_FLAGS_RELEASE)
 		ki->dwFlags |= KEYEVENTF_KEYUP;
 
-	const UINT rc = SendInput(1, &event, sizeof(INPUT));
-	if (rc == 0)
-		return FALSE;
+	win_shadow_send_input(&event);
 	return TRUE;
 }
 
@@ -187,7 +193,6 @@ static BOOL win_shadow_input_mouse_event(rdpShadowSubsystem* subsystem, rdpShado
                                          UINT16 flags, UINT16 x, UINT16 y)
 {
 	(void)win_shadow_follow_input_desktop();
-	UINT rc = 1;
 	INPUT event = WINPR_C_ARRAY_INIT;
 	float width;
 	float height;
@@ -211,16 +216,8 @@ static BOOL win_shadow_input_mouse_event(rdpShadowSubsystem* subsystem, rdpShado
 		if (flags & PTR_FLAGS_WHEEL_NEGATIVE)
 			mi->mouseData *= -1;
 
-		rc = SendInput(1, &event, sizeof(INPUT));
+		win_shadow_send_input(&event);
 
-		/* The build target is a system that did not support MOUSEEVENTF_HWHEEL
-		 * but it may run on newer systems supporting it.
-		 * Ignore the return value in these cases.
-		 */
-#if (_WIN32_WINNT < 0x0600)
-		if (flags & PTR_FLAGS_HWHEEL)
-			rc = 1;
-#endif
 	}
 	else
 	{
@@ -233,9 +230,7 @@ static BOOL win_shadow_input_mouse_event(rdpShadowSubsystem* subsystem, rdpShado
 		if (flags & PTR_FLAGS_MOVE)
 		{
 			mi->dwFlags |= MOUSEEVENTF_MOVE;
-			rc = SendInput(1, &event, sizeof(INPUT));
-			if (rc == 0)
-				return FALSE;
+			win_shadow_send_input(&event);
 		}
 
 		mi->dwFlags = MOUSEEVENTF_ABSOLUTE;
@@ -247,7 +242,7 @@ static BOOL win_shadow_input_mouse_event(rdpShadowSubsystem* subsystem, rdpShado
 			else
 				mi->dwFlags |= MOUSEEVENTF_LEFTUP;
 
-			rc = SendInput(1, &event, sizeof(INPUT));
+			win_shadow_send_input(&event);
 		}
 		else if (flags & PTR_FLAGS_BUTTON2)
 		{
@@ -256,7 +251,7 @@ static BOOL win_shadow_input_mouse_event(rdpShadowSubsystem* subsystem, rdpShado
 			else
 				mi->dwFlags |= MOUSEEVENTF_RIGHTUP;
 
-			rc = SendInput(1, &event, sizeof(INPUT));
+			win_shadow_send_input(&event);
 		}
 		else if (flags & PTR_FLAGS_BUTTON3)
 		{
@@ -265,12 +260,10 @@ static BOOL win_shadow_input_mouse_event(rdpShadowSubsystem* subsystem, rdpShado
 			else
 				mi->dwFlags |= MOUSEEVENTF_MIDDLEUP;
 
-			rc = SendInput(1, &event, sizeof(INPUT));
+			win_shadow_send_input(&event);
 		}
 	}
 
-	if (rc == 0)
-		return FALSE;
 	return TRUE;
 }
 
@@ -279,7 +272,6 @@ static BOOL win_shadow_input_extended_mouse_event(rdpShadowSubsystem* subsystem,
                                                   UINT16 y)
 {
 	(void)win_shadow_follow_input_desktop();
-	UINT rc = 1;
 	INPUT event = WINPR_C_ARRAY_INIT;
 	float width;
 	float height;
@@ -301,9 +293,7 @@ static BOOL win_shadow_input_extended_mouse_event(rdpShadowSubsystem* subsystem,
 			mi->dx = (LONG)((float)x * (65535.0f / width));
 			mi->dy = (LONG)((float)y * (65535.0f / height));
 			mi->dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE;
-			rc = SendInput(1, &event, sizeof(INPUT));
-			if (rc == 0)
-				return FALSE;
+			win_shadow_send_input(&event);
 		}
 
 		mi->dx = mi->dy = mi->dwFlags = 0;
@@ -318,11 +308,9 @@ static BOOL win_shadow_input_extended_mouse_event(rdpShadowSubsystem* subsystem,
 		else if (flags & PTR_XFLAGS_BUTTON2)
 			mi->mouseData = XBUTTON2;
 
-		rc = SendInput(1, &event, sizeof(INPUT));
+		win_shadow_send_input(&event);
 	}
 
-	if (rc == 0)
-		return FALSE;
 	return TRUE;
 }
 
