@@ -31,6 +31,26 @@
 #include <avm/avm_image.h>
 #include <avm/avmcx.h>
 #include <avm/avmdx.h>
+
+/* A decoder-only libavm (CONFIG_AV2_ENCODER=0, WITH_AVM_ENCODER=OFF) has none of the
+ * encoder's functions: an encoder context then fails to start, as when
+ * avm_codec_av2_cx() has no interface, and decoding is unchanged. */
+#if !defined(WITH_LIBAVM_ENCODER)
+static avm_codec_iface_t* av2_no_cx(void)
+{
+	return nullptr;
+}
+static avm_codec_err_t av2_no_encoder(void)
+{
+	return AVM_CODEC_INCAPABLE;
+}
+#undef avm_codec_enc_init
+#define avm_codec_av2_cx() av2_no_cx()
+#define avm_codec_enc_config_default(iface, cfg, usage) av2_no_encoder()
+#define avm_codec_enc_init(ctx, iface, cfg, flags) av2_no_encoder()
+#define avm_codec_encode(ctx, img, pts, duration, flags) av2_no_encoder()
+#define avm_codec_get_cx_data(ctx, iter) ((const avm_codec_cx_pkt_t*)nullptr)
+#endif
 #endif
 
 /* The decoder: libavm, the reference, when there is one. dav2d 0.1.0 decodes the intra frames
