@@ -47,6 +47,13 @@
 #define MAC_SHADOW_FPS 30
 /* how often to look for the display again after the stream ended */
 #define MAC_SHADOW_RESTART_MS 1000
+/* how often to look at the cursor, and how long after a client moved the
+ * pointer not to tell it where the pointer is: its own cursor is ahead of
+ * what the server sees by a round trip, and would jump back */
+#define MAC_SHADOW_CURSOR_MS 30
+#define MAC_SHADOW_CURSOR_QUIET_MS 500
+/* the largest cursor sent, in points */
+#define MAC_SHADOW_CURSOR_MAX 96
 
 /* Two clicks closer than this, in time and in points, make a double click */
 #define MAC_SHADOW_CLICK_MS 500
@@ -287,6 +294,10 @@ static BOOL mac_shadow_mouse_event(macShadowSubsystem* mac, CGEventType type, CG
 
 static BOOL mac_shadow_mouse_move(macShadowSubsystem* mac, CGPoint point)
 {
+	EnterCriticalSection(&mac->clientLock);
+	mac->pointerInput = GetTickCount64();
+	LeaveCriticalSection(&mac->clientLock);
+
 	/* with a button held the move is a drag, as macOS expects it */
 	if (mac->buttonsDown & (1u << kCGMouseButtonLeft))
 		return mac_shadow_mouse_event(mac, kCGEventLeftMouseDragged, point, kCGMouseButtonLeft, 0);
@@ -767,7 +778,141 @@ static void mac_shadow_refresh(macShadowSubsystem* mac)
 	EnterCriticalSection(&mac->frameLock);
 	(void)region16_union_rect(&mac->pending, &mac->pending, &all);
 	LeaveCriticalSection(&mac->frameLock);
+
+	EnterCriticalSection(&mac->clientLock);
+	mac->cursorResend = TRUE;
+	LeaveCriticalSection(&mac->clientLock);
+
 	(void)SetEvent(mac->frameEvent);
+}
+
+static void mac_shadow_cursor_msg_free(UINT32 id, SHADOW_MSG_OUT* msg)
+{
+	if (msg && (id == SHADOW_MSG_OUT_POINTER_ALPHA_UPDATE_ID))
+	{
+		SHADOW_MSG_OUT_POINTER_ALPHA_UPDATE* shape = (SHADOW_MSG_OUT_POINTER_ALPHA_UPDATE*)msg;
+		free(shape->xorMaskData);
+		free(shape->andMaskData);
+	}
+	free(msg);
+}
+
+static UINT32 mac_shadow_cursor_hash(const macCursorImage* image)
+{
+	/* FNV-1a over the size, the hot spot and the pixels */
+	UINT32 hash = 2166136261u;
+	const UINT32 header[] = { image->width, image->height, image->xHot, image->yHot };
+	const BYTE* parts[] = { (const BYTE*)header, image->pixels };
+	const size_t sizes[] = { sizeof(header), 4ull * image->width * image->height };
+	for (size_t p = 0; p < ARRAYSIZE(parts); p++)
+	{
+		for (size_t x = 0; x < sizes[p]; x++)
+		{
+			hash ^= parts[p][x];
+			hash *= 16777619u;
+		}
+	}
+	return hash;
+}
+
+static BOOL mac_shadow_cursor_send_shape(macShadowSubsystem* mac, const macCursorImage* image)
+{
+	SHADOW_MSG_OUT_POINTER_ALPHA_UPDATE* msg =
+	    calloc(1, sizeof(SHADOW_MSG_OUT_POINTER_ALPHA_UPDATE));
+	if (!msg)
+		return FALSE;
+
+	msg->xHot = image->xHot;
+	msg->yHot = image->yHot;
+	msg->width = image->width;
+	msg->height = image->height;
+	if (shadow_subsystem_pointer_convert_alpha_pointer_data_to_format(
+	        image->pixels, PIXEL_FORMAT_BGRA32, TRUE, image->width, image->height, msg) < 0)
+	{
+		free(msg);
+		return FALSE;
+	}
+
+	msg->common.Free = mac_shadow_cursor_msg_free;
+	return shadow_client_boardcast_msg(mac->common.server, nullptr,
+	                                   SHADOW_MSG_OUT_POINTER_ALPHA_UPDATE_ID, &msg->common,
+	                                   nullptr) >= 0;
+}
+
+static void mac_shadow_cursor_send_position(macShadowSubsystem* mac, UINT64 now)
+{
+	EnterCriticalSection(&mac->clientLock);
+	const UINT64 input = mac->pointerInput;
+	LeaveCriticalSection(&mac->clientLock);
+	if (now - input < MAC_SHADOW_CURSOR_QUIET_MS)
+		return;
+
+	CGEventRef event = CGEventCreate(nullptr);
+	if (!event)
+		return;
+	const CGPoint where = CGEventGetLocation(event);
+	CFRelease(event);
+
+	/* from global points to the surface, as mac_shadow_point the other way */
+	const CGFloat x =
+	    (where.x - mac->bounds.origin.x) * (CGFloat)mac->width / mac->bounds.size.width;
+	const CGFloat y =
+	    (where.y - mac->bounds.origin.y) * (CGFloat)mac->height / mac->bounds.size.height;
+	const UINT32 xPos = (UINT32)MIN(MAX(x, 0.0), (CGFloat)mac->width - 1.0);
+	const UINT32 yPos = (UINT32)MIN(MAX(y, 0.0), (CGFloat)mac->height - 1.0);
+	if ((xPos == mac->common.pointerX) && (yPos == mac->common.pointerY))
+		return;
+
+	mac->common.pointerX = xPos;
+	mac->common.pointerY = yPos;
+
+	SHADOW_MSG_OUT_POINTER_POSITION_UPDATE* msg =
+	    calloc(1, sizeof(SHADOW_MSG_OUT_POINTER_POSITION_UPDATE));
+	if (!msg)
+		return;
+	msg->xPos = xPos;
+	msg->yPos = yPos;
+	msg->common.Free = mac_shadow_cursor_msg_free;
+	(void)shadow_client_boardcast_msg(mac->common.server, nullptr,
+	                                  SHADOW_MSG_OUT_POINTER_POSITION_UPDATE_ID, &msg->common,
+	                                  nullptr);
+}
+
+/* The clients draw the cursor themselves (the frames have none): its shape
+ * when it changed, and where it is when something else than a client moved it */
+static void mac_shadow_cursor_update(macShadowSubsystem* mac, UINT64 now)
+{
+	if (now < mac->cursorNext)
+		return;
+	mac->cursorNext = now + MAC_SHADOW_CURSOR_MS;
+
+	macCursorImage image = WINPR_C_ARRAY_INIT;
+	if (mac_cursor_get(&image, MAC_SHADOW_CURSOR_MAX))
+	{
+		EnterCriticalSection(&mac->clientLock);
+		const BOOL resend = mac->cursorResend;
+		mac->cursorResend = FALSE;
+		LeaveCriticalSection(&mac->clientLock);
+
+		const UINT32 hash = mac_shadow_cursor_hash(&image);
+		if ((resend || !mac->cursorKnown || (hash != mac->cursorHash)) &&
+		    mac_shadow_cursor_send_shape(mac, &image))
+		{
+			mac->cursorHash = hash;
+			mac->cursorKnown = TRUE;
+		}
+		mac_cursor_image_free(&image);
+	}
+
+	mac_shadow_cursor_send_position(mac, now);
+}
+
+static BOOL mac_shadow_has_clients(macShadowSubsystem* mac)
+{
+	EnterCriticalSection(&mac->clientLock);
+	const BOOL clients = mac->clients > 0;
+	LeaveCriticalSection(&mac->clientLock);
+	return clients;
 }
 
 static void mac_shadow_subsystem_process_message(macShadowSubsystem* mac, wMessage* message)
@@ -819,15 +964,22 @@ static DWORD WINAPI mac_shadow_subsystem_thread(LPVOID arg)
 	HANDLE events[] = { mac->stopEvent, MessageQueue_Event(MsgPipe->In), mac->frameEvent,
 		                mac->lostEvent };
 	BOOL lost = FALSE;
+	UINT64 restart = 0;
 
 	while (1)
 	{
-		/* without a stream, try to make one again every second */
-		const DWORD status = WaitForMultipleObjects(ARRAYSIZE(events), events, FALSE,
-		                                            lost ? MAC_SHADOW_RESTART_MS : INFINITE);
+		/* with clients, look at the cursor; without a stream, try to make one
+		 * again every second */
+		const BOOL clients = mac_shadow_has_clients(mac);
+		DWORD timeout = clients ? MAC_SHADOW_CURSOR_MS : INFINITE;
+		if (lost)
+			timeout = MIN(timeout, MAC_SHADOW_RESTART_MS);
+
+		const DWORD status = WaitForMultipleObjects(ARRAYSIZE(events), events, FALSE, timeout);
 		if ((status == WAIT_FAILED) || (WaitForSingleObject(mac->stopEvent, 0) == WAIT_OBJECT_0))
 			break;
 
+		const UINT64 now = GetTickCount64();
 		if (WaitForSingleObject(mac->lostEvent, 0) == WAIT_OBJECT_0)
 		{
 			(void)ResetEvent(mac->lostEvent);
@@ -835,12 +987,20 @@ static DWORD WINAPI mac_shadow_subsystem_thread(LPVOID arg)
 				WLog_WARN(TAG, "the screen is no longer captured (the display is off?): the "
 				               "clients see the last picture until it is back");
 			lost = TRUE;
+			restart = now + MAC_SHADOW_RESTART_MS;
 		}
-		else if (lost && (status == WAIT_TIMEOUT) && mac_shadow_capture_restart(mac))
+		else if (lost && (now >= restart))
 		{
-			WLog_INFO(TAG, "the display is back: capturing the screen again");
-			lost = FALSE;
+			restart = now + MAC_SHADOW_RESTART_MS;
+			if (mac_shadow_capture_restart(mac))
+			{
+				WLog_INFO(TAG, "the display is back: capturing the screen again");
+				lost = FALSE;
+			}
 		}
+
+		if (clients)
+			mac_shadow_cursor_update(mac, now);
 
 		wMessage message = WINPR_C_ARRAY_INIT;
 		while (MessageQueue_Peek(MsgPipe->In, &message, TRUE))
@@ -939,7 +1099,8 @@ static int mac_shadow_subsystem_init(rdpShadowSubsystem* subsystem)
 		                              .width = mac->width,
 		                              .height = mac->height,
 		                              .fps = MAC_SHADOW_FPS,
-		                              .showCursor = TRUE,
+		                              /* the clients draw the cursor */
+		                              .showCursor = FALSE,
 		                              .audio = audio,
 		                              .audioRate = MAC_AUDIO_RATE,
 		                              .audioChannels = MAC_AUDIO_CHANNELS,
