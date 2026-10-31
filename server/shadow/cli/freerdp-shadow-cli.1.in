@@ -54,7 +54,7 @@ Disable RDP security (default:on)
 .IP -sec-tls
 Disable TLS protocol security (default:on)
 .IP -sec-nla
-Disable NLA protocol security (default:on)
+Disable NLA protocol security, extended NLA included (default:on)
 .IP -sec-ext
 Disable NLA extended protocol security (default:on)
 .IP /sam-file:<file>
