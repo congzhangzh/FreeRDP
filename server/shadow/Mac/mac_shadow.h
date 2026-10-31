@@ -29,36 +29,48 @@ typedef struct mac_shadow_subsystem macShadowSubsystem;
 #include <winpr/stream.h>
 #include <winpr/collections.h>
 
-#include <dispatch/dispatch.h>
-#include <IOKit/IOKitLib.h>
-#include <IOSurface/IOSurface.h>
-#include <CoreVideo/CoreVideo.h>
+#include <freerdp/codec/region.h>
+
 #include <CoreGraphics/CoreGraphics.h>
+#include <CoreVideo/CoreVideo.h>
+
+#include "mac_capture.h"
+
+#define MAC_SHADOW_MAX_DISPLAYS 16
 
 struct mac_shadow_subsystem
 {
 	rdpShadowSubsystem common;
 
-	int width;
-	int height;
-	BOOL retina;
-	int pixelWidth;
-	int pixelHeight;
-	BOOL mouseDownLeft;
-	BOOL mouseDownRight;
-	BOOL mouseDownOther;
-	CGDisplayStreamRef stream;
-	dispatch_queue_t captureQueue;
-	CGDisplayStreamUpdateRef lastUpdate;
+	/* the display shared, in global display coordinates (points) */
+	CGDirectDisplayID display;
+	CGRect bounds;
+	/* the size of the surface and of the captured frames, in pixels */
+	UINT32 width;
+	UINT32 height;
+
+	macCapture *capture;
+	HANDLE thread;
+	HANDLE stopEvent;
+
+	/* the newest frame and what changed since it was last sent, under frameLock */
+	CRITICAL_SECTION frameLock;
+	CVPixelBufferRef frame;
+	REGION16 pending;
+	HANDLE frameEvent;
+	BOOL sizeWarned;
+
+	/* input state: mouse buttons down, modifiers down, the last click */
+	UINT32 buttonsDown;
+	CGEventFlags modifiers;
+	UINT64 lastClickTime;
+	CGMouseButton lastClickButton;
+	CGPoint lastClickPoint;
+	int64_t clickCount;
+	INT32 wheelRemainder[2];
+
+	/* sound: samples gathered into messages of 20 ms */
+	wStream *audioStream;
 };
-
-#ifdef __cplusplus
-extern "C"
-{
-#endif
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* FREERDP_SERVER_SHADOW_MAC_SHADOW_H */
