@@ -20,6 +20,8 @@
 #import <CoreMedia/CoreMedia.h>
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 
+#include <stdatomic.h>
+
 #include <winpr/assert.h>
 
 #include <freerdp/log.h>
@@ -38,6 +40,8 @@ static const int64_t mac_capture_timeout_ns = 10LL * NSEC_PER_SEC;
 	macCaptureConfig config;
 	float *audioBuffer;
 	size_t audioBufferFrames;
+	/* the stream ended by itself: it must not be stopped again */
+	atomic_bool stopped;
 }
 @end
 
@@ -218,7 +222,10 @@ out:
 - (void)stream:(SCStream *)stream didStopWithError:(NSError *)error
 {
 	WINPR_UNUSED(stream);
-	mac_capture_log_error("screen capture stopped", error);
+	atomic_store(&stopped, true);
+	WLog_WARN(TAG, "screen capture stopped: %s (%s %ld)",
+	          error ? error.localizedDescription.UTF8String : "no reason given",
+	          error ? error.domain.UTF8String : "-", error ? (long)error.code : 0L);
 	if (config.onStopped)
 		config.onStopped(config.context);
 }
@@ -401,6 +408,11 @@ void mac_capture_stop(macCapture *capture)
 {
 	if (!capture || !capture->stream || !capture->running)
 		return;
+	if (atomic_load(&capture->output->stopped))
+	{
+		capture->running = FALSE;
+		return;
+	}
 
 	SCStream *stream = capture->stream;
 	(void)mac_capture_wait("stopping the screen capture", ^(void (^done)(NSError *)) {
