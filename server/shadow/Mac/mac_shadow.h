@@ -79,6 +79,12 @@ struct mac_shadow_subsystem
 	/* sound: samples gathered into messages of 20 ms */
 	wStream *audioStream;
 
+	/* sound statistics, logged every few seconds at debug level */
+	UINT64 audioFrames;
+	UINT64 audioMessages;
+	float audioPeak;
+	UINT64 audioLogged;
+
 	/* the cursor: the clients draw it themselves, from its shape and position */
 	UINT32 cursorHash;
 	BOOL cursorKnown;
