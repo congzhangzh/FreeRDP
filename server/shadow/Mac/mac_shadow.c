@@ -63,9 +63,12 @@
 
 /* What the clients hear: 48 kHz, 2 channels, 16 bits, the format
  * ScreenCaptureKit is asked for. The build may have no resampler, so every
- * format offered has that rate and channel count, and the same frame size:
- * rdpsnd sizes its buffers from the first one. Opus first, so that a client
- * that has it takes it (96 kbit/s instead of 1.5 Mbit/s for PCM). */
+ * format offered has that rate and channel count, and 16 bits a sample:
+ * rdpsnd sizes its buffers from the bits and channels of the first one. Opus
+ * first, so that a client that has it takes it (96 kbit/s instead of
+ * 1.5 Mbit/s for PCM). Its block alignment is 1: rdpsnd pads every wave to
+ * a multiple of it with zeros, and an Opus packet with zeros after it no
+ * longer decodes. */
 #define MAC_AUDIO_RATE 48000
 #define MAC_AUDIO_CHANNELS 2
 #define MAC_AUDIO_FRAME_BYTES (MAC_AUDIO_CHANNELS * 2)
@@ -73,7 +76,7 @@
 #define MAC_AUDIO_MESSAGE_FRAMES (MAC_AUDIO_RATE / 50)
 
 static const AUDIO_FORMAT mac_audio_offered_formats[] = {
-	{ WAVE_FORMAT_OPUS, MAC_AUDIO_CHANNELS, MAC_AUDIO_RATE, 12000, 4, 16, 0, nullptr },
+	{ WAVE_FORMAT_OPUS, MAC_AUDIO_CHANNELS, MAC_AUDIO_RATE, 12000, 1, 16, 0, nullptr },
 	{ WAVE_FORMAT_PCM, MAC_AUDIO_CHANNELS, MAC_AUDIO_RATE, MAC_AUDIO_RATE* MAC_AUDIO_FRAME_BYTES,
 	  MAC_AUDIO_FRAME_BYTES, 16, 0, nullptr },
 };
