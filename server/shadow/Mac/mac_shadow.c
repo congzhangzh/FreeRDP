@@ -36,6 +36,8 @@
 #include <freerdp/log.h>
 
 #include <ApplicationServices/ApplicationServices.h>
+#include <IOKit/hidsystem/IOHIDLib.h>
+#include <IOKit/hidsystem/IOHIDShared.h>
 
 #ifdef WITH_PAM
 #include <security/pam_appl.h>
@@ -184,14 +186,152 @@ static UINT32 mac_shadow_enum_monitors(MONITOR_DEF* monitors, UINT32 maxMonitors
 	return mac_shadow_list_displays(monitors, nullptr, nullptr, maxMonitors);
 }
 
-static BOOL mac_shadow_post(CGEventRef event)
+/* At the login window Secure Event Input drops every event posted through
+ * Quartz, whatever the tap or the event source; an event posted to the HID
+ * system itself still arrives, as from a real keyboard or mouse. That takes
+ * IOHIDPostEvent, deprecated since macOS 11 but the only way there, and root.
+ * The event is built with Quartz as everywhere else and handed over field by
+ * field (the NX_* flag masks have the values of the Quartz ones). */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+static io_connect_t mac_shadow_hid_open(void)
+{
+	io_connect_t connect = MACH_PORT_NULL;
+	io_service_t service =
+	    IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(kIOHIDSystemClass));
+	if (!service)
+		return MACH_PORT_NULL;
+
+	const kern_return_t rc =
+	    IOServiceOpen(service, mach_task_self(), kIOHIDParamConnectType, &connect);
+	IOObjectRelease(service);
+	return (rc == KERN_SUCCESS) ? connect : MACH_PORT_NULL;
+}
+
+static BOOL mac_shadow_hid_post(macShadowSubsystem* mac, CGEventRef event)
+{
+	const CGEventType type = CGEventGetType(event);
+	const CGPoint where = CGEventGetLocation(event);
+	const IOGPoint location = { (SInt16)lround(where.x), (SInt16)lround(where.y) };
+	NXEventData data = { 0 };
+	UInt32 nxType = 0;
+	IOOptionBits options = 0;
+
+	switch (type)
+	{
+		case kCGEventKeyDown:
+		case kCGEventKeyUp:
+		case kCGEventFlagsChanged:
+		{
+			UniChar text[4] = { 0 };
+			UniCharCount length = 0;
+			CGEventKeyboardGetUnicodeString(event, ARRAYSIZE(text), &length, text);
+			const UInt16 character = ((length > 0) && (text[0] < 0x80)) ? text[0] : 0;
+
+			data.key.keyCode = (UInt16)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+			data.key.repeat =
+			    (SInt16)CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat);
+			data.key.charSet = NX_ASCIISET;
+			data.key.charCode = character;
+			data.key.origCharSet = NX_ASCIISET;
+			data.key.origCharCode = character;
+			if (type == kCGEventFlagsChanged)
+			{
+				nxType = NX_FLAGSCHANGED;
+				options = kIOHIDSetGlobalEventFlags;
+			}
+			else
+				nxType = (type == kCGEventKeyDown) ? NX_KEYDOWN : NX_KEYUP;
+			break;
+		}
+
+		case kCGEventMouseMoved:
+		case kCGEventLeftMouseDragged:
+		case kCGEventRightMouseDragged:
+		case kCGEventOtherMouseDragged:
+			nxType = (type == kCGEventMouseMoved)          ? NX_MOUSEMOVED
+			         : (type == kCGEventLeftMouseDragged)  ? NX_LMOUSEDRAGGED
+			         : (type == kCGEventRightMouseDragged) ? NX_RMOUSEDRAGGED
+			                                               : NX_OMOUSEDRAGGED;
+			options = kIOHIDSetCursorPosition;
+			break;
+
+		case kCGEventLeftMouseDown:
+		case kCGEventLeftMouseUp:
+		case kCGEventRightMouseDown:
+		case kCGEventRightMouseUp:
+		case kCGEventOtherMouseDown:
+		case kCGEventOtherMouseUp:
+		{
+			const BOOL down = (type == kCGEventLeftMouseDown) || (type == kCGEventRightMouseDown) ||
+			                  (type == kCGEventOtherMouseDown);
+			nxType = (type == kCGEventLeftMouseDown)    ? NX_LMOUSEDOWN
+			         : (type == kCGEventLeftMouseUp)    ? NX_LMOUSEUP
+			         : (type == kCGEventRightMouseDown) ? NX_RMOUSEDOWN
+			         : (type == kCGEventRightMouseUp)   ? NX_RMOUSEUP
+			         : (type == kCGEventOtherMouseDown) ? NX_OMOUSEDOWN
+			                                            : NX_OMOUSEUP;
+			data.mouse.click = (SInt32)CGEventGetIntegerValueField(event, kCGMouseEventClickState);
+			data.mouse.buttonNumber =
+			    (UInt8)CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber);
+			data.mouse.pressure = down ? 255 : 0;
+			options = kIOHIDSetCursorPosition;
+			break;
+		}
+
+		case kCGEventScrollWheel:
+			nxType = NX_SCROLLWHEELMOVED;
+			data.scrollWheel.deltaAxis1 =
+			    (SInt16)CGEventGetIntegerValueField(event, kCGScrollWheelEventDeltaAxis1);
+			data.scrollWheel.deltaAxis2 =
+			    (SInt16)CGEventGetIntegerValueField(event, kCGScrollWheelEventDeltaAxis2);
+			/* 16.16 fixed point */
+			data.scrollWheel.fixedDeltaAxis1 = (SInt32)lround(
+			    CGEventGetDoubleValueField(event, kCGScrollWheelEventFixedPtDeltaAxis1) * 65536.0);
+			data.scrollWheel.fixedDeltaAxis2 = (SInt32)lround(
+			    CGEventGetDoubleValueField(event, kCGScrollWheelEventFixedPtDeltaAxis2) * 65536.0);
+			data.scrollWheel.pointDeltaAxis1 =
+			    (SInt32)CGEventGetIntegerValueField(event, kCGScrollWheelEventPointDeltaAxis1);
+			data.scrollWheel.pointDeltaAxis2 =
+			    (SInt32)CGEventGetIntegerValueField(event, kCGScrollWheelEventPointDeltaAxis2);
+			break;
+
+		default:
+			WLog_DBG(TAG, "no HID event for Quartz event type %" PRIu32, (UINT32)type);
+			return TRUE;
+	}
+
+	const kern_return_t rc = IOHIDPostEvent(mac->hid, nxType, location, &data, kNXEventDataVersion,
+	                                        (IOOptionBits)CGEventGetFlags(event), options);
+	/* a refused event is dropped, never the session: a failing input handler
+	 * would make FreeRDP drop the client */
+	if (rc != KERN_SUCCESS)
+	{
+		mac->hidRefused++;
+		if ((mac->hidRefused <= 5) || ((mac->hidRefused % 100) == 0))
+			WLog_WARN(TAG,
+			          "the HID system refused an event (type %" PRIu32 "): 0x%08" PRIx32
+			          ", %" PRIu64 " so far",
+			          nxType, (UINT32)rc, mac->hidRefused);
+	}
+	else
+		WLog_DBG(TAG, "HID event type %" PRIu32 " posted", nxType);
+	return TRUE;
+}
+#pragma clang diagnostic pop
+
+static BOOL mac_shadow_post(macShadowSubsystem* mac, CGEventRef event)
 {
 	if (!event)
 		return FALSE;
 
-	CGEventPost(kCGHIDEventTap, event);
+	BOOL rc = TRUE;
+	if (mac->hid != MACH_PORT_NULL)
+		rc = mac_shadow_hid_post(mac, event);
+	else
+		CGEventPost(kCGHIDEventTap, event);
 	CFRelease(event);
-	return TRUE;
+	return rc;
 }
 
 WINPR_ATTR_NODISCARD
@@ -277,7 +417,7 @@ static BOOL mac_shadow_input_keyboard_event(rdpShadowSubsystem* subsystem, rdpSh
 	}
 
 	CGEventSetFlags(event, mac->modifiers);
-	return mac_shadow_post(event);
+	return mac_shadow_post(mac, event);
 }
 
 WINPR_ATTR_NODISCARD
@@ -285,8 +425,21 @@ static BOOL mac_shadow_input_unicode_keyboard_event(rdpShadowSubsystem* subsyste
                                                     rdpShadowClient* client, UINT16 flags,
                                                     UINT16 code)
 {
+	macShadowSubsystem* mac = (macShadowSubsystem*)subsystem;
+
 	if (!subsystem || !client)
 		return FALSE;
+
+	/* the HID system has no Unicode character set: a key event with no key
+	 * would type the key 0 (A) */
+	if (mac->hid != MACH_PORT_NULL)
+	{
+		if (!mac->unicodeWarned)
+			WLog_WARN(TAG, "Unicode keyboard input can not be posted to the HID system: dropped "
+			               "(scancodes work)");
+		mac->unicodeWarned = TRUE;
+		return TRUE;
+	}
 
 	/* a key event with no key: the text it types is the character */
 	const BOOL down = (flags & KBD_FLAGS_RELEASE) ? FALSE : TRUE;
@@ -296,7 +449,7 @@ static BOOL mac_shadow_input_unicode_keyboard_event(rdpShadowSubsystem* subsyste
 
 	const UniChar character = code;
 	CGEventKeyboardSetUnicodeString(event, 1, &character);
-	return mac_shadow_post(event);
+	return mac_shadow_post(mac, event);
 }
 
 static CGPoint mac_shadow_point(const macShadowSubsystem* mac, UINT16 x, UINT16 y)
@@ -318,7 +471,7 @@ static BOOL mac_shadow_mouse_event(macShadowSubsystem* mac, CGEventType type, CG
 	if (clicks > 0)
 		CGEventSetIntegerValueField(event, kCGMouseEventClickState, clicks);
 	CGEventSetFlags(event, mac->modifiers);
-	return mac_shadow_post(event);
+	return mac_shadow_post(mac, event);
 }
 
 static BOOL mac_shadow_mouse_move(macShadowSubsystem* mac, CGPoint point)
@@ -407,7 +560,7 @@ static BOOL mac_shadow_mouse_wheel(macShadowSubsystem* mac, UINT16 flags, BOOL h
 		return FALSE;
 
 	CGEventSetFlags(event, mac->modifiers);
-	return mac_shadow_post(event);
+	return mac_shadow_post(mac, event);
 }
 
 WINPR_ATTR_NODISCARD
@@ -1241,6 +1394,24 @@ static int mac_shadow_subsystem_init(rdpShadowSubsystem* subsystem)
 
 	(void)mac_shadow_check_input_access();
 
+	/* as root, the login-window agent, input goes to the HID system (see
+	 * mac_shadow_hid_post); in a user's session Quartz events do. The HID
+	 * system only takes events from the session that has the console
+	 * (IOHIDParamUserClient::extPostEvent asks for kIOClientPrivilegeLocalUser):
+	 * FREERDP_SHADOW_MAC_INPUT=hid tries that path in a user's session too. */
+	const char* input = getenv("FREERDP_SHADOW_MAC_INPUT");
+	if ((geteuid() == 0) || (input && (strcmp(input, "hid") == 0)))
+	{
+		mac->hid = mac_shadow_hid_open();
+		if (mac->hid != MACH_PORT_NULL)
+			WLog_INFO(TAG, "input: posted to the HID system (%s)",
+			          (geteuid() == 0) ? "running as root, as at the login window"
+			                           : "FREERDP_SHADOW_MAC_INPUT=hid");
+		else
+			WLog_WARN(TAG, "input: the HID system could not be opened, Quartz events instead "
+			               "(they do not reach the login window)");
+	}
+
 	const BOOL audio = mac_shadow_audio_init(mac);
 	if (!audio)
 		WLog_WARN(TAG, "sound: no format to offer: no sound");
@@ -1386,6 +1557,8 @@ static void mac_shadow_subsystem_free(rdpShadowSubsystem* subsystem)
 		return;
 
 	(void)mac_shadow_subsystem_uninit(subsystem);
+	if (mac->hid != MACH_PORT_NULL)
+		(void)IOServiceClose(mac->hid);
 	if (mac->awake != kIOPMNullAssertionID)
 		(void)IOPMAssertionRelease(mac->awake);
 	region16_uninit(&mac->pending);
