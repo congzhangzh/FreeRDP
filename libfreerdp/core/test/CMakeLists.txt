@@ -10,7 +10,8 @@ set(DRIVER ${MODULE_NAME}.c)
 set(TESTS TestVersion.c TestSettings.c TestUtils.c)
 
 if(BUILD_TESTING_INTERNAL)
-  list(APPEND TESTS TestStreamDump.c TestRdstls.c TestServerChannels.c TestDisconnect.c)
+  list(APPEND TESTS TestStreamDump.c TestRdstls.c TestServerChannels.c TestDisconnect.c
+       TestUpdateBitmap.c)
   if(WITH_RDPEUDP)
     list(APPEND TESTS TestRdpUdp.c)
   endif()
