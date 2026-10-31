@@ -28,6 +28,7 @@
 #include <freerdp/server/server-common.h>
 
 #include "win_shadow.h"
+#include "win_audio.h"
 #include "win_sas.h"
 
 #define TAG SERVER_TAG("shadow.win")
@@ -691,6 +692,9 @@ static int win_shadow_subsystem_init(rdpShadowSubsystem* arg)
 	virtualScreen->bottom = subsystem->height;
 	virtualScreen->flags = 1;
 	WLog_INFO(TAG, "width: %d height: %d", subsystem->width, subsystem->height);
+
+	if (!win_shadow_audio_init(subsystem))
+		WLog_WARN(TAG, "audio: no formats to offer: no sound");
 	return 1;
 }
 
@@ -701,6 +705,7 @@ static int win_shadow_subsystem_uninit(rdpShadowSubsystem* arg)
 	if (!subsystem)
 		return -1;
 
+	win_shadow_audio_uninit(subsystem);
 #if defined(WITH_WDS_API)
 	win_shadow_wds_uninit(subsystem);
 #elif defined(WITH_DXGI_1_2)
@@ -724,6 +729,9 @@ static int win_shadow_subsystem_start(rdpShadowSubsystem* arg)
 		return -1;
 	}
 
+	/* the picture works without the sound */
+	if (!win_shadow_audio_start(subsystem))
+		WLog_WARN(TAG, "audio: no capture thread: no sound");
 	return 1;
 }
 
@@ -734,6 +742,7 @@ static int win_shadow_subsystem_stop(rdpShadowSubsystem* arg)
 	if (!subsystem)
 		return -1;
 
+	win_shadow_audio_stop(subsystem);
 	return 1;
 }
 
