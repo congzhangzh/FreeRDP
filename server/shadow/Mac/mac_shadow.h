@@ -33,6 +33,7 @@ typedef struct mac_shadow_subsystem macShadowSubsystem;
 
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreVideo/CoreVideo.h>
+#include <IOKit/IOKitLib.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
 
 #include "mac_capture.h"
@@ -66,6 +67,12 @@ struct mac_shadow_subsystem
 	REGION16 pending;
 	HANDLE frameEvent;
 	BOOL sizeWarned;
+
+	/* running as root (a login-window agent): input goes to the HID system
+	 * itself, past Secure Event Input; MACH_PORT_NULL otherwise */
+	io_connect_t hid;
+	UINT64 hidRefused; /* events the HID system refused, for the log */
+	BOOL unicodeWarned;
 
 	/* input state: mouse buttons down, modifiers down, the last click */
 	UINT32 buttonsDown;
