@@ -45,6 +45,8 @@
 
 /* Frames per second asked from ScreenCaptureKit at most */
 #define MAC_SHADOW_FPS 30
+/* how often to look for the display again after the stream ended */
+#define MAC_SHADOW_RESTART_MS 1000
 
 /* Two clicks closer than this, in time and in points, make a double click */
 #define MAC_SHADOW_CLICK_MS 500
@@ -559,8 +561,11 @@ static void mac_shadow_on_frame(void* context, CVPixelBufferRef frame, const CGR
 
 static void mac_shadow_on_stopped(void* context)
 {
-	WINPR_ASSERT(context);
-	WLog_ERR(TAG, "the screen is no longer captured: the clients see the last picture");
+	macShadowSubsystem* mac = (macShadowSubsystem*)context;
+	WINPR_ASSERT(mac);
+
+	/* the subsystem thread makes a new stream once the display is back */
+	(void)SetEvent(mac->lostEvent);
 }
 
 static void mac_shadow_audio_msg_free(WINPR_ATTR_UNUSED UINT32 id, SHADOW_MSG_OUT* msg)
@@ -782,17 +787,60 @@ static void mac_shadow_subsystem_process_message(macShadowSubsystem* mac, wMessa
 		message->Free(message);
 }
 
+/* Replaces the stream that ended with a new one. It fails while there is no
+ * display to capture (the display is off, the lid is closed). */
+static BOOL mac_shadow_capture_restart(macShadowSubsystem* mac)
+{
+	/* ask Quartz first: ScreenCaptureKit would log an error on every try */
+	if (!CGDisplayIsActive(mac->display) || CGDisplayIsAsleep(mac->display))
+		return FALSE;
+
+	mac_capture_free(mac->capture);
+	mac->capture = mac_capture_new(&mac->config);
+	if (!mac->capture)
+		return FALSE;
+
+	if (!mac_capture_start(mac->capture))
+	{
+		mac_capture_free(mac->capture);
+		mac->capture = nullptr;
+		return FALSE;
+	}
+
+	/* the clients get the whole screen again with the first frame */
+	mac_shadow_refresh(mac);
+	return TRUE;
+}
+
 static DWORD WINAPI mac_shadow_subsystem_thread(LPVOID arg)
 {
 	macShadowSubsystem* mac = (macShadowSubsystem*)arg;
 	wMessagePipe* MsgPipe = mac->common.MsgPipe;
-	HANDLE events[] = { mac->stopEvent, MessageQueue_Event(MsgPipe->In), mac->frameEvent };
+	HANDLE events[] = { mac->stopEvent, MessageQueue_Event(MsgPipe->In), mac->frameEvent,
+		                mac->lostEvent };
+	BOOL lost = FALSE;
 
 	while (1)
 	{
-		const DWORD status = WaitForMultipleObjects(ARRAYSIZE(events), events, FALSE, INFINITE);
+		/* without a stream, try to make one again every second */
+		const DWORD status = WaitForMultipleObjects(ARRAYSIZE(events), events, FALSE,
+		                                            lost ? MAC_SHADOW_RESTART_MS : INFINITE);
 		if ((status == WAIT_FAILED) || (WaitForSingleObject(mac->stopEvent, 0) == WAIT_OBJECT_0))
 			break;
+
+		if (WaitForSingleObject(mac->lostEvent, 0) == WAIT_OBJECT_0)
+		{
+			(void)ResetEvent(mac->lostEvent);
+			if (!lost)
+				WLog_WARN(TAG, "the screen is no longer captured (the display is off?): the "
+				               "clients see the last picture until it is back");
+			lost = TRUE;
+		}
+		else if (lost && (status == WAIT_TIMEOUT) && mac_shadow_capture_restart(mac))
+		{
+			WLog_INFO(TAG, "the display is back: capturing the screen again");
+			lost = FALSE;
+		}
 
 		wMessage message = WINPR_C_ARRAY_INIT;
 		while (MessageQueue_Peek(MsgPipe->In, &message, TRUE))
@@ -899,8 +947,9 @@ static int mac_shadow_subsystem_init(rdpShadowSubsystem* subsystem)
 		                              .onAudio = audio ? mac_shadow_on_audio : nullptr,
 		                              .onStopped = mac_shadow_on_stopped,
 		                              .context = mac };
+	mac->config = config;
 
-	mac->capture = mac_capture_new(&config);
+	mac->capture = mac_capture_new(&mac->config);
 	if (!mac->capture)
 		return -1;
 
@@ -934,8 +983,7 @@ static int mac_shadow_subsystem_stop(rdpShadowSubsystem* subsystem)
 	if (!mac)
 		return -1;
 
-	mac_capture_stop(mac->capture);
-
+	/* the thread first: it may be replacing the stream */
 	if (mac->thread)
 	{
 		(void)SetEvent(mac->stopEvent);
@@ -944,7 +992,54 @@ static int mac_shadow_subsystem_stop(rdpShadowSubsystem* subsystem)
 		mac->thread = nullptr;
 	}
 
+	mac_capture_stop(mac->capture);
 	return 1;
+}
+
+/* A connected client keeps the display awake: when it turns off there is
+ * nothing left to capture. The first client also wakes it, if it slept. */
+WINPR_ATTR_NODISCARD
+static BOOL mac_shadow_client_connect(rdpShadowSubsystem* subsystem,
+                                      WINPR_ATTR_UNUSED rdpShadowClient* client)
+{
+	macShadowSubsystem* mac = (macShadowSubsystem*)subsystem;
+	WINPR_ASSERT(mac);
+
+	EnterCriticalSection(&mac->clientLock);
+	if (mac->clients++ == 0)
+	{
+		IOPMAssertionID activity = kIOPMNullAssertionID;
+		if (IOPMAssertionDeclareUserActivity(CFSTR("FreeRDP shadow server: a client connected"),
+		                                     kIOPMUserActiveRemote, &activity) == kIOReturnSuccess)
+			(void)IOPMAssertionRelease(activity);
+
+		if (IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep,
+		                                kIOPMAssertionLevelOn,
+		                                CFSTR("FreeRDP shadow server: clients are connected"),
+		                                &mac->awake) != kIOReturnSuccess)
+		{
+			WLog_WARN(TAG, "could not keep the display awake: when it turns off, the clients "
+			               "see the last picture");
+			mac->awake = kIOPMNullAssertionID;
+		}
+	}
+	LeaveCriticalSection(&mac->clientLock);
+	return TRUE;
+}
+
+static void mac_shadow_client_disconnect(rdpShadowSubsystem* subsystem,
+                                         WINPR_ATTR_UNUSED rdpShadowClient* client)
+{
+	macShadowSubsystem* mac = (macShadowSubsystem*)subsystem;
+	WINPR_ASSERT(mac);
+
+	EnterCriticalSection(&mac->clientLock);
+	if ((mac->clients > 0) && (--mac->clients == 0) && (mac->awake != kIOPMNullAssertionID))
+	{
+		(void)IOPMAssertionRelease(mac->awake);
+		mac->awake = kIOPMNullAssertionID;
+	}
+	LeaveCriticalSection(&mac->clientLock);
 }
 
 WINPR_ATTR_NODISCARD
@@ -980,12 +1075,17 @@ static void mac_shadow_subsystem_free(rdpShadowSubsystem* subsystem)
 		return;
 
 	(void)mac_shadow_subsystem_uninit(subsystem);
+	if (mac->awake != kIOPMNullAssertionID)
+		(void)IOPMAssertionRelease(mac->awake);
 	region16_uninit(&mac->pending);
+	DeleteCriticalSection(&mac->clientLock);
 	DeleteCriticalSection(&mac->frameLock);
 	if (mac->frameEvent)
 		(void)CloseHandle(mac->frameEvent);
 	if (mac->stopEvent)
 		(void)CloseHandle(mac->stopEvent);
+	if (mac->lostEvent)
+		(void)CloseHandle(mac->lostEvent);
 	free(mac);
 }
 
@@ -1004,9 +1104,17 @@ static rdpShadowSubsystem* mac_shadow_subsystem_new(void)
 		return nullptr;
 	}
 
+	if (!InitializeCriticalSectionAndSpinCount(&mac->clientLock, 4000))
+	{
+		DeleteCriticalSection(&mac->frameLock);
+		free(mac);
+		return nullptr;
+	}
+
 	mac->frameEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
 	mac->stopEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
-	if (!mac->frameEvent || !mac->stopEvent)
+	mac->lostEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+	if (!mac->frameEvent || !mac->stopEvent || !mac->lostEvent)
 	{
 		mac_shadow_subsystem_free(&mac->common);
 		return nullptr;
@@ -1017,6 +1125,8 @@ static rdpShadowSubsystem* mac_shadow_subsystem_new(void)
 	mac->common.UnicodeKeyboardEvent = mac_shadow_input_unicode_keyboard_event;
 	mac->common.MouseEvent = mac_shadow_input_mouse_event;
 	mac->common.ExtendedMouseEvent = mac_shadow_input_extended_mouse_event;
+	mac->common.ClientConnect = mac_shadow_client_connect;
+	mac->common.ClientDisconnect = mac_shadow_client_disconnect;
 #ifdef WITH_PAM
 	mac->common.Authenticate = mac_shadow_pam_authenticate;
 #endif
