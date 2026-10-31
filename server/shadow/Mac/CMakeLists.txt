@@ -1,5 +1,6 @@
 # The screen is captured with ScreenCaptureKit (macOS 12.3), the sound it plays
-# too (macOS 13); input is posted with Quartz events.
+# too (macOS 13); input is posted with Quartz events; IOKit keeps the display
+# awake while clients are connected.
 if(CMAKE_OSX_DEPLOYMENT_TARGET AND CMAKE_OSX_DEPLOYMENT_TARGET VERSION_LESS "12.3")
   message(FATAL_ERROR "the mac shadow server subsystem needs macOS 12.3 or later (ScreenCaptureKit)")
 endif()
@@ -9,9 +10,10 @@ find_library(COREMEDIA CoreMedia REQUIRED)
 find_library(COREVIDEO CoreVideo REQUIRED)
 find_library(FOUNDATION Foundation REQUIRED)
 find_library(APPLICATIONSERVICES ApplicationServices REQUIRED)
+find_library(IOKIT IOKit REQUIRED)
 find_package(PAM)
 
-set(LIBS ${SCREENCAPTUREKIT} ${COREMEDIA} ${COREVIDEO} ${FOUNDATION} ${APPLICATIONSERVICES})
+set(LIBS ${SCREENCAPTUREKIT} ${COREMEDIA} ${COREVIDEO} ${FOUNDATION} ${APPLICATIONSERVICES} ${IOKIT})
 
 if(PAM_FOUND)
   add_compile_definitions(WITH_PAM)
