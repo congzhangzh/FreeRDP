@@ -33,6 +33,7 @@ typedef struct mac_shadow_subsystem macShadowSubsystem;
 
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreVideo/CoreVideo.h>
+#include <IOKit/pwr_mgt/IOPMLib.h>
 
 #include "mac_capture.h"
 
@@ -49,7 +50,12 @@ struct mac_shadow_subsystem
 	UINT32 width;
 	UINT32 height;
 
+	/* the stream, how it was made (to make it again) and the event its end
+	 * sets: it ends when the display turns off, and starts again once the
+	 * display is back */
 	macCapture *capture;
+	macCaptureConfig config;
+	HANDLE lostEvent;
 	HANDLE thread;
 	HANDLE stopEvent;
 
@@ -71,6 +77,11 @@ struct mac_shadow_subsystem
 
 	/* sound: samples gathered into messages of 20 ms */
 	wStream *audioStream;
+
+	/* while clients are connected the display stays awake, under clientLock */
+	CRITICAL_SECTION clientLock;
+	UINT32 clients;
+	IOPMAssertionID awake;
 };
 
 #endif /* FREERDP_SERVER_SHADOW_MAC_SHADOW_H */
