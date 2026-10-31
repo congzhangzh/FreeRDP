@@ -36,6 +36,7 @@ typedef struct mac_shadow_subsystem macShadowSubsystem;
 #include <IOKit/pwr_mgt/IOPMLib.h>
 
 #include "mac_capture.h"
+#include "mac_cursor.h"
 
 #define MAC_SHADOW_MAX_DISPLAYS 16
 
@@ -78,10 +79,19 @@ struct mac_shadow_subsystem
 	/* sound: samples gathered into messages of 20 ms */
 	wStream *audioStream;
 
-	/* while clients are connected the display stays awake, under clientLock */
+	/* the cursor: the clients draw it themselves, from its shape and position */
+	UINT32 cursorHash;
+	BOOL cursorKnown;
+	UINT64 cursorNext;
+
+	/* under clientLock: the clients connected (the display stays awake while
+	 * there are any), when one last moved the pointer, and whether a client
+	 * asked for the whole screen, cursor included */
 	CRITICAL_SECTION clientLock;
 	UINT32 clients;
 	IOPMAssertionID awake;
+	UINT64 pointerInput;
+	BOOL cursorResend;
 };
 
 #endif /* FREERDP_SERVER_SHADOW_MAC_SHADOW_H */
