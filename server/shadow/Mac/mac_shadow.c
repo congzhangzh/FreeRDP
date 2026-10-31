@@ -54,6 +54,8 @@
 #define MAC_SHADOW_CURSOR_QUIET_MS 500
 /* the largest cursor sent, in points */
 #define MAC_SHADOW_CURSOR_MAX 96
+/* how often the sound statistics are logged (debug level) */
+#define MAC_SHADOW_AUDIO_LOG_MS 5000
 
 /* Two clicks closer than this, in time and in points, make a double click */
 #define MAC_SHADOW_CLICK_MS 500
@@ -611,6 +613,7 @@ static void mac_shadow_audio_post(macShadowSubsystem* mac, wStream* s)
 	}
 
 	memcpy(msg->buf, Stream_Buffer(s), size);
+	mac->audioMessages++;
 	msg->common.Free = mac_shadow_audio_msg_free;
 	msg->audio_format = &mac_audio_source_format;
 	msg->nFrames = size / MAC_AUDIO_FRAME_BYTES;
@@ -642,11 +645,35 @@ static void mac_shadow_on_audio(void* context, const float* samples, size_t fram
 		return;
 	}
 
+	const UINT64 now = GetTickCount64();
+	if (mac->audioLogged == 0)
+	{
+		WLog_INFO(TAG, "sound: capturing %" PRIu32 " Hz, %" PRIu32 " channels", rate, channels);
+		mac->audioLogged = now;
+	}
+	else if (now - mac->audioLogged >= MAC_SHADOW_AUDIO_LOG_MS)
+	{
+		WLog_DBG(TAG,
+		         "sound: %" PRIu64 " frames captured, %" PRIu64
+		         " messages sent, peak %.3f in the last %" PRIu64 " ms",
+		         mac->audioFrames, mac->audioMessages, (double)mac->audioPeak,
+		         now - mac->audioLogged);
+		mac->audioFrames = 0;
+		mac->audioMessages = 0;
+		mac->audioPeak = 0.0f;
+		mac->audioLogged = now;
+	}
+	mac->audioFrames += frames;
+
 	wStream* s = mac->audioStream;
 	for (size_t f = 0; f < frames; f++)
 	{
 		for (UINT32 c = 0; c < channels; c++)
-			Stream_Write_INT16(s, mac_shadow_audio_sample(samples[f * channels + c]));
+		{
+			const float value = samples[f * channels + c];
+			mac->audioPeak = MAX(mac->audioPeak, fabsf(value));
+			Stream_Write_INT16(s, mac_shadow_audio_sample(value));
+		}
 
 		if (Stream_GetPosition(s) >= MAC_AUDIO_MESSAGE_FRAMES * MAC_AUDIO_FRAME_BYTES)
 			mac_shadow_audio_post(mac, s);
