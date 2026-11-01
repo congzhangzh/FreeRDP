@@ -60,6 +60,10 @@ struct mac_shadow_subsystem
 	macCapture *capture;
 	macCaptureConfig config;
 	HANDLE lostEvent;
+	/* set when the displays changed (another display mode, or as a daemon the session on the
+	 * console changed to one with other displays): the surface follows them */
+	HANDLE displaysEvent;
+	BOOL reconfigureRegistered;
 	HANDLE thread;
 	HANDLE stopEvent;
 
