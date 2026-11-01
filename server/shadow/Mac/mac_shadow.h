@@ -63,7 +63,7 @@ struct mac_shadow_subsystem
 	/* set when the displays changed (another display mode, or as a daemon the session on the
 	 * console changed to one with other displays): the surface follows them */
 	HANDLE displaysEvent;
-	BOOL reconfigureRegistered;
+	UINT64 displaysChecked;
 	HANDLE thread;
 	HANDLE stopEvent;
 
