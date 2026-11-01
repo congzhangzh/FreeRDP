@@ -38,6 +38,8 @@ typedef struct mac_shadow_subsystem macShadowSubsystem;
 
 #include "mac_capture.h"
 #include "mac_cursor.h"
+#include "mac_input.h"
+#include "mac_remote.h"
 
 #define MAC_SHADOW_MAX_DISPLAYS 16
 
@@ -68,11 +70,11 @@ struct mac_shadow_subsystem
 	HANDLE frameEvent;
 	BOOL sizeWarned;
 
-	/* running as root (a login-window agent): input goes to the HID system
-	 * itself, past Secure Event Input; MACH_PORT_NULL otherwise */
-	io_connect_t hid;
-	UINT64 hidRefused; /* events the HID system refused, for the log */
-	BOOL unicodeWarned;
+	/* where input goes: Quartz, or the HID system as root at the login window */
+	macInput input;
+	/* the server runs as a root daemon (FREERDP_SHADOW_MAC_AGENT_SERVICE): capture, cursor
+	 * and input are an agent's, in the session on the console; nullptr otherwise */
+	macRemote *remote;
 
 	/* input state: mouse buttons down, modifiers down, the last click */
 	UINT32 buttonsDown;
