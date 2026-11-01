@@ -527,7 +527,7 @@ int TestFreeRDPCodecH264(int argc, char* argv[])
 		}
 	}
 
-	/* The shared flag includes all H.264 backends, including decoder-only VideoToolbox. */
+	/* The shared flag includes all H.264 backends. */
 #if !defined(WITH_GFX_H264)
 	(void)fprintf(stderr, "[%s] skipping, no H264 encoder/decoder support compiled in\n", __func__);
 	return 0;
@@ -559,7 +559,7 @@ int TestFreeRDPCodecH264(int argc, char* argv[])
 		return -1;
 
 #if defined(WITH_MEDIA_FOUNDATION) || defined(WITH_OPENH264) || defined(WITH_VIDEO_FFMPEG) || \
-    defined(WITH_MEDIACODEC)
+    defined(WITH_MEDIACODEC) || defined(WITH_APPLE_VIDEOTOOLBOX)
 #if defined(WITH_MEDIA_FOUNDATION)
 	/* Windows ships the Media Foundation H.264 encoder, but not every edition: N editions
 	 * and Windows Server without the Media Foundation feature have none. */
