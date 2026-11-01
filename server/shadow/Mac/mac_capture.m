@@ -274,6 +274,34 @@ static SCDisplay *mac_capture_find_display(CGDirectDisplayID displayID)
 			return display;
 	}
 
+	/* At the login window (as root) Quartz may name the display differently from
+	 * ScreenCaptureKit (CGGetActiveDisplayList said 26 and 28 where ScreenCaptureKit had 1):
+	 * take the one display of the same size, or the only display there is */
+	const CGRect bounds = CGDisplayBounds(displayID);
+	SCDisplay *sameSize = nil;
+	NSUInteger matches = 0;
+	for (SCDisplay *display in content.displays)
+	{
+		if ((display.width == (NSInteger)bounds.size.width) &&
+		    (display.height == (NSInteger)bounds.size.height))
+		{
+			sameSize = display;
+			matches++;
+		}
+	}
+	SCDisplay *chosen = (matches == 1)                  ? sameSize
+	                    : (content.displays.count == 1) ? content.displays.firstObject
+	                                                    : nil;
+	if (chosen)
+	{
+		WLog_INFO(TAG,
+		          "display %" PRIu32 " is not among the ones that can be captured: capturing "
+		          "display %" PRIu32 " (%ldx%ld), %s",
+		          displayID, (UINT32)chosen.displayID, (long)chosen.width, (long)chosen.height,
+		          (matches == 1) ? "the one of the same size" : "the only one");
+		return chosen;
+	}
+
 	WLog_ERR(TAG, "display %" PRIu32 " is not among the ones that can be captured", displayID);
 	return nil;
 }
