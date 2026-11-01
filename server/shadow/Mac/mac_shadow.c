@@ -652,9 +652,11 @@ static int mac_shadow_pam_conv(int num_msg, const struct pam_message** msg,
 	return PAM_SUCCESS;
 }
 
-/* The screen shared is the one of the user running the server: only that
- * user may log in, with the password of their account (checked by Open
- * Directory, through PAM's "checkpw" service). */
+/* Who may log in, with the password of their account (checked by Open Directory, through
+ * PAM's "checkpw" service):
+ * - in a user's session the screen shared is that user's: only that user;
+ * - at the login window (launchd runs the server as root there) any local user but root:
+ *   the client then sees the login window and still has to log in there, as at the Mac. */
 WINPR_ATTR_NODISCARD
 static int mac_shadow_pam_authenticate(WINPR_ATTR_UNUSED rdpShadowSubsystem* subsystem,
                                        WINPR_ATTR_UNUSED rdpShadowClient* client, const char* user,
@@ -663,12 +665,25 @@ static int mac_shadow_pam_authenticate(WINPR_ATTR_UNUSED rdpShadowSubsystem* sub
 	if (!user || !password)
 		return -1;
 
-	const struct passwd* owner = getpwuid(getuid());
-	if (!owner || !owner->pw_name || (strcmp(owner->pw_name, user) != 0))
+	if (getuid() == 0)
 	{
-		WLog_ERR(TAG, "login as '%s' refused: this screen belongs to '%s'", user,
-		         (owner && owner->pw_name) ? owner->pw_name : "?");
-		return -1;
+		const struct passwd* account = getpwnam(user);
+		if (!account || (account->pw_uid == 0))
+		{
+			WLog_ERR(TAG, "login as '%s' refused at the login window: %s", user,
+			         account ? "not as root" : "no such user");
+			return -1;
+		}
+	}
+	else
+	{
+		const struct passwd* owner = getpwuid(getuid());
+		if (!owner || !owner->pw_name || (strcmp(owner->pw_name, user) != 0))
+		{
+			WLog_ERR(TAG, "login as '%s' refused: this screen belongs to '%s'", user,
+			         (owner && owner->pw_name) ? owner->pw_name : "?");
+			return -1;
+		}
 	}
 
 	MAC_SHADOW_PAM_DATA data = { .user = user, .password = password };
