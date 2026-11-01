@@ -61,6 +61,10 @@ static BOOL g_cursorKnown;
 static CGPoint g_location;
 static BOOL g_locationKnown;
 
+/* the displays the last hello announced (see agent_displays_tick) */
+static UINT32 g_displaysHash;
+static UINT32 agent_displays_hash(void);
+
 static void agent_send(xpc_object_t msg)
 {
 	xpc_connection_send_message(g_server, msg);
@@ -103,26 +107,45 @@ static void agent_send_hello(void)
 	xpc_dictionary_set_value(msg, "displays", displays);
 	xpc_release(displays);
 	agent_send(msg);
+	g_displaysHash = agent_displays_hash();
 	WLog_INFO(TAG, "hello sent: uid %u, %u display(s)", (unsigned)getuid(), count);
 }
 
 /* a display mode change (or a display added or gone): tell the server, which resizes and asks
- * for the capture again; the callback comes several times per change, the hello once */
-static atomic_bool g_helloPending;
-
-static void agent_display_reconfigured(WINPR_ATTR_UNUSED CGDirectDisplayID display,
-                                       CGDisplayChangeSummaryFlags flags,
-                                       WINPR_ATTR_UNUSED void *context)
+ * for the capture again. Checked once a second: a display reconfiguration callback is only
+ * delivered to a process with an application's window server connection, not to this agent. */
+#define MAC_AGENT_DISPLAYS_MS 1000
+static dispatch_source_t g_displaysTimer;
+static UINT32 agent_displays_hash(void)
 {
-	if ((flags & kCGDisplayBeginConfigurationFlag) != 0)
+	CGDirectDisplayID active[MAC_AGENT_MAX_DISPLAYS] = { 0 };
+	uint32_t count = 0;
+	if (CGGetActiveDisplayList(MAC_AGENT_MAX_DISPLAYS, active, &count) != kCGErrorSuccess)
+		count = 0;
+	UINT32 hash = 2166136261u ^ count;
+	for (uint32_t x = 0; x < count; x++)
+	{
+		const CGRect rect = CGDisplayBounds(active[x]);
+		const double values[] = { active[x], rect.origin.x, rect.origin.y, rect.size.width,
+			                      rect.size.height };
+		const BYTE *bytes = (const BYTE *)values;
+		for (size_t y = 0; y < sizeof(values); y++)
+		{
+			hash ^= bytes[y];
+			hash *= 16777619u;
+		}
+	}
+	return hash;
+}
+
+static void agent_displays_tick(void)
+{
+	const UINT32 hash = agent_displays_hash();
+	if (hash == g_displaysHash)
 		return;
-	if (atomic_exchange(&g_helloPending, true))
-		return;
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), g_queue, ^{
-		atomic_store(&g_helloPending, false);
-		WLog_INFO(TAG, "the displays changed");
-		agent_send_hello();
-	});
+	g_displaysHash = hash;
+	WLog_INFO(TAG, "the displays changed");
+	agent_send_hello();
 }
 
 static void agent_on_frame(WINPR_ATTR_UNUSED void *context, CVPixelBufferRef frame,
@@ -350,7 +373,15 @@ int main(int argc, char *argv[])
 		dispatch_async(g_queue, ^{
 			agent_send_hello();
 		});
-		(void)CGDisplayRegisterReconfigurationCallback(agent_display_reconfigured, nullptr);
+		g_displaysTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, g_queue);
+		dispatch_source_set_timer(
+		    g_displaysTimer,
+		    dispatch_time(DISPATCH_TIME_NOW, MAC_AGENT_DISPLAYS_MS * NSEC_PER_MSEC),
+		    MAC_AGENT_DISPLAYS_MS * NSEC_PER_MSEC, 100 * NSEC_PER_MSEC);
+		dispatch_source_set_event_handler(g_displaysTimer, ^{
+			agent_displays_tick();
+		});
+		dispatch_resume(g_displaysTimer);
 
 		/* the main run loop: AppKit (the cursor) and ScreenCaptureKit may want one */
 		CFRunLoopRun();
