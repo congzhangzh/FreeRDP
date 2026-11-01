@@ -972,11 +972,16 @@ static void mac_shadow_cursor_update(macShadowSubsystem* mac, UINT64 now)
 		LeaveCriticalSection(&mac->clientLock);
 
 		const UINT32 hash = mac_shadow_cursor_hash(&image);
-		if ((resend || !mac->cursorKnown || (hash != mac->cursorHash)) &&
-		    mac_shadow_cursor_send_shape(mac, &image))
+		if (resend || !mac->cursorKnown || (hash != mac->cursorHash))
 		{
-			mac->cursorHash = hash;
-			mac->cursorKnown = TRUE;
+			const BOOL sent = mac_shadow_cursor_send_shape(mac, &image);
+			WLog_DBG(TAG, "cursor %" PRIu32 "x%" PRIu32 " to the clients: %s", image.width,
+			         image.height, sent ? "sent" : "FAILED");
+			if (sent)
+			{
+				mac->cursorHash = hash;
+				mac->cursorKnown = TRUE;
+			}
 		}
 		mac_cursor_image_free(&image);
 	}
@@ -1288,6 +1293,12 @@ static int mac_shadow_subsystem_init(rdpShadowSubsystem* subsystem)
 	mac->height = (UINT32)(monitor->bottom - monitor->top + 1);
 
 	mac_shadow_set_virtual_screen(subsystem, count);
+
+	/* the frames never carry the cursor (ScreenCaptureKit leaves it out): the clients draw it,
+	 * from the shapes the server sends. Without this the server sends them the default arrow
+	 * instead (ShowMouseCursor is otherwise only set by /server-side-cursor). */
+	if (subsystem->server)
+		subsystem->server->ShowMouseCursor = TRUE;
 
 	WLog_INFO(TAG,
 	          "sharing display %" PRIu32 " (%" PRIu32 " of %" PRIu32 "): %" PRIu32 "x%" PRIu32

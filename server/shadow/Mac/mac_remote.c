@@ -280,6 +280,7 @@ static void mac_remote_on_cursor(macRemote* remote, xpc_object_t msg)
 	remote->cursor.yHot = (UINT32)xpc_dictionary_get_uint64(msg, "yhot");
 	remote->cursorValid = TRUE;
 	LeaveCriticalSection(&remote->lock);
+	WLog_DBG(TAG, "cursor %" PRIu32 "x%" PRIu32 " from the agent", width, height);
 }
 
 static void mac_remote_on_message(macRemote* remote, xpc_connection_t peer, xpc_object_t msg)
