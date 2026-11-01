@@ -1043,12 +1043,129 @@ static BOOL mac_shadow_capture_restart(macShadowSubsystem* mac)
 	return TRUE;
 }
 
+/* the virtual screen spans every monitor (they start at 0, see mac_shadow_list_displays) */
+static void mac_shadow_set_virtual_screen(rdpShadowSubsystem* subsystem, UINT32 count)
+{
+	MONITOR_DEF* virtualScreen = &subsystem->virtualScreen;
+	virtualScreen->left = 0;
+	virtualScreen->top = 0;
+	virtualScreen->right = 0;
+	virtualScreen->bottom = 0;
+	for (UINT32 x = 0; x < count; x++)
+	{
+		virtualScreen->right = MAX(virtualScreen->right, subsystem->monitors[x].right);
+		virtualScreen->bottom = MAX(virtualScreen->bottom, subsystem->monitors[x].bottom);
+	}
+	virtualScreen->flags = 1;
+}
+
+static void mac_shadow_display_reconfigured(WINPR_ATTR_UNUSED CGDirectDisplayID display,
+                                            CGDisplayChangeSummaryFlags flags, void* context)
+{
+	macShadowSubsystem* mac = (macShadowSubsystem*)context;
+	if (mac && ((flags & kCGDisplayBeginConfigurationFlag) == 0))
+		(void)SetEvent(mac->displaysEvent);
+}
+
+static void mac_shadow_capture_stop_now(macShadowSubsystem* mac)
+{
+	if (mac->remote)
+		mac_remote_capture_stop(mac->remote);
+	else if (mac->capture)
+	{
+		mac_capture_stop(mac->capture);
+		mac_capture_free(mac->capture);
+		mac->capture = nullptr;
+	}
+}
+
+/* The displays changed: the surface takes the new size of the display shared, the clients
+ * get a desktop resize from the server, and the capture starts again at the new size. As a
+ * daemon this is also the handover to a session whose displays differ from the last one. */
+static void mac_shadow_displays_changed(macShadowSubsystem* mac)
+{
+	rdpShadowSubsystem* subsystem = &mac->common;
+	MONITOR_DEF monitors[MAC_SHADOW_MAX_DISPLAYS] = WINPR_C_ARRAY_INIT;
+	CGDirectDisplayID ids[MAC_SHADOW_MAX_DISPLAYS] = WINPR_C_ARRAY_INIT;
+	CGRect bounds[MAC_SHADOW_MAX_DISPLAYS] = WINPR_C_ARRAY_INIT;
+
+	/* no waiting here: the agent that said hello is there */
+	const UINT32 count =
+	    mac->remote ? mac_remote_list_displays(mac->remote, 0, monitors, ids, bounds,
+	                                           MAC_SHADOW_MAX_DISPLAYS)
+	                : mac_shadow_list_displays(monitors, ids, bounds, MAC_SHADOW_MAX_DISPLAYS);
+	if (count == 0)
+		return;
+
+	UINT32 selected = 0;
+	for (UINT32 x = 0; x < count; x++)
+	{
+		if (ids[x] == mac->display)
+			selected = x; /* the same display if it is still there */
+	}
+	const MONITOR_DEF* monitor = &monitors[selected];
+	const UINT32 width = (UINT32)(monitor->right - monitor->left + 1);
+	const UINT32 height = (UINT32)(monitor->bottom - monitor->top + 1);
+
+	if ((ids[selected] == mac->display) && CGRectEqualToRect(bounds[selected], mac->bounds) &&
+	    (width == mac->width) && (height == mac->height) && (count == subsystem->numMonitors))
+	{
+		/* nothing the surface has to follow (a display mode with the same size in points) */
+		if (mac->remote && !mac_remote_capture_start(mac->remote, &mac->config))
+			(void)SetEvent(mac->lostEvent);
+		return;
+	}
+
+	WLog_INFO(TAG,
+	          "the displays changed: sharing display %" PRIu32 " (%" PRIu32 " of %" PRIu32
+	          "), %" PRIu32 "x%" PRIu32 " (was %" PRIu32 "x%" PRIu32 ")",
+	          ids[selected], selected, count, width, height, mac->width, mac->height);
+
+	mac_shadow_capture_stop_now(mac);
+
+	memcpy(subsystem->monitors, monitors, sizeof(MONITOR_DEF) * count);
+	subsystem->numMonitors = count;
+	subsystem->selectedMonitor = selected;
+	mac_shadow_set_virtual_screen(subsystem, count);
+	mac->display = ids[selected];
+	mac->bounds = bounds[selected];
+	mac->width = width;
+	mac->height = height;
+	mac->config.display = mac->display;
+	mac->config.width = width;
+	mac->config.height = height;
+
+	/* a frame of the old size is no use any more */
+	EnterCriticalSection(&mac->frameLock);
+	if (mac->frame)
+		CVPixelBufferRelease(mac->frame);
+	mac->frame = nullptr;
+	region16_clear(&mac->pending);
+	LeaveCriticalSection(&mac->frameLock);
+	mac->sizeWarned = FALSE;
+
+	if (!shadow_screen_resize(subsystem->server->screen))
+		WLog_ERR(TAG, "the surface could not take the new size");
+
+	BOOL started = FALSE;
+	if (mac->remote)
+		started = mac_remote_capture_start(mac->remote, &mac->config);
+	else
+	{
+		mac->capture = mac_capture_new(&mac->config);
+		started = mac->capture && mac_capture_start(mac->capture);
+	}
+	if (!started)
+		(void)SetEvent(mac->lostEvent); /* tried again every second */
+	mac_shadow_refresh(mac);
+}
+
 static DWORD WINAPI mac_shadow_subsystem_thread(LPVOID arg)
 {
 	macShadowSubsystem* mac = (macShadowSubsystem*)arg;
 	wMessagePipe* MsgPipe = mac->common.MsgPipe;
 	HANDLE events[] = { mac->stopEvent, MessageQueue_Event(MsgPipe->In), mac->frameEvent,
-		                mac->lostEvent };
+		                mac->lostEvent, mac->displaysEvent };
 	BOOL lost = FALSE;
 	UINT64 restart = 0;
 
@@ -1064,6 +1181,12 @@ static DWORD WINAPI mac_shadow_subsystem_thread(LPVOID arg)
 		const DWORD status = WaitForMultipleObjects(ARRAYSIZE(events), events, FALSE, timeout);
 		if ((status == WAIT_FAILED) || (WaitForSingleObject(mac->stopEvent, 0) == WAIT_OBJECT_0))
 			break;
+
+		if (WaitForSingleObject(mac->displaysEvent, 0) == WAIT_OBJECT_0)
+		{
+			(void)ResetEvent(mac->displaysEvent);
+			mac_shadow_displays_changed(mac);
+		}
 
 		const UINT64 now = GetTickCount64();
 		if (WaitForSingleObject(mac->lostEvent, 0) == WAIT_OBJECT_0)
@@ -1154,17 +1277,7 @@ static int mac_shadow_subsystem_init(rdpShadowSubsystem* subsystem)
 	mac->width = (UINT32)(monitor->right - monitor->left + 1);
 	mac->height = (UINT32)(monitor->bottom - monitor->top + 1);
 
-	MONITOR_DEF* virtualScreen = &subsystem->virtualScreen;
-	virtualScreen->left = 0;
-	virtualScreen->top = 0;
-	virtualScreen->right = 0;
-	virtualScreen->bottom = 0;
-	for (UINT32 x = 0; x < count; x++)
-	{
-		virtualScreen->right = MAX(virtualScreen->right, subsystem->monitors[x].right);
-		virtualScreen->bottom = MAX(virtualScreen->bottom, subsystem->monitors[x].bottom);
-	}
-	virtualScreen->flags = 1;
+	mac_shadow_set_virtual_screen(subsystem, count);
 
 	WLog_INFO(TAG,
 	          "sharing display %" PRIu32 " (%" PRIu32 " of %" PRIu32 "): %" PRIu32 "x%" PRIu32
@@ -1217,7 +1330,14 @@ static int mac_shadow_subsystem_init(rdpShadowSubsystem* subsystem)
 	mac->config = config;
 
 	if (mac->remote)
+	{
+		mac_remote_set_displays_event(mac->remote, mac->displaysEvent);
 		return 1; /* the agent captures, from Start on */
+	}
+
+	/* a display mode change: the surface follows it */
+	mac->reconfigureRegistered = (CGDisplayRegisterReconfigurationCallback(
+	                                  mac_shadow_display_reconfigured, mac) == kCGErrorSuccess);
 
 	mac->capture = mac_capture_new(&mac->config);
 	if (!mac->capture)
@@ -1356,9 +1476,13 @@ static void mac_shadow_subsystem_free(rdpShadowSubsystem* subsystem)
 		return;
 
 	(void)mac_shadow_subsystem_uninit(subsystem);
+	if (mac->reconfigureRegistered)
+		(void)CGDisplayRemoveReconfigurationCallback(mac_shadow_display_reconfigured, mac);
+	mac->reconfigureRegistered = FALSE;
 	mac_input_close(&mac->input);
 	if (mac->remote)
 	{
+		mac_remote_set_displays_event(mac->remote, nullptr);
 		mac_remote_free(mac->remote);
 		mac->remote = nullptr;
 		s_remote = nullptr;
@@ -1374,6 +1498,8 @@ static void mac_shadow_subsystem_free(rdpShadowSubsystem* subsystem)
 		(void)CloseHandle(mac->stopEvent);
 	if (mac->lostEvent)
 		(void)CloseHandle(mac->lostEvent);
+	if (mac->displaysEvent)
+		(void)CloseHandle(mac->displaysEvent);
 	free(mac);
 }
 
@@ -1402,7 +1528,8 @@ static rdpShadowSubsystem* mac_shadow_subsystem_new(void)
 	mac->frameEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
 	mac->stopEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
 	mac->lostEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
-	if (!mac->frameEvent || !mac->stopEvent || !mac->lostEvent)
+	mac->displaysEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+	if (!mac->frameEvent || !mac->stopEvent || !mac->lostEvent || !mac->displaysEvent)
 	{
 		mac_shadow_subsystem_free(&mac->common);
 		return nullptr;

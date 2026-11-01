@@ -106,6 +106,25 @@ static void agent_send_hello(void)
 	WLog_INFO(TAG, "hello sent: uid %u, %u display(s)", (unsigned)getuid(), count);
 }
 
+/* a display mode change (or a display added or gone): tell the server, which resizes and asks
+ * for the capture again; the callback comes several times per change, the hello once */
+static atomic_bool g_helloPending;
+
+static void agent_display_reconfigured(WINPR_ATTR_UNUSED CGDirectDisplayID display,
+                                       CGDisplayChangeSummaryFlags flags,
+                                       WINPR_ATTR_UNUSED void *context)
+{
+	if ((flags & kCGDisplayBeginConfigurationFlag) != 0)
+		return;
+	if (atomic_exchange(&g_helloPending, true))
+		return;
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), g_queue, ^{
+		atomic_store(&g_helloPending, false);
+		WLog_INFO(TAG, "the displays changed");
+		agent_send_hello();
+	});
+}
+
 static void agent_on_frame(WINPR_ATTR_UNUSED void *context, CVPixelBufferRef frame,
                            const CGRect *dirty, size_t count)
 {
@@ -128,12 +147,11 @@ static void agent_on_frame(WINPR_ATTR_UNUSED void *context, CVPixelBufferRef fra
 
 	CVPixelBufferRetain(frame);
 	atomic_fetch_add(&g_inFlight, 1);
-	xpc_connection_send_message_with_reply(g_server, msg, g_queue,
-	                                       ^(xpc_object_t reply) {
-		                                       (void)reply;
-		                                       CVPixelBufferRelease(frame);
-		                                       atomic_fetch_sub(&g_inFlight, 1);
-	                                       });
+	xpc_connection_send_message_with_reply(g_server, msg, g_queue, ^(xpc_object_t reply) {
+		(void)reply;
+		CVPixelBufferRelease(frame);
+		atomic_fetch_sub(&g_inFlight, 1);
+	});
 	xpc_release(msg);
 }
 
@@ -332,6 +350,7 @@ int main(int argc, char *argv[])
 		dispatch_async(g_queue, ^{
 			agent_send_hello();
 		});
+		(void)CGDisplayRegisterReconfigurationCallback(agent_display_reconfigured, nullptr);
 
 		/* the main run loop: AppKit (the cursor) and ScreenCaptureKit may want one */
 		CFRunLoopRun();
