@@ -34,8 +34,26 @@ else()
 endif()
 
 add_compile_definitions(WITH_SHADOW_MAC)
-add_library(
-  freerdp-shadow-subsystem-impl STATIC mac_shadow.h mac_shadow.c mac_capture.h mac_capture.m mac_cursor.h mac_cursor.m
+find_library(IOSURFACE IOSurface REQUIRED)
+list(APPEND LIBS ${IOSURFACE})
+
+set(MAC_COMMON
+    mac_capture.h
+    mac_capture.m
+    mac_cursor.h
+    mac_cursor.m
+    mac_input.h
+    mac_input.c
+    mac_ipc.h
 )
+add_library(freerdp-shadow-subsystem-impl STATIC mac_shadow.h mac_shadow.c mac_remote.h mac_remote.c ${MAC_COMMON})
 set_source_files_properties(mac_capture.m mac_cursor.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+# without ARC: the agent releases its XPC objects itself (xpc_release)
+set_source_files_properties(mac_agent.m PROPERTIES COMPILE_OPTIONS "-fno-objc-arc")
 target_link_libraries(freerdp-shadow-subsystem-impl PRIVATE ${LIBS})
+
+# The agent: the server's capture and input in a session when the server runs as a root
+# daemon (launchd starts the agent in the session on the console; see mac_ipc.h)
+add_executable(freerdp-shadow-agent mac_agent.m ${MAC_COMMON})
+target_link_libraries(freerdp-shadow-agent PRIVATE winpr freerdp ${LIBS})
+install(TARGETS freerdp-shadow-agent DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT server)
