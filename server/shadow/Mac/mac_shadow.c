@@ -135,9 +135,18 @@ static CGEventFlags mac_shadow_modifier_flag(CGKeyCode keycode)
 /* The active displays, with their monitor rectangles moved so that the
  * leftmost and topmost one start at 0 (the shadow surface cannot start
  * below 0); bounds are left in global display coordinates. */
+/* in daemon mode the agent on the console knows the displays (the daemon has no window
+ * server); one subsystem per process, so the monitor callback finds it here */
+static macRemote* s_remote = nullptr;
+#define MAC_SHADOW_AGENT_WAIT_MS 60000
+
 static UINT32 mac_shadow_list_displays(MONITOR_DEF* monitors, CGDirectDisplayID* ids,
                                        CGRect* bounds, UINT32 maxMonitors)
 {
+	if (s_remote)
+		return mac_remote_list_displays(s_remote, MAC_SHADOW_AGENT_WAIT_MS, monitors, ids, bounds,
+		                                maxMonitors);
+
 	CGDirectDisplayID active[MAC_SHADOW_MAX_DISPLAYS] = WINPR_C_ARRAY_INIT;
 	uint32_t count = 0;
 
@@ -180,152 +189,11 @@ static UINT32 mac_shadow_enum_monitors(MONITOR_DEF* monitors, UINT32 maxMonitors
 	return mac_shadow_list_displays(monitors, nullptr, nullptr, maxMonitors);
 }
 
-/* At the login window Secure Event Input drops every event posted through
- * Quartz, whatever the tap or the event source; an event posted to the HID
- * system itself still arrives, as from a real keyboard or mouse. That takes
- * IOHIDPostEvent, deprecated since macOS 11 but the only way there, and root.
- * The event is built with Quartz as everywhere else and handed over field by
- * field (the NX_* flag masks have the values of the Quartz ones). */
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-static io_connect_t mac_shadow_hid_open(void)
-{
-	io_connect_t connect = MACH_PORT_NULL;
-	io_service_t service =
-	    IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(kIOHIDSystemClass));
-	if (!service)
-		return MACH_PORT_NULL;
-
-	const kern_return_t rc =
-	    IOServiceOpen(service, mach_task_self(), kIOHIDParamConnectType, &connect);
-	IOObjectRelease(service);
-	return (rc == KERN_SUCCESS) ? connect : MACH_PORT_NULL;
-}
-
-static BOOL mac_shadow_hid_post(macShadowSubsystem* mac, CGEventRef event)
-{
-	const CGEventType type = CGEventGetType(event);
-	const CGPoint where = CGEventGetLocation(event);
-	const IOGPoint location = { (SInt16)lround(where.x), (SInt16)lround(where.y) };
-	NXEventData data = { 0 };
-	UInt32 nxType = 0;
-	IOOptionBits options = 0;
-
-	switch (type)
-	{
-		case kCGEventKeyDown:
-		case kCGEventKeyUp:
-		case kCGEventFlagsChanged:
-		{
-			UniChar text[4] = { 0 };
-			UniCharCount length = 0;
-			CGEventKeyboardGetUnicodeString(event, ARRAYSIZE(text), &length, text);
-			const UInt16 character = ((length > 0) && (text[0] < 0x80)) ? text[0] : 0;
-
-			data.key.keyCode = (UInt16)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
-			data.key.repeat =
-			    (SInt16)CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat);
-			data.key.charSet = NX_ASCIISET;
-			data.key.charCode = character;
-			data.key.origCharSet = NX_ASCIISET;
-			data.key.origCharCode = character;
-			if (type == kCGEventFlagsChanged)
-			{
-				nxType = NX_FLAGSCHANGED;
-				options = kIOHIDSetGlobalEventFlags;
-			}
-			else
-				nxType = (type == kCGEventKeyDown) ? NX_KEYDOWN : NX_KEYUP;
-			break;
-		}
-
-		case kCGEventMouseMoved:
-		case kCGEventLeftMouseDragged:
-		case kCGEventRightMouseDragged:
-		case kCGEventOtherMouseDragged:
-			nxType = (type == kCGEventMouseMoved)          ? NX_MOUSEMOVED
-			         : (type == kCGEventLeftMouseDragged)  ? NX_LMOUSEDRAGGED
-			         : (type == kCGEventRightMouseDragged) ? NX_RMOUSEDRAGGED
-			                                               : NX_OMOUSEDRAGGED;
-			options = kIOHIDSetCursorPosition;
-			break;
-
-		case kCGEventLeftMouseDown:
-		case kCGEventLeftMouseUp:
-		case kCGEventRightMouseDown:
-		case kCGEventRightMouseUp:
-		case kCGEventOtherMouseDown:
-		case kCGEventOtherMouseUp:
-		{
-			const BOOL down = (type == kCGEventLeftMouseDown) || (type == kCGEventRightMouseDown) ||
-			                  (type == kCGEventOtherMouseDown);
-			nxType = (type == kCGEventLeftMouseDown)    ? NX_LMOUSEDOWN
-			         : (type == kCGEventLeftMouseUp)    ? NX_LMOUSEUP
-			         : (type == kCGEventRightMouseDown) ? NX_RMOUSEDOWN
-			         : (type == kCGEventRightMouseUp)   ? NX_RMOUSEUP
-			         : (type == kCGEventOtherMouseDown) ? NX_OMOUSEDOWN
-			                                            : NX_OMOUSEUP;
-			data.mouse.click = (SInt32)CGEventGetIntegerValueField(event, kCGMouseEventClickState);
-			data.mouse.buttonNumber =
-			    (UInt8)CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber);
-			data.mouse.pressure = down ? 255 : 0;
-			options = kIOHIDSetCursorPosition;
-			break;
-		}
-
-		case kCGEventScrollWheel:
-			nxType = NX_SCROLLWHEELMOVED;
-			data.scrollWheel.deltaAxis1 =
-			    (SInt16)CGEventGetIntegerValueField(event, kCGScrollWheelEventDeltaAxis1);
-			data.scrollWheel.deltaAxis2 =
-			    (SInt16)CGEventGetIntegerValueField(event, kCGScrollWheelEventDeltaAxis2);
-			/* 16.16 fixed point */
-			data.scrollWheel.fixedDeltaAxis1 = (SInt32)lround(
-			    CGEventGetDoubleValueField(event, kCGScrollWheelEventFixedPtDeltaAxis1) * 65536.0);
-			data.scrollWheel.fixedDeltaAxis2 = (SInt32)lround(
-			    CGEventGetDoubleValueField(event, kCGScrollWheelEventFixedPtDeltaAxis2) * 65536.0);
-			data.scrollWheel.pointDeltaAxis1 =
-			    (SInt32)CGEventGetIntegerValueField(event, kCGScrollWheelEventPointDeltaAxis1);
-			data.scrollWheel.pointDeltaAxis2 =
-			    (SInt32)CGEventGetIntegerValueField(event, kCGScrollWheelEventPointDeltaAxis2);
-			break;
-
-		default:
-			WLog_DBG(TAG, "no HID event for Quartz event type %" PRIu32, (UINT32)type);
-			return TRUE;
-	}
-
-	const kern_return_t rc = IOHIDPostEvent(mac->hid, nxType, location, &data, kNXEventDataVersion,
-	                                        (IOOptionBits)CGEventGetFlags(event), options);
-	/* a refused event is dropped, never the session: a failing input handler
-	 * would make FreeRDP drop the client */
-	if (rc != KERN_SUCCESS)
-	{
-		mac->hidRefused++;
-		if ((mac->hidRefused <= 5) || ((mac->hidRefused % 100) == 0))
-			WLog_WARN(TAG,
-			          "the HID system refused an event (type %" PRIu32 "): 0x%08" PRIx32
-			          ", %" PRIu64 " so far",
-			          nxType, (UINT32)rc, mac->hidRefused);
-	}
-	else
-		WLog_DBG(TAG, "HID event type %" PRIu32 " posted", nxType);
-	return TRUE;
-}
-#pragma clang diagnostic pop
-
 static BOOL mac_shadow_post(macShadowSubsystem* mac, CGEventRef event)
 {
-	if (!event)
-		return FALSE;
-
-	BOOL rc = TRUE;
-	if (mac->hid != MACH_PORT_NULL)
-		rc = mac_shadow_hid_post(mac, event);
-	else
-		CGEventPost(kCGHIDEventTap, event);
-	CFRelease(event);
-	return rc;
+	if (mac->remote)
+		return mac_remote_post(mac->remote, event);
+	return mac_input_post(&mac->input, event);
 }
 
 WINPR_ATTR_NODISCARD
@@ -410,17 +278,6 @@ static BOOL mac_shadow_input_unicode_keyboard_event(rdpShadowSubsystem* subsyste
 	if (!subsystem || !client)
 		return FALSE;
 
-	/* the HID system has no Unicode character set: a key event with no key
-	 * would type the key 0 (A) */
-	if (mac->hid != MACH_PORT_NULL)
-	{
-		if (!mac->unicodeWarned)
-			WLog_WARN(TAG, "Unicode keyboard input can not be posted to the HID system: dropped "
-			               "(scancodes work)");
-		mac->unicodeWarned = TRUE;
-		return TRUE;
-	}
-
 	/* a key event with no key: the text it types is the character */
 	const BOOL down = (flags & KBD_FLAGS_RELEASE) ? FALSE : TRUE;
 	CGEventRef event = CGEventCreateKeyboardEvent(nullptr, 0, down);
@@ -429,6 +286,8 @@ static BOOL mac_shadow_input_unicode_keyboard_event(rdpShadowSubsystem* subsyste
 
 	const UniChar character = code;
 	CGEventKeyboardSetUnicodeString(event, 1, &character);
+	/* marked: the HID system (the login window) can not type it, mac_input_post drops it */
+	CGEventSetIntegerValueField(event, kCGEventSourceUserData, MAC_INPUT_UNICODE_EVENT);
 	return mac_shadow_post(mac, event);
 }
 
@@ -655,17 +514,23 @@ static int mac_shadow_pam_conv(int num_msg, const struct pam_message** msg,
 /* Who may log in, with the password of their account (checked by Open Directory, through
  * PAM's "checkpw" service):
  * - in a user's session the screen shared is that user's: only that user;
- * - at the login window (launchd runs the server as root there) any local user but root:
+ * - at the login window (launchd runs the server, or as a daemon its agent, as root there)
+ *   any local user but root:
  *   the client then sees the login window and still has to log in there, as at the Mac. */
 WINPR_ATTR_NODISCARD
-static int mac_shadow_pam_authenticate(WINPR_ATTR_UNUSED rdpShadowSubsystem* subsystem,
+static int mac_shadow_pam_authenticate(rdpShadowSubsystem* subsystem,
                                        WINPR_ATTR_UNUSED rdpShadowClient* client, const char* user,
                                        WINPR_ATTR_UNUSED const char* domain, const char* password)
 {
 	if (!user || !password)
 		return -1;
 
-	if (getuid() == 0)
+	/* whose screen it is: the server's user, or as a daemon the user on the console (root
+	 * at the login window) */
+	const macShadowSubsystem* mac = (const macShadowSubsystem*)subsystem;
+	const uid_t screen = (mac && mac->remote) ? mac_remote_console_uid() : getuid();
+
+	if (screen == 0)
 	{
 		const struct passwd* account = getpwnam(user);
 		if (!account || (account->pw_uid == 0))
@@ -677,7 +542,7 @@ static int mac_shadow_pam_authenticate(WINPR_ATTR_UNUSED rdpShadowSubsystem* sub
 	}
 	else
 	{
-		const struct passwd* owner = getpwuid(getuid());
+		const struct passwd* owner = getpwuid(screen);
 		if (!owner || !owner->pw_name || (strcmp(owner->pw_name, user) != 0))
 		{
 			WLog_ERR(TAG, "login as '%s' refused: this screen belongs to '%s'", user,
@@ -1049,11 +914,20 @@ static void mac_shadow_cursor_send_position(macShadowSubsystem* mac, UINT64 now)
 	if (now - input < MAC_SHADOW_CURSOR_QUIET_MS)
 		return;
 
-	CGEventRef event = CGEventCreate(nullptr);
-	if (!event)
-		return;
-	const CGPoint where = CGEventGetLocation(event);
-	CFRelease(event);
+	CGPoint where = CGPointZero;
+	if (mac->remote)
+	{
+		if (!mac_remote_location(mac->remote, &where))
+			return;
+	}
+	else
+	{
+		CGEventRef event = CGEventCreate(nullptr);
+		if (!event)
+			return;
+		where = CGEventGetLocation(event);
+		CFRelease(event);
+	}
 
 	/* from global points to the surface, as mac_shadow_point the other way */
 	const CGFloat x =
@@ -1089,7 +963,8 @@ static void mac_shadow_cursor_update(macShadowSubsystem* mac, UINT64 now)
 	mac->cursorNext = now + MAC_SHADOW_CURSOR_MS;
 
 	macCursorImage image = WINPR_C_ARRAY_INIT;
-	if (mac_cursor_get(&image, MAC_SHADOW_CURSOR_MAX))
+	if (mac->remote ? mac_remote_cursor_get(mac->remote, &image, MAC_SHADOW_CURSOR_MAX)
+	                : mac_cursor_get(&image, MAC_SHADOW_CURSOR_MAX))
 	{
 		EnterCriticalSection(&mac->clientLock);
 		const BOOL resend = mac->cursorResend;
@@ -1138,6 +1013,15 @@ static void mac_shadow_subsystem_process_message(macShadowSubsystem* mac, wMessa
  * display to capture (the display is off, the lid is closed). */
 static BOOL mac_shadow_capture_restart(macShadowSubsystem* mac)
 {
+	if (mac->remote)
+	{
+		/* no agent on the console (yet): try again later */
+		if (!mac_remote_capture_start(mac->remote, &mac->config))
+			return FALSE;
+		mac_shadow_refresh(mac);
+		return TRUE;
+	}
+
 	/* ask Quartz first: ScreenCaptureKit would log an error on every try */
 	if (!CGDisplayIsActive(mac->display) || CGDisplayIsAsleep(mac->display))
 		return FALSE;
@@ -1288,10 +1172,13 @@ static int mac_shadow_subsystem_init(rdpShadowSubsystem* subsystem)
 	          mac->display, subsystem->selectedMonitor, count, mac->width, mac->height,
 	          mac->bounds.origin.x, mac->bounds.origin.y);
 
-	if (!mac_capture_check_access())
-		return -1;
-
-	(void)mac_shadow_check_input_access();
+	/* in daemon mode the agent has the permissions and posts the input */
+	if (!mac->remote)
+	{
+		if (!mac_capture_check_access())
+			return -1;
+		(void)mac_shadow_check_input_access();
+	}
 
 	/* as root, the login-window agent, input goes to the HID system (see
 	 * mac_shadow_hid_post); in a user's session Quartz events do. The HID
@@ -1299,10 +1186,9 @@ static int mac_shadow_subsystem_init(rdpShadowSubsystem* subsystem)
 	 * (IOHIDParamUserClient::extPostEvent asks for kIOClientPrivilegeLocalUser):
 	 * FREERDP_SHADOW_MAC_INPUT=hid tries that path in a user's session too. */
 	const char* input = getenv("FREERDP_SHADOW_MAC_INPUT");
-	if ((geteuid() == 0) || (input && (strcmp(input, "hid") == 0)))
+	if (!mac->remote && ((geteuid() == 0) || (input && (strcmp(input, "hid") == 0))))
 	{
-		mac->hid = mac_shadow_hid_open();
-		if (mac->hid != MACH_PORT_NULL)
+		if (mac_input_open_hid(&mac->input))
 			WLog_INFO(TAG, "input: posted to the HID system (%s)",
 			          (geteuid() == 0) ? "running as root, as at the login window"
 			                           : "FREERDP_SHADOW_MAC_INPUT=hid");
@@ -1329,6 +1215,9 @@ static int mac_shadow_subsystem_init(rdpShadowSubsystem* subsystem)
 		                              .onStopped = mac_shadow_on_stopped,
 		                              .context = mac };
 	mac->config = config;
+
+	if (mac->remote)
+		return 1; /* the agent captures, from Start on */
 
 	mac->capture = mac_capture_new(&mac->config);
 	if (!mac->capture)
@@ -1373,7 +1262,10 @@ static int mac_shadow_subsystem_stop(rdpShadowSubsystem* subsystem)
 		mac->thread = nullptr;
 	}
 
-	mac_capture_stop(mac->capture);
+	if (mac->remote)
+		mac_remote_capture_stop(mac->remote);
+	else
+		mac_capture_stop(mac->capture);
 	return 1;
 }
 
@@ -1439,6 +1331,14 @@ static int mac_shadow_subsystem_start(rdpShadowSubsystem* subsystem)
 		return -1;
 	}
 
+	if (mac->remote)
+	{
+		/* no agent on the console yet: the thread asks again every second */
+		if (!mac_remote_capture_start(mac->remote, &mac->config))
+			(void)SetEvent(mac->lostEvent);
+		return 1;
+	}
+
 	if (!mac_capture_start(mac->capture))
 	{
 		(void)mac_shadow_subsystem_stop(subsystem);
@@ -1456,8 +1356,13 @@ static void mac_shadow_subsystem_free(rdpShadowSubsystem* subsystem)
 		return;
 
 	(void)mac_shadow_subsystem_uninit(subsystem);
-	if (mac->hid != MACH_PORT_NULL)
-		(void)IOServiceClose(mac->hid);
+	mac_input_close(&mac->input);
+	if (mac->remote)
+	{
+		mac_remote_free(mac->remote);
+		mac->remote = nullptr;
+		s_remote = nullptr;
+	}
 	if (mac->awake != kIOPMNullAssertionID)
 		(void)IOPMAssertionRelease(mac->awake);
 	region16_uninit(&mac->pending);
@@ -1501,6 +1406,20 @@ static rdpShadowSubsystem* mac_shadow_subsystem_new(void)
 	{
 		mac_shadow_subsystem_free(&mac->common);
 		return nullptr;
+	}
+
+	/* launchd runs the server as a daemon with a Mach service for its agents */
+	const char* service = getenv("FREERDP_SHADOW_MAC_AGENT_SERVICE");
+	if (service && *service)
+	{
+		mac->remote = mac_remote_new(service);
+		if (!mac->remote)
+		{
+			WLog_ERR(TAG, "daemon mode: no Mach service %s", service);
+			mac_shadow_subsystem_free(&mac->common);
+			return nullptr;
+		}
+		s_remote = mac->remote;
 	}
 
 	mac->common.SynchronizeEvent = mac_shadow_input_synchronize_event;
