@@ -1059,11 +1059,19 @@ static void mac_shadow_set_virtual_screen(rdpShadowSubsystem* subsystem, UINT32 
 	virtualScreen->flags = 1;
 }
 
-static void mac_shadow_display_reconfigured(WINPR_ATTR_UNUSED CGDirectDisplayID display,
-                                            CGDisplayChangeSummaryFlags flags, void* context)
+/* In a user's session the server looks at its display once a second (a display
+ * reconfiguration callback only reaches a process with an application's window server
+ * connection); as a daemon the agent does that and says hello again. */
+#define MAC_SHADOW_DISPLAYS_MS 1000
+static void mac_shadow_check_displays(macShadowSubsystem* mac, UINT64 now)
 {
-	macShadowSubsystem* mac = (macShadowSubsystem*)context;
-	if (mac && ((flags & kCGDisplayBeginConfigurationFlag) == 0))
+	if (mac->remote || (now < mac->displaysChecked + MAC_SHADOW_DISPLAYS_MS))
+		return;
+	mac->displaysChecked = now;
+	const CGRect bounds = CGDisplayBounds(mac->display);
+	uint32_t count = 0;
+	if ((CGGetActiveDisplayList(0, nullptr, &count) != kCGErrorSuccess) ||
+	    (count != mac->common.numMonitors) || !CGRectEqualToRect(bounds, mac->bounds))
 		(void)SetEvent(mac->displaysEvent);
 }
 
@@ -1174,7 +1182,8 @@ static DWORD WINAPI mac_shadow_subsystem_thread(LPVOID arg)
 		/* with clients, look at the cursor; without a stream, try to make one
 		 * again every second */
 		const BOOL clients = mac_shadow_has_clients(mac);
-		DWORD timeout = clients ? MAC_SHADOW_CURSOR_MS : INFINITE;
+		DWORD timeout =
+		    clients ? MAC_SHADOW_CURSOR_MS : (mac->remote ? INFINITE : MAC_SHADOW_DISPLAYS_MS);
 		if (lost)
 			timeout = MIN(timeout, MAC_SHADOW_RESTART_MS);
 
@@ -1208,6 +1217,7 @@ static DWORD WINAPI mac_shadow_subsystem_thread(LPVOID arg)
 			}
 		}
 
+		mac_shadow_check_displays(mac, now);
 		if (clients)
 			mac_shadow_cursor_update(mac, now);
 
@@ -1334,10 +1344,6 @@ static int mac_shadow_subsystem_init(rdpShadowSubsystem* subsystem)
 		mac_remote_set_displays_event(mac->remote, mac->displaysEvent);
 		return 1; /* the agent captures, from Start on */
 	}
-
-	/* a display mode change: the surface follows it */
-	mac->reconfigureRegistered = (CGDisplayRegisterReconfigurationCallback(
-	                                  mac_shadow_display_reconfigured, mac) == kCGErrorSuccess);
 
 	mac->capture = mac_capture_new(&mac->config);
 	if (!mac->capture)
@@ -1476,9 +1482,6 @@ static void mac_shadow_subsystem_free(rdpShadowSubsystem* subsystem)
 		return;
 
 	(void)mac_shadow_subsystem_uninit(subsystem);
-	if (mac->reconfigureRegistered)
-		(void)CGDisplayRemoveReconfigurationCallback(mac_shadow_display_reconfigured, mac);
-	mac->reconfigureRegistered = FALSE;
 	mac_input_close(&mac->input);
 	if (mac->remote)
 	{
