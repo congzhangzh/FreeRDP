@@ -223,6 +223,8 @@ static void agent_cursor_tick(void)
 			xpc_dictionary_set_uint64(msg, "yhot", image.yHot);
 			xpc_dictionary_set_data(msg, "pixels", image.pixels, 4ull * image.width * image.height);
 			agent_send(msg);
+			WLog_DBG(TAG, "cursor %" PRIu32 "x%" PRIu32 " (hot spot %" PRIu32 ",%" PRIu32 ") sent",
+			         image.width, image.height, image.xHot, image.yHot);
 			g_cursorHash = hash;
 			g_cursorKnown = TRUE;
 		}
