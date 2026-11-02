@@ -156,22 +156,12 @@ typedef enum WINPR_C23_ENUM_TYPE(uint32_t)
 	,
 	RDPGFX_CAPS_FLAG_SCP_DISABLE = 0x00000100 /* 11.0+, undocumented, Azure only */
 #endif
-#if defined(WITH_GFX_AV1)
+#if defined(WITH_GFX_AV1) || defined(WITH_GFX_AV2)
 	,
-	RDPGFX_CAPS_FLAG_AV1_I444_SUPPORTED = 0x10000000U, /** Custom Extension: Only valid if
-		                                                  RDPGFX_CAPVERSION_FRDP_1 is used */
-	RDPGFX_CAPS_FLAG_AV1_I444_DISABLED =
-		0x20000000U /** Custom Extension: Only valid if RDPGFX_CAPVERSION_FRDP_1 is used
-		             */
-#endif
-#if defined(WITH_GFX_AV2)
-	,
-	/* the flags belong to the capability set, so RDPGFX_CAPVERSION_FRDP_2 reuses the AV1 values */
-	RDPGFX_CAPS_FLAG_AV2_I444_SUPPORTED = 0x10000000U, /** Custom Extension: Only valid if
-		                                                  RDPGFX_CAPVERSION_FRDP_2 is used */
-	RDPGFX_CAPS_FLAG_AV2_I444_DISABLED =
-		0x20000000U /** Custom Extension: Only valid if RDPGFX_CAPVERSION_FRDP_2 is used
-		             */
+	/* Custom extension: only valid in the RDPGFX_CAPVERSION_FRDP_1 (AV1) and
+	 * RDPGFX_CAPVERSION_FRDP_2 (AV2) capability sets, the same flags for both */
+	RDPGFX_CAPS_FLAG_AV1_I444_SUPPORTED = 0x10000000U,
+	RDPGFX_CAPS_FLAG_AV1_I444_DISABLED = 0x20000000U
 #endif
 } RDPGFX_CAPS_FLAG;
 

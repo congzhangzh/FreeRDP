@@ -166,13 +166,9 @@ static const char* rdpgfx_caps_flag_str_int(UINT32 flag)
 #if defined(WITH_GFX_AZURE)
 		EVCASE(RDPGFX_CAPS_FLAG_SCP_DISABLE);
 #endif
-#if defined(WITH_GFX_AV1)
+#if defined(WITH_GFX_AV1) || defined(WITH_GFX_AV2)
 		EVCASE(RDPGFX_CAPS_FLAG_AV1_I444_SUPPORTED);
 		EVCASE(RDPGFX_CAPS_FLAG_AV1_I444_DISABLED);
-#endif
-#if defined(WITH_GFX_AV2) && !defined(WITH_GFX_AV1) /* same values as the AV1 flags */
-		EVCASE(RDPGFX_CAPS_FLAG_AV2_I444_SUPPORTED);
-		EVCASE(RDPGFX_CAPS_FLAG_AV2_I444_DISABLED);
 #endif
 		default:
 			return "RDPGFX_CAPS_FLAG_UNKNOWN";
