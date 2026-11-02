@@ -198,6 +198,9 @@ extern "C"
 #else
 	    UINT32 reservedAV2[2];
 #endif
+		/** how many clients hold each key of rdpShadowClient::keysDown, guarded by lock
+		 *  @since version 3.33.0 */
+		UINT16 keysHeld[0x400];
 	};
 
 	struct rdp_shadow_surface
