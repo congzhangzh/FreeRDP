@@ -561,12 +561,12 @@ static UINT rdpgfx_send_supported_caps(GENERIC_CHANNEL_CALLBACK* callback)
 			const UINT32 profile =
 			    freerdp_settings_get_uint32(gfx->rdpcontext->settings, FreeRDP_GfxCodecAV2Profile);
 #if defined(WITH_GFX_AV2_I444)
-			capsSet->flags = caps10Flags | RDPGFX_CAPS_FLAG_AV2_I444_SUPPORTED;
+			capsSet->flags = caps10Flags | RDPGFX_CAPS_FLAG_AV1_I444_SUPPORTED;
 			if (profile == 0)
-				capsSet->flags |= RDPGFX_CAPS_FLAG_AV2_I444_DISABLED;
+				capsSet->flags |= RDPGFX_CAPS_FLAG_AV1_I444_DISABLED;
 #else
 			/* the decoder (dav2d) has no AV2 4:4:4: always ask for 4:2:0 */
-			capsSet->flags = caps10Flags | RDPGFX_CAPS_FLAG_AV2_I444_DISABLED;
+			capsSet->flags = caps10Flags | RDPGFX_CAPS_FLAG_AV1_I444_DISABLED;
 			if (profile != 0)
 				WLog_Print(gfx->base.log, WLOG_DEBUG,
 				           "AV2 4:4:4 needs libavm to decode, asking for 4:2:0");

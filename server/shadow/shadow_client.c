@@ -936,7 +936,7 @@ static UINT shadow_client_send_caps_confirm(RdpgfxServerContext* context, rdpSha
 	if (pdu->capsSet->version == RDPGFX_CAPVERSION_FRDP_2)
 	{
 		UINT32 flags = FREERDP_CODEC_AV2_I420;
-		if ((pdu->capsSet->flags & RDPGFX_CAPS_FLAG_AV2_I444_DISABLED) == 0)
+		if ((pdu->capsSet->flags & RDPGFX_CAPS_FLAG_AV1_I444_DISABLED) == 0)
 			flags = FREERDP_CODEC_AV2_I444;
 
 		if (shadow_encoder_prepare(client->encoder, flags) < 0)
@@ -1111,19 +1111,19 @@ static BOOL shadow_client_caps_test_version(RdpgfxServerContext* context, rdpSha
 					return FALSE;
 
 				pdu.capsSet->flags &=
-				    ~(RDPGFX_CAPS_FLAG_AV2_I444_SUPPORTED | RDPGFX_CAPS_FLAG_AV2_I444_DISABLED);
+				    ~(RDPGFX_CAPS_FLAG_AV1_I444_SUPPORTED | RDPGFX_CAPS_FLAG_AV1_I444_DISABLED);
 
-				if ((currentCaps->flags & RDPGFX_CAPS_FLAG_AV2_I444_SUPPORTED) != 0)
+				if ((currentCaps->flags & RDPGFX_CAPS_FLAG_AV1_I444_SUPPORTED) != 0)
 				{
 					if (av2Profile == 0)
 						return FALSE;
 				}
 
 				if ((av2Profile == 0) ||
-				    ((currentCaps->flags & RDPGFX_CAPS_FLAG_AV2_I444_SUPPORTED) == 0))
-					pdu.capsSet->flags |= RDPGFX_CAPS_FLAG_AV2_I444_DISABLED;
-				if ((currentCaps->flags & RDPGFX_CAPS_FLAG_AV2_I444_DISABLED) != 0)
-					pdu.capsSet->flags |= RDPGFX_CAPS_FLAG_AV2_I444_DISABLED;
+				    ((currentCaps->flags & RDPGFX_CAPS_FLAG_AV1_I444_SUPPORTED) == 0))
+					pdu.capsSet->flags |= RDPGFX_CAPS_FLAG_AV1_I444_DISABLED;
+				if ((currentCaps->flags & RDPGFX_CAPS_FLAG_AV1_I444_DISABLED) != 0)
+					pdu.capsSet->flags |= RDPGFX_CAPS_FLAG_AV1_I444_DISABLED;
 			}
 #endif
 			*rc = shadow_client_send_caps_confirm(context, client, &pdu);
@@ -1413,7 +1413,7 @@ static BOOL shadow_client_send_av2(rdpShadowClient* client, const BYTE* pSrcData
 	RECTANGLE_16 regionRect = WINPR_C_ARRAY_INIT;
 
 	UINT32 flags = FREERDP_CODEC_AV2_I444;
-	if ((client->confirmedCaps.flags & RDPGFX_CAPS_FLAG_AV2_I444_DISABLED) != 0)
+	if ((client->confirmedCaps.flags & RDPGFX_CAPS_FLAG_AV1_I444_DISABLED) != 0)
 		flags = FREERDP_CODEC_AV2_I420;
 
 	if (shadow_encoder_prepare(encoder, flags) < 0)
