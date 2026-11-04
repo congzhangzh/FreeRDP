@@ -188,6 +188,15 @@ if(WITH_SERVER_SHADOW_CLI)
   add_subdirectory(cli)
 endif()
 
+# Linux: a session manager in front of the shadow server, one per user
+option(WITH_SHADOW_SESMAN "Linux: route RDP connections to the GNOME session of the user they name" OFF)
+if(WITH_SHADOW_SESMAN)
+  if(WIN32 OR APPLE OR NOT WITH_SHADOW_MUTTER OR NOT WITH_SERVER_SHADOW_CLI)
+    message(FATAL_ERROR "WITH_SHADOW_SESMAN needs Linux, WITH_SHADOW_MUTTER and WITH_SERVER_SHADOW_CLI")
+  endif()
+  add_subdirectory(sesman)
+endif()
+
 if(BUILD_TESTING)
   add_subdirectory(test)
 endif()
