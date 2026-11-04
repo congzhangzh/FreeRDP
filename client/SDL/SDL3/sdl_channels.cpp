@@ -110,21 +110,29 @@ namespace
 	}
 
 	/* after gdi_graphics_pipeline_init: count, then call what gdi installed */
+	/* Puts ours into one callback slot and keeps what was there as the next one. A slot that
+	 * already holds ours stays as it is, so next never points back at ours. */
+	template <typename T> void web_hook(T& slot, T& next, T ours)
+	{
+		if (slot == ours)
+			return;
+		next = slot;
+		slot = ours;
+	}
+
+	/* Runs on every GFX channel connect, which can come again for the same context (a server
+	 * that reactivates the session, e.g. on a monitor layout change). gdi then sets its draw
+	 * callbacks again but not CapsConfirm, so each callback is checked on its own. */
 	void web_stats_wrap(RdpgfxClientContext* gfx)
 	{
-		if (!gfx || (gfx->SurfaceCommand == web_SurfaceCommand))
+		if (!gfx)
 			return;
 		__atomic_store_n(&web_stats[WEB_STATS_CAPS], 0u, __ATOMIC_RELAXED);
-		web_next.SurfaceCommand = gfx->SurfaceCommand;
-		web_next.SolidFill = gfx->SolidFill;
-		web_next.SurfaceToSurface = gfx->SurfaceToSurface;
-		web_next.CacheToSurface = gfx->CacheToSurface;
-		web_next.CapsConfirm = gfx->CapsConfirm;
-		gfx->SurfaceCommand = web_SurfaceCommand;
-		gfx->SolidFill = web_SolidFill;
-		gfx->SurfaceToSurface = web_SurfaceToSurface;
-		gfx->CacheToSurface = web_CacheToSurface;
-		gfx->CapsConfirm = web_CapsConfirm;
+		web_hook(gfx->SurfaceCommand, web_next.SurfaceCommand, web_SurfaceCommand);
+		web_hook(gfx->SolidFill, web_next.SolidFill, web_SolidFill);
+		web_hook(gfx->SurfaceToSurface, web_next.SurfaceToSurface, web_SurfaceToSurface);
+		web_hook(gfx->CacheToSurface, web_next.CacheToSurface, web_CacheToSurface);
+		web_hook(gfx->CapsConfirm, web_next.CapsConfirm, web_CapsConfirm);
 	}
 } // namespace
 
