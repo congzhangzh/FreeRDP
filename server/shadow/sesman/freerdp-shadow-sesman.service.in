@@ -1,0 +1,10 @@
+[Unit]
+Description=RDP to the GNOME session of the user who connects (FreeRDP shadow server)
+After=network.target systemd-logind.service
+
+[Service]
+ExecStart=@CMAKE_INSTALL_FULL_SBINDIR@/freerdp-shadow-sesman --port 3389
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
