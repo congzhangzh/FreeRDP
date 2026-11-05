@@ -29,6 +29,8 @@
 #include <freerdp/gdi/gdi.h>
 #endif
 
+#include "client_stats.h"
+
 /* Nothing is counted here: this reads what the libraries count anyway, so no path that carries
  * data gets slower. */
 enum
@@ -120,3 +122,68 @@ uint64_t freerdp_client_stats_value_for_index(const rdpContext* context, size_t 
 #endif
 	return 0;
 }
+
+#if defined(__EMSCRIPTEN__)
+#include <pthread.h>
+
+#include <emscripten.h>
+
+/* A page has one session and no pointer to it, and it reads on the browser's thread while the
+ * session runs on its own, which frees what the reader looks at:
+ *
+ * - gdi with the session's PostDisconnect, so the session is detached before that;
+ * - the graphics channel's context in rdp_client_disconnect(), before any PostDisconnect, and on
+ *   every auto-reconnect, which has no PostDisconnect at all. What always comes first is the
+ *   channel's disconnected event, which clears gdi->gfx, so a reader finds nothing from then on.
+ *   client_stats_web_barrier() waits for a reader that got there earlier.
+ *
+ * The session takes the lock only at these points, no data path does. */
+static pthread_mutex_t web_lock = PTHREAD_MUTEX_INITIALIZER;
+static const rdpContext* web_context = nullptr;
+
+void client_stats_web_attach(const rdpContext* context)
+{
+	(void)pthread_mutex_lock(&web_lock);
+	web_context = context;
+	(void)pthread_mutex_unlock(&web_lock);
+}
+
+void client_stats_web_detach(const rdpContext* context)
+{
+	(void)pthread_mutex_lock(&web_lock);
+	if (web_context == context)
+		web_context = nullptr;
+	(void)pthread_mutex_unlock(&web_lock);
+}
+
+void client_stats_web_barrier(void)
+{
+	(void)pthread_mutex_lock(&web_lock);
+	(void)pthread_mutex_unlock(&web_lock);
+}
+
+/* For the page: Module._freerdp_web_stats_count(), Module._freerdp_web_stats_value(i) and
+ * Module.ccall("freerdp_web_stats_name", "string", ["number"], [i]). Names say what a value is,
+ * indices can differ between versions. A value comes as a double, which a page reads without
+ * BigInt, exact up to 2^53. Values are 0 without a session. */
+EMSCRIPTEN_KEEPALIVE size_t freerdp_web_stats_count(void);
+EMSCRIPTEN_KEEPALIVE size_t freerdp_web_stats_count(void)
+{
+	return freerdp_client_stats_max_index();
+}
+
+EMSCRIPTEN_KEEPALIVE const char* freerdp_web_stats_name(size_t index);
+EMSCRIPTEN_KEEPALIVE const char* freerdp_web_stats_name(size_t index)
+{
+	return freerdp_client_stats_name_for_index(index);
+}
+
+EMSCRIPTEN_KEEPALIVE double freerdp_web_stats_value(size_t index);
+EMSCRIPTEN_KEEPALIVE double freerdp_web_stats_value(size_t index)
+{
+	(void)pthread_mutex_lock(&web_lock);
+	const uint64_t value = freerdp_client_stats_value_for_index(web_context, index);
+	(void)pthread_mutex_unlock(&web_lock);
+	return (double)value;
+}
+#endif

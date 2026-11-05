@@ -87,6 +87,7 @@
 #include "sso_mib_tokens.h"
 #endif
 
+#include "client_stats.h"
 #include "oauth2.h"
 
 #include <freerdp/log.h>
@@ -210,6 +211,8 @@ static void freerdp_client_common_free(freerdp* instance, rdpContext* context)
 {
 	WINPR_ASSERT(instance);
 	WINPR_ASSERT(context);
+
+	client_stats_web_detach(context);
 
 	RDP_CLIENT_ENTRY_POINTS* pEntryPoints = instance->pClientEntryPoints;
 	WINPR_ASSERT(pEntryPoints);
@@ -1776,6 +1779,7 @@ static BOOL commonPostConnect(freerdp* instance)
 #endif
 	}
 
+	client_stats_web_attach(instance->context);
 	return TRUE;
 }
 
@@ -1785,6 +1789,9 @@ static void commonPostDisconnect(freerdp* instance)
 	WINPR_ASSERT(requireRdpClientContext(instance->context));
 
 	rdpClientContext* cctx = (rdpClientContext*)instance->context;
+
+	/* before the client frees gdi */
+	client_stats_web_detach(instance->context);
 
 #if !defined(_WIN32)
 	if (cctx->pipethread)
@@ -2054,6 +2061,7 @@ void freerdp_client_OnChannelDisconnectedEventHandler(void* context,
 	else if (strcmp(e->name, RDPGFX_DVC_CHANNEL_NAME) == 0)
 	{
 		gdi_graphics_pipeline_uninit(cctx->context.gdi, (RdpgfxClientContext*)e->pInterface);
+		client_stats_web_barrier();
 	}
 #endif
 #if defined(CHANNEL_GEOMETRY_CLIENT)
