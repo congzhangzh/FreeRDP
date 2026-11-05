@@ -42,13 +42,23 @@ enum
 	STATS_BANDWIDTH_KBPS,
 	STATS_RTT_BASE_MS,
 	STATS_RTT_AVERAGE_MS,
-	STATS_NETWORK_MAX
+	STATS_AUDIO_WAVES,
+	STATS_AUDIO_WAVE_BYTES,
+	STATS_AUDIO_WAVES_OVERRUN,
+	STATS_AUDIO_WAVES_UNDECODABLE,
+	STATS_AUDIO_DEVICE_OPENS,
+	STATS_AUDIO_FORMAT_TAG,
+	STATS_AUDIO_DELAY_MS,
+	STATS_SESSION_MAX
 };
 
-static const char* const networkNames[] = { "NETWORK_BYTES_RECEIVED",   "NETWORK_BYTES_SENT",
+static const char* const sessionNames[] = { "NETWORK_BYTES_RECEIVED",   "NETWORK_BYTES_SENT",
 	                                        "NETWORK_PACKETS_RECEIVED", "NETWORK_PACKETS_SENT",
 	                                        "NETWORK_BANDWIDTH_KBPS",   "NETWORK_RTT_BASE_MS",
-	                                        "NETWORK_RTT_AVERAGE_MS" };
+	                                        "NETWORK_RTT_AVERAGE_MS",   "AUDIO_WAVES",
+	                                        "AUDIO_WAVE_BYTES",         "AUDIO_WAVES_OVERRUN",
+	                                        "AUDIO_WAVES_UNDECODABLE",  "AUDIO_DEVICE_OPENS",
+	                                        "AUDIO_FORMAT_TAG",         "AUDIO_DELAY_MS" };
 
 static uint64_t network_value(const rdpContext* context, size_t index)
 {
@@ -79,26 +89,53 @@ static uint64_t network_value(const rdpContext* context, size_t index)
 	}
 }
 
+static uint64_t audio_value(const rdpContext* context, size_t index)
+{
+	const rdpMetrics* metrics = context->metrics;
+	if (!metrics)
+		return 0;
+
+	switch (index)
+	{
+		case STATS_AUDIO_WAVES:
+			return metrics->AudioWaves;
+		case STATS_AUDIO_WAVE_BYTES:
+			return metrics->AudioWaveBytes;
+		case STATS_AUDIO_WAVES_OVERRUN:
+			return metrics->AudioWavesOverrun;
+		case STATS_AUDIO_WAVES_UNDECODABLE:
+			return metrics->AudioWavesUndecodable;
+		case STATS_AUDIO_DEVICE_OPENS:
+			return metrics->AudioDeviceOpens;
+		case STATS_AUDIO_FORMAT_TAG:
+			return metrics->AudioFormatTag;
+		case STATS_AUDIO_DELAY_MS:
+			return metrics->AudioDelayMs;
+		default:
+			return 0;
+	}
+}
+
 size_t freerdp_client_stats_max_index(void)
 {
 	/* in a function: without C11 this is an assert(), which a file scope does not take */
-	WINPR_STATIC_ASSERT(ARRAYSIZE(networkNames) == STATS_NETWORK_MAX);
+	WINPR_STATIC_ASSERT(ARRAYSIZE(sessionNames) == STATS_SESSION_MAX);
 
 #if defined(CHANNEL_RDPGFX_CLIENT)
-	return STATS_NETWORK_MAX + rdpgfx_stats_max_index();
+	return STATS_SESSION_MAX + rdpgfx_stats_max_index();
 #else
-	return STATS_NETWORK_MAX;
+	return STATS_SESSION_MAX;
 #endif
 }
 
 const char* freerdp_client_stats_name_for_index(size_t index)
 {
-	if (index < STATS_NETWORK_MAX)
-		return networkNames[index];
+	if (index < STATS_SESSION_MAX)
+		return sessionNames[index];
 
 #if defined(CHANNEL_RDPGFX_CLIENT)
 	if (index < freerdp_client_stats_max_index())
-		return rdpgfx_stats_name_for_index(index - STATS_NETWORK_MAX);
+		return rdpgfx_stats_name_for_index(index - STATS_SESSION_MAX);
 #endif
 	return "FREERDP_CLIENT_STATS_UNUSED";
 }
@@ -108,8 +145,10 @@ uint64_t freerdp_client_stats_value_for_index(const rdpContext* context, size_t 
 	if (!context)
 		return 0;
 
-	if (index < STATS_NETWORK_MAX)
+	if (index <= STATS_RTT_AVERAGE_MS)
 		return network_value(context, index);
+	if (index < STATS_SESSION_MAX)
+		return audio_value(context, index);
 
 #if defined(CHANNEL_RDPGFX_CLIENT)
 	if ((index < freerdp_client_stats_max_index()) && context->gdi)
@@ -117,7 +156,7 @@ uint64_t freerdp_client_stats_value_for_index(const rdpContext* context, size_t 
 		/* once: another thread can clear it at any time */
 		RdpgfxClientContext* gfx = context->gdi->gfx;
 		if (gfx)
-			return rdpgfx_stats_value_for_index(gfx, index - STATS_NETWORK_MAX);
+			return rdpgfx_stats_value_for_index(gfx, index - STATS_SESSION_MAX);
 	}
 #endif
 	return 0;
