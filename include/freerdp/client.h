@@ -507,8 +507,8 @@ extern "C"
 
 	/** @brief Get the number of runtime statistics of a client session.
 	 *
-	 *  They hold what the libraries count anyway: the network figures, then the graphics
-	 *  channel's (\ref rdpgfx_stats_max_index), if it is built in.
+	 *  They hold what the libraries count anyway: the network and audio figures, then the
+	 *  graphics channel's (\ref rdpgfx_stats_max_index), if it is built in.
 	 *
 	 *  An index can differ between versions, as a list can grow in the middle. A name means the
 	 *  same in all of them, so use it to find a statistic; slots for unused codec IDs share one
@@ -517,6 +517,15 @@ extern "C"
 	 *  - _PACKETS_RECEIVED, _PACKETS_SENT: PDUs on the slow path only, the fast path has no counter
 	 *  - _BANDWIDTH_KBPS, _RTT_BASE_MS, _RTT_AVERAGE_MS: what the server measured and reported,
 	 *    0 until it does
+	 *
+	 *  Named AUDIO_*, what the rdpsnd client channel saw during the life of the context, the
+	 *  audio backends are not asked:
+	 *  - _WAVES, _WAVE_BYTES: received, played or not
+	 *  - _WAVES_OVERRUN, _WAVES_UNDECODABLE: dropped as too much was queued, or as they did not
+	 *    decode
+	 *  - _DEVICE_OPENS, _FORMAT_TAG: how often the device opened, WAVE_FORMAT_* of the last time
+	 *  - _DELAY_MS: the last delay told to the server, from the arrival of a wave to the end of
+	 *    the play call, plus what the backend returned, which can be nothing
 	 *
 	 *  @return The number of statistics
 	 *  @since version 3.34.0
