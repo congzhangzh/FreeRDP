@@ -38,6 +38,7 @@
 #include <winpr/path.h>
 #include <winpr/synch.h>
 #include <winpr/image.h>
+#include <winpr/interlocked.h>
 #include <winpr/sysinfo.h>
 
 #include <freerdp/log.h>
@@ -1403,6 +1404,10 @@ static int x11_shadow_subsystem_init(rdpShadowSubsystem* sub)
 	if (!subsystem)
 		return -1;
 
+#if defined(WITH_SHADOW_PIPEWIRE)
+	subsystem->audio = shadow_pipewire_audio_new(sub);
+#endif
+
 	subsystem->common.numMonitors = x11_shadow_enum_monitors(subsystem->common.monitors, 16);
 	const int rc = x11_shadow_subsystem_base_init(subsystem);
 	if (rc < 0)
@@ -1553,6 +1558,11 @@ static int x11_shadow_subsystem_uninit(rdpShadowSubsystem* sub)
 	if (!subsystem)
 		return -1;
 
+#if defined(WITH_SHADOW_PIPEWIRE)
+	shadow_pipewire_audio_free(subsystem->audio);
+	subsystem->audio = nullptr;
+#endif
+
 	if (subsystem->display)
 	{
 		XCloseDisplay(subsystem->display);
@@ -1612,6 +1622,40 @@ static int x11_shadow_subsystem_stop(rdpShadowSubsystem* sub)
 	return 1;
 }
 
+#if defined(WITH_SHADOW_PIPEWIRE)
+WINPR_ATTR_NODISCARD
+static BOOL x11_shadow_client_connect(rdpShadowSubsystem* subsystem,
+                                      WINPR_ATTR_UNUSED rdpShadowClient* client)
+{
+	x11ShadowSubsystem* x11 = (x11ShadowSubsystem*)subsystem;
+	WINPR_ASSERT(x11);
+
+	const LONG clients = InterlockedIncrement(&x11->clients);
+	shadow_pipewire_audio_clients(x11->audio, WINPR_ASSERTING_INT_CAST(size_t, clients));
+	return TRUE;
+}
+
+static void x11_shadow_client_disconnect(rdpShadowSubsystem* subsystem,
+                                         WINPR_ATTR_UNUSED rdpShadowClient* client)
+{
+	x11ShadowSubsystem* x11 = (x11ShadowSubsystem*)subsystem;
+	WINPR_ASSERT(x11);
+
+	const LONG clients = InterlockedDecrement(&x11->clients);
+	shadow_pipewire_audio_clients(x11->audio, WINPR_ASSERTING_INT_CAST(size_t, clients));
+}
+
+WINPR_ATTR_NODISCARD
+static BOOL x11_shadow_microphone(rdpShadowSubsystem* subsystem, rdpShadowClient* client,
+                                  const AUDIO_FORMAT* format, wStream* samples)
+{
+	x11ShadowSubsystem* x11 = (x11ShadowSubsystem*)subsystem;
+	WINPR_ASSERT(x11);
+
+	return shadow_pipewire_audio_microphone(x11->audio, client, format, samples);
+}
+#endif
+
 WINPR_ATTR_NODISCARD
 static rdpShadowSubsystem* x11_shadow_subsystem_new(void)
 {
@@ -1629,6 +1673,11 @@ static rdpShadowSubsystem* x11_shadow_subsystem_new(void)
 	subsystem->common.MouseEvent = x11_shadow_input_mouse_event;
 	subsystem->common.RelMouseEvent = x11_shadow_input_rel_mouse_event;
 	subsystem->common.ExtendedMouseEvent = x11_shadow_input_extended_mouse_event;
+#if defined(WITH_SHADOW_PIPEWIRE)
+	subsystem->common.ClientConnect = x11_shadow_client_connect;
+	subsystem->common.ClientDisconnect = x11_shadow_client_disconnect;
+	subsystem->common.AudinServerReceiveSamples = x11_shadow_microphone;
+#endif
 	subsystem->composite = FALSE;
 	subsystem->use_xshm = FALSE; /* temporarily disabled */
 	subsystem->use_xfixes = TRUE;
