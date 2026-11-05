@@ -132,6 +132,11 @@ if(WITH_SHADOW_SUBSYSTEM)
     if(NOT WITH_SHADOW_X11 AND NOT WITH_SHADOW_MUTTER)
       message(FATAL_ERROR "WITH_SHADOW_SUBSYSTEM needs WITH_SHADOW_X11 or WITH_SHADOW_MUTTER")
     endif()
+    # The sound of the session; the Mutter backend always has it
+    option(WITH_SHADOW_PIPEWIRE "Sound and microphone through PipeWire for all Linux subsystems" OFF)
+    if(WITH_SHADOW_MUTTER OR WITH_SHADOW_PIPEWIRE)
+      add_subdirectory(PipeWire)
+    endif()
     if(WITH_SHADOW_MUTTER)
       add_subdirectory(Mutter)
       list(APPEND SHADOW_SUBSYSTEM_LIBS freerdp-shadow-subsystem-mutter)
@@ -160,7 +165,11 @@ target_include_directories(${MODULE_NAME} INTERFACE $<INSTALL_INTERFACE:include/
 target_link_libraries(${MODULE_NAME} PRIVATE ${LIBS})
 
 if(NOT BUILD_SHARED_LIBS AND SHADOW_SUBSYSTEM_LIBS)
-  installwithrpath(TARGETS ${SHADOW_SUBSYSTEM_LIBS} DESTINATION ${CMAKE_INSTALL_LIBDIR} EXPORT FreeRDP-ShadowTargets)
+  set(SHADOW_INSTALL_LIBS ${SHADOW_SUBSYSTEM_LIBS})
+  if(TARGET freerdp-shadow-pipewire)
+    list(APPEND SHADOW_INSTALL_LIBS freerdp-shadow-pipewire)
+  endif()
+  installwithrpath(TARGETS ${SHADOW_INSTALL_LIBS} DESTINATION ${CMAKE_INSTALL_LIBDIR} EXPORT FreeRDP-ShadowTargets)
 endif()
 
 installwithrpath(
