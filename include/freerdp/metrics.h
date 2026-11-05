@@ -37,6 +37,17 @@ extern "C"
 		UINT64 TotalCompressedBytes;
 		UINT64 TotalUncompressedBytes;
 		double TotalCompressionRatio;
+
+		/* What the rdpsnd client channel saw over the life of the context. Here, as a channel
+		 * comes and goes with a connection and a reader must not depend on it. */
+		UINT64 AudioWaves;            /**< waves received @since version 3.34.0 */
+		UINT64 AudioWaveBytes;        /**< their encoded bytes @since version 3.34.0 */
+		UINT64 AudioWavesOverrun;     /**< not played, too much queued @since version 3.34.0 */
+		UINT64 AudioWavesUndecodable; /**< not played, no decode @since version 3.34.0 */
+		UINT64 AudioDeviceOpens;      /**< a format change opens it @since version 3.34.0 */
+		UINT64 AudioFormatTag;        /**< WAVE_FORMAT_* of the last open @since version 3.34.0 */
+		UINT64 AudioDelayMs; /**< last delay told to the server, arrival to the end of the play
+		                        call plus what the backend reports @since version 3.34.0 */
 	};
 	typedef struct rdp_metrics rdpMetrics;
 

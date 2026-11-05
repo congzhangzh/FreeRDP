@@ -30,12 +30,23 @@
 #include <freerdp/client/channels.h>
 #include <freerdp/freerdp.h>
 
+#if defined(CHANNEL_RDPGFX_CLIENT) || defined(CHANNEL_RDPSND_CLIENT)
+#include <freerdp/dvc.h>
+#endif
+
 #if defined(CHANNEL_RDPGFX_CLIENT)
 #include <freerdp/channels/rdpgfx.h>
 #include <freerdp/client/rdpgfx.h>
 #include <freerdp/codec/zgfx.h>
-#include <freerdp/dvc.h>
 #include <freerdp/gdi/gdi.h>
+#endif
+
+#if defined(CHANNEL_RDPSND_CLIENT)
+#include <winpr/synch.h>
+
+#include <freerdp/channels/rdpsnd.h>
+#include <freerdp/client/rdpsnd.h>
+#include <freerdp/codec/audio.h>
 #endif
 
 #if !defined(_WIN32)
@@ -46,7 +57,7 @@
 #include <unistd.h>
 #endif
 
-#define NETWORK_STATS 7
+#define SESSION_STATS 14
 
 /* The default settings need rdpdr, which brings rdpsnd along: without it no connection starts */
 #if !defined(_WIN32) && defined(CHANNEL_RDPSND_CLIENT)
@@ -87,17 +98,21 @@ static uint64_t stat_value(const rdpContext* context, const char* name)
 
 static BOOL check_names(void)
 {
-	static const char* const network[NETWORK_STATS] = {
-		"NETWORK_BYTES_RECEIVED", "NETWORK_BYTES_SENT",     "NETWORK_PACKETS_RECEIVED",
-		"NETWORK_PACKETS_SENT",   "NETWORK_BANDWIDTH_KBPS", "NETWORK_RTT_BASE_MS",
-		"NETWORK_RTT_AVERAGE_MS"
+	static const char* const session[SESSION_STATS] = {
+		"NETWORK_BYTES_RECEIVED",   "NETWORK_BYTES_SENT",
+		"NETWORK_PACKETS_RECEIVED", "NETWORK_PACKETS_SENT",
+		"NETWORK_BANDWIDTH_KBPS",   "NETWORK_RTT_BASE_MS",
+		"NETWORK_RTT_AVERAGE_MS",   "AUDIO_WAVES",
+		"AUDIO_WAVE_BYTES",         "AUDIO_WAVES_OVERRUN",
+		"AUDIO_WAVES_UNDECODABLE",  "AUDIO_DEVICE_OPENS",
+		"AUDIO_FORMAT_TAG",         "AUDIO_DELAY_MS"
 	};
 
 	const size_t max = freerdp_client_stats_max_index();
 #if defined(CHANNEL_RDPGFX_CLIENT)
-	TEST_CHECK(max == NETWORK_STATS + rdpgfx_stats_max_index());
+	TEST_CHECK(max == SESSION_STATS + rdpgfx_stats_max_index());
 #else
-	TEST_CHECK(max == NETWORK_STATS);
+	TEST_CHECK(max == SESSION_STATS);
 #endif
 
 	for (size_t x = 0; x < max; x++)
@@ -111,12 +126,12 @@ static BOOL check_names(void)
 	           0);
 
 	/* each exactly once, in all the statistics */
-	for (size_t x = 0; x < ARRAYSIZE(network); x++)
+	for (size_t x = 0; x < ARRAYSIZE(session); x++)
 	{
 		size_t found = 0;
 		for (size_t y = 0; y < max; y++)
 		{
-			if (strcmp(freerdp_client_stats_name_for_index(y), network[x]) == 0)
+			if (strcmp(freerdp_client_stats_name_for_index(y), session[x]) == 0)
 				found++;
 		}
 		TEST_CHECK(found == 1);
@@ -253,12 +268,13 @@ fail:
 }
 #endif
 
-#if defined(CHANNEL_RDPGFX_CLIENT)
+#if defined(CHANNEL_RDPGFX_CLIENT) || defined(CHANNEL_RDPSND_CLIENT)
 typedef struct
 {
 	IDRDYNVC_ENTRY_POINTS iface;
 	rdpContext* context;
 	IWTSPlugin* plugin;
+	const ADDIN_ARGV* args;
 } test_entry_points;
 
 typedef struct
@@ -281,9 +297,9 @@ static IWTSPlugin* test_get_plugin(WINPR_ATTR_UNUSED IDRDYNVC_ENTRY_POINTS* pEnt
 	return nullptr;
 }
 
-static const ADDIN_ARGV* test_get_plugin_data(WINPR_ATTR_UNUSED IDRDYNVC_ENTRY_POINTS* pEntryPoints)
+static const ADDIN_ARGV* test_get_plugin_data(IDRDYNVC_ENTRY_POINTS* pEntryPoints)
 {
-	return nullptr;
+	return ((test_entry_points*)pEntryPoints)->args;
 }
 
 static rdpSettings* test_get_rdp_settings(IDRDYNVC_ENTRY_POINTS* pEntryPoints)
@@ -344,6 +360,36 @@ static UINT test_channel_close(WINPR_ATTR_UNUSED IWTSVirtualChannel* pChannel)
 	return CHANNEL_RC_OK;
 }
 
+static BOOL load_plugin(const char* name, rdpContext* context, const ADDIN_ARGV* args,
+                        test_entry_points* ep, test_channel_manager* mgr)
+{
+	PDVC_PLUGIN_ENTRY pluginEntry =
+	    WINPR_FUNC_PTR_CAST(freerdp_channels_load_static_addin_entry(name, nullptr, nullptr,
+	                                                                 FREERDP_ADDIN_CHANNEL_DYNAMIC),
+	                        PDVC_PLUGIN_ENTRY);
+	TEST_CHECK(pluginEntry);
+
+	ep->iface.RegisterPlugin = test_register_plugin;
+	ep->iface.GetPlugin = test_get_plugin;
+	ep->iface.GetPluginData = test_get_plugin_data;
+	ep->iface.GetRdpSettings = test_get_rdp_settings;
+	ep->iface.GetRdpContext = test_get_rdp_context;
+	ep->context = context;
+	ep->args = args;
+
+	TEST_CHECK(pluginEntry(&ep->iface) == CHANNEL_RC_OK);
+	TEST_CHECK(ep->plugin);
+
+	mgr->iface.CreateListener = test_create_listener;
+	mgr->iface.DestroyListener = test_destroy_listener;
+	mgr->iface.GetChannelId = test_get_channel_id;
+	mgr->iface.GetChannelName = test_get_channel_name;
+	mgr->iface.FindChannelById = test_find_channel_by_id;
+	return TRUE;
+}
+#endif
+
+#if defined(CHANNEL_RDPGFX_CLIENT)
 static UINT send_start_frame(IWTSVirtualChannelCallback* callback)
 {
 	wStream* s = Stream_New(nullptr, 2 + RDPGFX_HEADER_SIZE + RDPGFX_START_FRAME_PDU_SIZE);
@@ -405,35 +451,297 @@ static BOOL check_gfx_channel(rdpContext* context, IWTSPlugin* plugin, test_chan
 
 static BOOL check_gfx(rdpContext* context)
 {
-	PDVC_PLUGIN_ENTRY pluginEntry = WINPR_FUNC_PTR_CAST(
-	    freerdp_channels_load_static_addin_entry(RDPGFX_CHANNEL_NAME, nullptr, nullptr,
-	                                             FREERDP_ADDIN_CHANNEL_DYNAMIC),
-	    PDVC_PLUGIN_ENTRY);
-	TEST_CHECK(pluginEntry);
-
 	test_entry_points ep = WINPR_C_ARRAY_INIT;
-	ep.iface.RegisterPlugin = test_register_plugin;
-	ep.iface.GetPlugin = test_get_plugin;
-	ep.iface.GetPluginData = test_get_plugin_data;
-	ep.iface.GetRdpSettings = test_get_rdp_settings;
-	ep.iface.GetRdpContext = test_get_rdp_context;
-	ep.context = context;
-
-	TEST_CHECK(pluginEntry(&ep.iface) == CHANNEL_RC_OK);
-	TEST_CHECK(ep.plugin);
-
 	test_channel_manager mgr = WINPR_C_ARRAY_INIT;
-	mgr.iface.CreateListener = test_create_listener;
-	mgr.iface.DestroyListener = test_destroy_listener;
-	mgr.iface.GetChannelId = test_get_channel_id;
-	mgr.iface.GetChannelName = test_get_channel_name;
-	mgr.iface.FindChannelById = test_find_channel_by_id;
+	TEST_CHECK(load_plugin(RDPGFX_CHANNEL_NAME, context, nullptr, &ep, &mgr));
 
 	const BOOL rc = check_gfx_channel(context, ep.plugin, &mgr);
 
 	/* frees the plugin */
 	(void)ep.plugin->Terminated(ep.plugin);
 	return rc;
+}
+#endif
+
+#if defined(CHANNEL_RDPSND_CLIENT)
+#define TEST_RATE 8000u
+
+static void write_audio_format(wStream* s, UINT16 tag)
+{
+	Stream_Write_UINT16(s, tag);
+	Stream_Write_UINT16(s, 1);         /* nChannels */
+	Stream_Write_UINT32(s, TEST_RATE); /* nSamplesPerSec */
+	Stream_Write_UINT32(s, TEST_RATE); /* nAvgBytesPerSec */
+	Stream_Write_UINT16(s, 1);         /* nBlockAlign */
+	Stream_Write_UINT16(s, 8);         /* wBitsPerSample */
+	Stream_Write_UINT16(s, 0);         /* cbSize */
+}
+
+static UINT send_rdpsnd_pdu(IWTSVirtualChannelCallback* callback, wStream* s)
+{
+	Stream_SealLength(s);
+	Stream_ResetPosition(s);
+	const UINT rc = callback->OnDataReceived(callback, s);
+	Stream_Free(s, TRUE);
+	return rc;
+}
+
+static wStream* new_rdpsnd_pdu(BYTE msgType, UINT16 bodySize)
+{
+	wStream* s = Stream_New(nullptr, 4ull + bodySize);
+	if (s)
+	{
+		Stream_Write_UINT8(s, msgType);
+		Stream_Write_UINT8(s, 0); /* bPad */
+		Stream_Write_UINT16(s, bodySize);
+	}
+	return s;
+}
+
+static UINT send_formats(IWTSVirtualChannelCallback* callback)
+{
+	const UINT16 formats = 2;
+	const UINT16 body = 20 + formats * 18;
+	wStream* s = new_rdpsnd_pdu(SNDC_FORMATS, body);
+	if (!s)
+		return CHANNEL_RC_NO_MEMORY;
+	Stream_Zero(s, 14); /* dwFlags, dwVolume, dwPitch, wDGramPort */
+	Stream_Write_UINT16(s, formats);
+	Stream_Write_UINT8(s, 0);  /* cLastBlockConfirmed */
+	Stream_Write_UINT16(s, 6); /* wVersion */
+	Stream_Write_UINT8(s, 0);  /* bPad */
+	write_audio_format(s, WAVE_FORMAT_PCM);
+	write_audio_format(s, WAVE_FORMAT_ALAW);
+	return send_rdpsnd_pdu(callback, s);
+}
+
+static UINT send_wave2(IWTSVirtualChannelCallback* callback, UINT16 formatNo, UINT16 size)
+{
+	wStream* s = new_rdpsnd_pdu(SNDC_WAVE2, 12 + size);
+	if (!s)
+		return CHANNEL_RC_NO_MEMORY;
+	Stream_Write_UINT16(s, 0); /* wTimeStamp */
+	Stream_Write_UINT16(s, formatNo);
+	Stream_Zero(s, 8); /* cBlockNo, bPad, dwAudioTimeStamp */
+	Stream_Zero(s, size);
+	return send_rdpsnd_pdu(callback, s);
+}
+
+/* The old pair of PDUs: the wave's arrival is the first one, so the time between shows */
+static BOOL send_wave_pair(IWTSVirtualChannelCallback* callback, UINT16 formatNo, UINT16 size,
+                           DWORD delayMs)
+{
+	wStream* s = new_rdpsnd_pdu(SNDC_WAVE, 8 + size);
+	TEST_CHECK(s);
+	Stream_Write_UINT16(s, 0); /* wTimeStamp */
+	Stream_Write_UINT16(s, formatNo);
+	Stream_Zero(s, 8); /* cBlockNo, bPad, Data */
+	TEST_CHECK(send_rdpsnd_pdu(callback, s) == CHANNEL_RC_OK);
+
+	Sleep(delayMs);
+
+	s = Stream_New(nullptr, size);
+	TEST_CHECK(s);
+	Stream_Zero(s, size);
+	TEST_CHECK(send_rdpsnd_pdu(callback, s) == CHANNEL_RC_OK);
+	return TRUE;
+}
+
+static BOOL check_audio_session(const rdpContext* context, IWTSVirtualChannelCallback* callback)
+{
+	const UINT16 longWave = 60000; /* 7.5 s at this rate */
+	const UINT16 shortWave = 800;  /* 100 ms */
+
+	TEST_CHECK(send_formats(callback) == CHANNEL_RC_OK);
+	TEST_CHECK(stat_value(context, "AUDIO_WAVES") == 0);
+	TEST_CHECK(stat_value(context, "AUDIO_DEVICE_OPENS") == 0);
+
+	TEST_CHECK(send_wave2(callback, 0, longWave) == CHANNEL_RC_OK);
+	TEST_CHECK(stat_value(context, "AUDIO_WAVES") == 1);
+	TEST_CHECK(stat_value(context, "AUDIO_WAVE_BYTES") == longWave);
+	TEST_CHECK(stat_value(context, "AUDIO_DEVICE_OPENS") == 1);
+	TEST_CHECK(stat_value(context, "AUDIO_FORMAT_TAG") == WAVE_FORMAT_PCM);
+	TEST_CHECK(stat_value(context, "AUDIO_WAVES_OVERRUN") == 0);
+
+	/* seconds are queued now, so this one has no place: counted, and not played */
+	TEST_CHECK(send_wave2(callback, 0, shortWave) == CHANNEL_RC_OK);
+	TEST_CHECK(stat_value(context, "AUDIO_WAVES") == 2);
+	TEST_CHECK(stat_value(context, "AUDIO_WAVE_BYTES") == 1ull * longWave + shortWave);
+	TEST_CHECK(stat_value(context, "AUDIO_WAVES_OVERRUN") == 1);
+	TEST_CHECK(stat_value(context, "AUDIO_DEVICE_OPENS") == 1);
+
+	/* another format opens the device again */
+	TEST_CHECK(send_wave2(callback, 1, shortWave) == CHANNEL_RC_OK);
+	TEST_CHECK(stat_value(context, "AUDIO_DEVICE_OPENS") == 2);
+	TEST_CHECK(stat_value(context, "AUDIO_FORMAT_TAG") == WAVE_FORMAT_ALAW);
+
+	TEST_CHECK(send_wave_pair(callback, 1, shortWave, 50));
+	TEST_CHECK(stat_value(context, "AUDIO_WAVES") == 4);
+	TEST_CHECK(stat_value(context, "AUDIO_DEVICE_OPENS") == 2);
+	TEST_CHECK(stat_value(context, "AUDIO_DELAY_MS") >= 40);
+	return TRUE;
+}
+
+typedef BOOL (*audio_session_fn)(const rdpContext* context, IWTSVirtualChannelCallback* callback);
+
+static BOOL check_audio_channel(const rdpContext* context, IWTSPlugin* plugin,
+                                test_channel_manager* mgr, audio_session_fn session)
+{
+	IWTSVirtualChannel channel = WINPR_C_ARRAY_INIT;
+	channel.Write = test_channel_write;
+	channel.Close = test_channel_close;
+
+	TEST_CHECK(plugin->Initialize(plugin, &mgr->iface) == CHANNEL_RC_OK);
+	TEST_CHECK(mgr->listenerCallback);
+
+	BOOL accept = TRUE;
+	IWTSVirtualChannelCallback* callback = nullptr;
+	TEST_CHECK(mgr->listenerCallback->OnNewChannelConnection(
+	               mgr->listenerCallback, &channel, nullptr, &accept, &callback) == CHANNEL_RC_OK);
+	TEST_CHECK(callback);
+	TEST_CHECK(callback->OnOpen(callback) == CHANNEL_RC_OK);
+
+	const BOOL rc = session(context, callback);
+
+	/* frees the channel callback */
+	(void)callback->OnClose(callback);
+	return rc;
+}
+
+static BOOL run_audio(rdpContext* context, const char* backend, audio_session_fn session)
+{
+	char name[] = RDPSND_CHANNEL_NAME;
+	char subsystem[32] = WINPR_C_ARRAY_INIT;
+	(void)_snprintf(subsystem, sizeof(subsystem), "sys:%s", backend);
+	char* argv[] = { name, subsystem };
+	const ADDIN_ARGV args = { ARRAYSIZE(argv), argv };
+
+	test_entry_points ep = WINPR_C_ARRAY_INIT;
+	test_channel_manager mgr = WINPR_C_ARRAY_INIT;
+	TEST_CHECK(load_plugin(RDPSND_CHANNEL_NAME, context, &args, &ep, &mgr));
+
+	const BOOL rc = check_audio_channel(context, ep.plugin, &mgr, session);
+
+	/* frees the plugin */
+	(void)ep.plugin->Terminated(ep.plugin);
+	return rc;
+}
+
+#if !defined(WITH_DSP_FFMPEG)
+#define TEST_UNDECODABLE
+
+/* A backend that takes every format when they are announced and none when a wave comes, so the
+ * wave goes to the decoder. The built-in one has no A-law, so it refuses it. The fake backend
+ * takes every format at any time, and no other backend is sure to be there. */
+#define STUB_BACKEND "stub"
+
+static BOOL stubTakesFormats = TRUE;
+
+static BOOL stub_format_supported(WINPR_ATTR_UNUSED rdpsndDevicePlugin* device,
+                                  WINPR_ATTR_UNUSED const AUDIO_FORMAT* format)
+{
+	return stubTakesFormats;
+}
+
+static BOOL stub_open(WINPR_ATTR_UNUSED rdpsndDevicePlugin* device,
+                      WINPR_ATTR_UNUSED const AUDIO_FORMAT* format,
+                      WINPR_ATTR_UNUSED UINT32 latency)
+{
+	return TRUE;
+}
+
+static BOOL stub_set_volume(WINPR_ATTR_UNUSED rdpsndDevicePlugin* device,
+                            WINPR_ATTR_UNUSED UINT32 value)
+{
+	return TRUE;
+}
+
+static UINT stub_play(WINPR_ATTR_UNUSED rdpsndDevicePlugin* device,
+                      WINPR_ATTR_UNUSED const BYTE* data, WINPR_ATTR_UNUSED size_t size)
+{
+	return 0;
+}
+
+static void stub_free(rdpsndDevicePlugin* device)
+{
+	free(device);
+}
+
+static UINT VCAPITYPE stub_entry(PFREERDP_RDPSND_DEVICE_ENTRY_POINTS entryPoints)
+{
+	rdpsndDevicePlugin* device = calloc(1, sizeof(rdpsndDevicePlugin));
+	if (!device)
+		return CHANNEL_RC_NO_MEMORY;
+
+	device->FormatSupported = stub_format_supported;
+	device->Open = stub_open;
+	device->SetVolume = stub_set_volume;
+	device->Play = stub_play;
+	device->Free = stub_free;
+	entryPoints->pRegisterRdpsndDevice(entryPoints->rdpsnd, device);
+	return CHANNEL_RC_OK;
+}
+
+static PVIRTUALCHANNELENTRY stub_provider(LPCSTR name, LPCSTR subsystem, LPCSTR type, DWORD flags)
+{
+	if (subsystem && (strcmp(subsystem, STUB_BACKEND) == 0))
+	{
+		PFREERDP_RDPSND_DEVICE_ENTRY entry = stub_entry;
+		return WINPR_FUNC_PTR_CAST(entry, PVIRTUALCHANNELENTRY);
+	}
+	return freerdp_channels_load_static_addin_entry(name, subsystem, type, flags);
+}
+
+static BOOL check_undecodable_session(const rdpContext* context,
+                                      IWTSVirtualChannelCallback* callback)
+{
+	const UINT16 size = 800;
+	const uint64_t waves = stat_value(context, "AUDIO_WAVES");
+	const uint64_t overrun = stat_value(context, "AUDIO_WAVES_OVERRUN");
+
+	TEST_CHECK(send_formats(callback) == CHANNEL_RC_OK);
+	TEST_CHECK(stat_value(context, "AUDIO_WAVES_UNDECODABLE") == 0);
+
+	stubTakesFormats = FALSE;
+	const UINT rc = send_wave2(callback, 1, size);
+	stubTakesFormats = TRUE;
+
+	/* dropped and confirmed like the others: the channel goes on */
+	TEST_CHECK(rc == CHANNEL_RC_OK);
+	TEST_CHECK(stat_value(context, "AUDIO_WAVES") == waves + 1);
+	TEST_CHECK(stat_value(context, "AUDIO_WAVES_UNDECODABLE") == 1);
+	TEST_CHECK(stat_value(context, "AUDIO_WAVES_OVERRUN") == overrun);
+	return TRUE;
+}
+
+static BOOL check_undecodable(rdpContext* context)
+{
+	const FREERDP_LOAD_CHANNEL_ADDIN_ENTRY_FN provider = freerdp_get_current_addin_provider();
+	TEST_CHECK(freerdp_register_addin_provider(stub_provider, 0) == CHANNEL_RC_OK);
+	const BOOL rc = run_audio(context, STUB_BACKEND, check_undecodable_session);
+	TEST_CHECK(freerdp_register_addin_provider(provider, 0) == CHANNEL_RC_OK);
+	return rc;
+}
+#endif
+
+static BOOL check_audio(rdpContext* context)
+{
+	TEST_CHECK(
+	    freerdp_settings_set_bool(context->settings, FreeRDP_SynchronousDynamicChannels, TRUE));
+
+	/* the fake backend: a test makes no sound */
+	TEST_CHECK(run_audio(context, "fake", check_audio_session));
+
+	/* a reader needs no channel: the figures stay with the context */
+	TEST_CHECK(stat_value(context, "AUDIO_WAVES") == 4);
+
+#if defined(TEST_UNDECODABLE)
+	TEST_CHECK(check_undecodable(context));
+#endif
+
+	TEST_CHECK(
+	    freerdp_settings_set_bool(context->settings, FreeRDP_SynchronousDynamicChannels, FALSE));
+	return TRUE;
 }
 #endif
 
@@ -460,6 +768,9 @@ int TestClientStats(WINPR_ATTR_UNUSED int argc, WINPR_ATTR_UNUSED char* argv[])
 	BOOL rc = check_autodetect(context);
 #if defined(CHANNEL_RDPGFX_CLIENT)
 	rc = rc && check_gfx(context);
+#endif
+#if defined(CHANNEL_RDPSND_CLIENT)
+	rc = rc && check_audio(context);
 #endif
 #if defined(TEST_NETWORK)
 	rc = rc && check_network(context);
