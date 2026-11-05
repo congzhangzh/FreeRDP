@@ -36,7 +36,6 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <math.h>
 #include <poll.h>
 #include <pwd.h>
 #include <stdarg.h>
@@ -46,7 +45,6 @@
 
 #include <linux/input-event-codes.h>
 
-#include <spa/param/audio/format-utils.h>
 #include <spa/param/video/format-utils.h>
 #include <spa/param/buffers.h>
 #include <spa/buffer/meta.h>
@@ -61,9 +59,7 @@
 #include <winpr/sysinfo.h>
 
 #include <freerdp/server/server-common.h>
-#include <freerdp/codec/audio.h>
 #include <freerdp/codec/color.h>
-#include <freerdp/codec/dsp.h>
 #include <freerdp/codec/region.h>
 #include <freerdp/log.h>
 
@@ -144,21 +140,6 @@ static BOOL mutter_virtual_size(UINT32* width, UINT32* height)
 /* the mime types of a selection that the session offers */
 #define MUTTER_CLIPBOARD_MAX_MIMES 64
 
-/* What the clients hear: 48 kHz, 2 channels, 16 bits; PipeWire converts what
- * the sink plays to it. The build may have no resampler, so every format
- * offered has that rate and channel count, and 16 bits a sample: rdpsnd sizes
- * its buffers from the bits and channels of the first one. Opus first, so that
- * a client that has it takes it (96 kbit/s instead of 1.5 Mbit/s for PCM). Its
- * block alignment is 1: rdpsnd pads every wave to a multiple of it with zeros,
- * and an Opus packet with zeros after it no longer decodes. */
-#define MUTTER_AUDIO_RATE 48000
-#define MUTTER_AUDIO_CHANNELS 2
-#define MUTTER_AUDIO_FRAME_BYTES (MUTTER_AUDIO_CHANNELS * 2)
-/* samples are sent in messages of 20 ms */
-#define MUTTER_AUDIO_MESSAGE_FRAMES (MUTTER_AUDIO_RATE / 50)
-/* how often the sound statistics are logged (debug level) */
-#define MUTTER_AUDIO_LOG_MS 5000
-
 /* xkbcommon's core modifiers: Lock is Caps Lock, Mod2 is Num Lock in every
  * stock keymap */
 #define MUTTER_MOD_LOCK (1u << 1)
@@ -183,12 +164,6 @@ typedef struct
 	int primary;
 	char connector[MUTTER_SHADOW_CONNECTOR_SIZE];
 } MUTTER_LOGICAL;
-
-static const AUDIO_FORMAT mutter_audio_offered_formats[] = {
-	{ WAVE_FORMAT_OPUS, MUTTER_AUDIO_CHANNELS, MUTTER_AUDIO_RATE, 12000, 1, 16, 0, nullptr },
-	{ WAVE_FORMAT_PCM, MUTTER_AUDIO_CHANNELS, MUTTER_AUDIO_RATE,
-	  (MUTTER_AUDIO_RATE * MUTTER_AUDIO_FRAME_BYTES), MUTTER_AUDIO_FRAME_BYTES, 16, 0, nullptr },
-};
 
 /* ------------------------------------------------------------------------ */
 /* D-Bus                                                                     */
@@ -1361,223 +1336,6 @@ static BOOL mutter_stream_connect_node(mutterShadowSubsystem* mutter)
 /* sound                                                                     */
 /* ------------------------------------------------------------------------ */
 
-static void mutter_audio_msg_free(WINPR_ATTR_UNUSED UINT32 id, SHADOW_MSG_OUT* msg)
-{
-	SHADOW_MSG_OUT_AUDIO_OUT_SAMPLES* samples = (SHADOW_MSG_OUT_AUDIO_OUT_SAMPLES*)msg;
-	if (samples)
-		free(samples->buf);
-	free(samples);
-}
-
-/* Sends what s holds to every client, as one message */
-static void mutter_audio_post(mutterShadowSubsystem* mutter, wStream* s)
-{
-	WINPR_ASSERT(mutter);
-	WINPR_ASSERT(s);
-
-	const size_t size = Stream_GetPosition(s);
-	Stream_ResetPosition(s);
-	if (size == 0)
-		return;
-
-	rdpShadowServer* server = mutter->common.server;
-	if (!server || !server->clients || (ArrayList_Count(server->clients) == 0))
-		return;
-
-	SHADOW_MSG_OUT_AUDIO_OUT_SAMPLES* msg = calloc(1, sizeof(SHADOW_MSG_OUT_AUDIO_OUT_SAMPLES));
-	if (!msg)
-		return;
-
-	msg->buf = malloc(size);
-	if (!msg->buf)
-	{
-		free(msg);
-		return;
-	}
-
-	memcpy(msg->buf, Stream_Buffer(s), size);
-	mutter->audioMessages++;
-	msg->common.Free = mutter_audio_msg_free;
-	msg->audio_format = &mutter->audioSourceFormat;
-	msg->nFrames = size / MUTTER_AUDIO_FRAME_BYTES;
-	msg->wTimestamp = (UINT16)(GetTickCount64() & 0xFFFF);
-	/* the message is freed with its last reference, also when no client took it */
-	if (shadow_client_boardcast_msg(server, nullptr, SHADOW_MSG_OUT_AUDIO_OUT_SAMPLES_ID,
-	                                &msg->common, nullptr) < 0)
-		WLog_DBG(TAG, "sound: a message was not sent");
-}
-
-static void mutter_audio_stats(mutterShadowSubsystem* mutter, size_t frames)
-{
-	WINPR_ASSERT(mutter);
-
-	const UINT64 now = GetTickCount64();
-	if (mutter->audioLogged == 0)
-	{
-		WLog_INFO(TAG, "sound: capturing what the default sink plays");
-		mutter->audioLogged = now;
-	}
-	else if (now - mutter->audioLogged >= MUTTER_AUDIO_LOG_MS)
-	{
-		WLog_DBG(TAG,
-		         "sound: %" PRIu64 " frames captured, %" PRIu64
-		         " messages sent, peak %.3f in the last %" PRIu64 " ms",
-		         mutter->audioFrames, mutter->audioMessages, (double)mutter->audioPeak,
-		         now - mutter->audioLogged);
-		mutter->audioFrames = 0;
-		mutter->audioMessages = 0;
-		mutter->audioPeak = 0.0f;
-		mutter->audioLogged = now;
-	}
-	mutter->audioFrames += frames;
-}
-
-static void mutter_on_audio_process(void* data)
-{
-	mutterShadowSubsystem* mutter = (mutterShadowSubsystem*)data;
-	WINPR_ASSERT(mutter);
-
-	struct pw_buffer* pb = nullptr;
-
-	while ((pb = pw_stream_dequeue_buffer(mutter->audio)) != nullptr)
-	{
-		const struct spa_data* d = &pb->buffer->datas[0];
-		if (d->data && d->chunk && (d->chunk->size > 0) &&
-		    ((size_t)d->chunk->offset + d->chunk->size <= d->maxsize))
-		{
-			const INT16* samples = (const INT16*)((const BYTE*)d->data + d->chunk->offset);
-			const size_t frames = d->chunk->size / MUTTER_AUDIO_FRAME_BYTES;
-			mutter_audio_stats(mutter, frames);
-
-			wStream* s = mutter->audioStream;
-			for (size_t f = 0; f < frames; f++)
-			{
-				for (size_t c = 0; c < MUTTER_AUDIO_CHANNELS; c++)
-				{
-					const INT16 value = samples[f * MUTTER_AUDIO_CHANNELS + c];
-					mutter->audioPeak =
-					    MAX(mutter->audioPeak, fabsf((float)value / (float)INT16_MAX));
-					Stream_Write_INT16(s, value);
-				}
-
-				if (Stream_GetPosition(s) >= MUTTER_AUDIO_MESSAGE_FRAMES * MUTTER_AUDIO_FRAME_BYTES)
-					mutter_audio_post(mutter, s);
-			}
-		}
-		(void)pw_stream_queue_buffer(mutter->audio, pb);
-	}
-}
-
-static const struct pw_stream_events mutter_audio_events = {
-	PW_VERSION_STREAM_EVENTS,
-	.process = mutter_on_audio_process,
-};
-
-/* The formats offered to the clients, and a capture of the default sink's
- * monitor, inactive until a client connects. Without it there is no sound,
- * and the rest works. */
-WINPR_ATTR_NODISCARD
-static BOOL mutter_audio_init(mutterShadowSubsystem* mutter)
-{
-	WINPR_ASSERT(mutter);
-
-	uint8_t podBuffer[1024] = WINPR_C_ARRAY_INIT;
-	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(podBuffer, sizeof(podBuffer));
-
-	AUDIO_FORMAT* formats = audio_formats_new(ARRAYSIZE(mutter_audio_offered_formats));
-	if (!formats)
-		return FALSE;
-
-	size_t count = 0;
-	for (size_t x = 0; x < ARRAYSIZE(mutter_audio_offered_formats); x++)
-	{
-		const AUDIO_FORMAT* format = &mutter_audio_offered_formats[x];
-		if (freerdp_dsp_supports_format(format, TRUE))
-			formats[count++] = *format;
-	}
-
-	mutter->audioStream =
-	    Stream_New(nullptr, MUTTER_AUDIO_MESSAGE_FRAMES * MUTTER_AUDIO_FRAME_BYTES);
-	if (!mutter->audioStream || (count == 0))
-		goto fail;
-
-	mutter->audio =
-	    pw_stream_new(mutter->core, "FreeRDP shadow server sound",
-	                  pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY,
-	                                    "Capture", PW_KEY_MEDIA_ROLE, "Screen",
-	                                    PW_KEY_STREAM_CAPTURE_SINK, "true", nullptr));
-	if (!mutter->audio)
-		goto fail;
-	pw_stream_add_listener(mutter->audio, &mutter->audioListener, &mutter_audio_events, mutter);
-
-	struct spa_audio_info_raw info = WINPR_C_ARRAY_INIT;
-	info.format = SPA_AUDIO_FORMAT_S16_LE;
-	info.rate = MUTTER_AUDIO_RATE;
-	info.channels = MUTTER_AUDIO_CHANNELS;
-	info.position[0] = SPA_AUDIO_CHANNEL_FL;
-	info.position[1] = SPA_AUDIO_CHANNEL_FR;
-	const struct spa_pod* params[] = { spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat,
-		                                                          &info) };
-
-	/* PipeWire links it to the default sink's monitor and converts to our format */
-	if (pw_stream_connect(mutter->audio, PW_DIRECTION_INPUT, PW_ID_ANY,
-	                      PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS |
-	                          PW_STREAM_FLAG_INACTIVE,
-	                      params, ARRAYSIZE(params)) < 0)
-		goto fail;
-
-	mutter->common.rdpsndFormats = formats;
-	mutter->common.nRdpsndFormats = count;
-	return TRUE;
-
-fail:
-	if (mutter->audio)
-		pw_stream_destroy(mutter->audio);
-	mutter->audio = nullptr;
-	Stream_Free(mutter->audioStream, TRUE);
-	mutter->audioStream = nullptr;
-	audio_formats_free(formats, ARRAYSIZE(mutter_audio_offered_formats));
-	return FALSE;
-}
-
-static void mutter_audio_uninit(mutterShadowSubsystem* mutter)
-{
-	WINPR_ASSERT(mutter);
-
-	if (mutter->audio)
-		pw_stream_destroy(mutter->audio);
-	mutter->audio = nullptr;
-	mutter->audioActive = FALSE;
-	audio_formats_free(mutter->common.rdpsndFormats, mutter->common.nRdpsndFormats);
-	mutter->common.rdpsndFormats = nullptr;
-	mutter->common.nRdpsndFormats = 0;
-	Stream_Free(mutter->audioStream, TRUE);
-	mutter->audioStream = nullptr;
-}
-
-/* in the subsystem thread: capture only while clients are connected */
-static void mutter_audio_follow_clients(mutterShadowSubsystem* mutter)
-{
-	WINPR_ASSERT(mutter);
-
-	if (!mutter->audio)
-		return;
-
-	const BOOL active = InterlockedCompareExchange(&mutter->clients, 0, 0) > 0;
-	if (active == mutter->audioActive)
-		return;
-
-	if (pw_stream_set_active(mutter->audio, active ? true : false) < 0)
-	{
-		WLog_WARN(TAG, "sound: cannot %s the capture", active ? "start" : "stop");
-		return;
-	}
-	mutter->audioActive = active;
-	if (!active)
-		Stream_ResetPosition(mutter->audioStream);
-	WLog_DBG(TAG, "sound: capture %s", active ? "started" : "stopped");
-}
-
 /* ------------------------------------------------------------------------ */
 /* libei                                                                     */
 /* ------------------------------------------------------------------------ */
@@ -2662,7 +2420,7 @@ static DWORD WINAPI mutter_shadow_subsystem_thread(LPVOID arg)
 	WINPR_ASSERT(mutter);
 
 	wMessagePipe* MsgPipe = mutter->common.MsgPipe;
-	HANDLE events[6] = WINPR_C_ARRAY_INIT;
+	HANDLE events[5] = WINPR_C_ARRAY_INIT;
 	DWORD count = 0;
 
 	HANDLE busEvent = CreateFileDescriptorEventA(nullptr, FALSE, FALSE, sd_bus_get_fd(mutter->bus),
@@ -2680,7 +2438,6 @@ static DWORD WINAPI mutter_shadow_subsystem_thread(LPVOID arg)
 
 	events[count++] = mutter->stopEvent;
 	events[count++] = MessageQueue_Event(MsgPipe->In);
-	events[count++] = mutter->clientsEvent;
 	events[count++] = busEvent;
 	events[count++] = pwEvent;
 	if (eiEvent)
@@ -2727,13 +2484,6 @@ static DWORD WINAPI mutter_shadow_subsystem_thread(LPVOID arg)
 			mutter->closedLogged = TRUE;
 			if (mutter->common.server)
 				(void)SetEvent(mutter->common.server->StopEvent);
-		}
-
-		if (WaitForSingleObject(mutter->clientsEvent, 0) == WAIT_OBJECT_0)
-		{
-			/* reset before reading the count: a change after this sets it again */
-			(void)ResetEvent(mutter->clientsEvent);
-			mutter_audio_follow_clients(mutter);
 		}
 
 		pw_loop_enter(mutter->loop);
@@ -2833,8 +2583,7 @@ static int mutter_shadow_subsystem_init(rdpShadowSubsystem* subsystem)
 
 	mutter_set_monitor_size(mutter);
 
-	if (!mutter_audio_init(mutter))
-		WLog_WARN(TAG, "sound: no capture of the default sink: no sound");
+	mutter->audio = shadow_pipewire_audio_new(subsystem);
 
 	/* mirrored monitors carry the cursor in their frames and the clients get a
 	 * transparent shape; a virtual monitor sends the cursor's shapes. Either way
@@ -2862,7 +2611,8 @@ static int mutter_shadow_subsystem_uninit(rdpShadowSubsystem* subsystem)
 	if (!mutter)
 		return -1;
 
-	mutter_audio_uninit(mutter);
+	shadow_pipewire_audio_free(mutter->audio);
+	mutter->audio = nullptr;
 	if (mutter->stream)
 		pw_stream_destroy(mutter->stream);
 	mutter->stream = nullptr;
@@ -2983,8 +2733,8 @@ static BOOL mutter_shadow_client_connect(rdpShadowSubsystem* subsystem,
 
 	/* a new client gets the cursor shape with the next one seen */
 	mutter->cursorResend = TRUE;
-	(void)InterlockedIncrement(&mutter->clients);
-	(void)SetEvent(mutter->clientsEvent);
+	const LONG clients = InterlockedIncrement(&mutter->clients);
+	shadow_pipewire_audio_clients(mutter->audio, WINPR_ASSERTING_INT_CAST(size_t, clients));
 	return TRUE;
 }
 
@@ -2994,8 +2744,18 @@ static void mutter_shadow_client_disconnect(rdpShadowSubsystem* subsystem,
 	mutterShadowSubsystem* mutter = (mutterShadowSubsystem*)subsystem;
 	WINPR_ASSERT(mutter);
 
-	(void)InterlockedDecrement(&mutter->clients);
-	(void)SetEvent(mutter->clientsEvent);
+	const LONG clients = InterlockedDecrement(&mutter->clients);
+	shadow_pipewire_audio_clients(mutter->audio, WINPR_ASSERTING_INT_CAST(size_t, clients));
+}
+
+WINPR_ATTR_NODISCARD
+static BOOL mutter_shadow_microphone(rdpShadowSubsystem* subsystem, rdpShadowClient* client,
+                                     const AUDIO_FORMAT* format, wStream* samples)
+{
+	mutterShadowSubsystem* mutter = (mutterShadowSubsystem*)subsystem;
+	WINPR_ASSERT(mutter);
+
+	return shadow_pipewire_audio_microphone(mutter->audio, client, format, samples);
 }
 
 static void mutter_shadow_subsystem_free(rdpShadowSubsystem* subsystem)
@@ -3011,8 +2771,6 @@ static void mutter_shadow_subsystem_free(rdpShadowSubsystem* subsystem)
 	DeleteCriticalSection(&mutter->eiLock);
 	if (mutter->stopEvent)
 		(void)CloseHandle(mutter->stopEvent);
-	if (mutter->clientsEvent)
-		(void)CloseHandle(mutter->clientsEvent);
 	free(mutter);
 }
 
@@ -3032,8 +2790,7 @@ static rdpShadowSubsystem* mutter_shadow_subsystem_new(void)
 	mutter->stopEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
 	/* manual reset: WinPR has no auto-reset events (it creates a manual-reset one and
 	 * logs an error), so the thread resets it */
-	mutter->clientsEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
-	if (!mutter->stopEvent || !mutter->clientsEvent)
+	if (!mutter->stopEvent)
 	{
 		mutter_shadow_subsystem_free(&mutter->common);
 		return nullptr;
@@ -3041,12 +2798,6 @@ static rdpShadowSubsystem* mutter_shadow_subsystem_new(void)
 
 	mutter->cursorX = -1;
 	mutter->cursorY = -1;
-	mutter->audioSourceFormat.wFormatTag = WAVE_FORMAT_PCM;
-	mutter->audioSourceFormat.nChannels = MUTTER_AUDIO_CHANNELS;
-	mutter->audioSourceFormat.nSamplesPerSec = MUTTER_AUDIO_RATE;
-	mutter->audioSourceFormat.nAvgBytesPerSec = MUTTER_AUDIO_RATE * MUTTER_AUDIO_FRAME_BYTES;
-	mutter->audioSourceFormat.nBlockAlign = MUTTER_AUDIO_FRAME_BYTES;
-	mutter->audioSourceFormat.wBitsPerSample = 16;
 	mutter->common.SynchronizeEvent = mutter_shadow_input_synchronize_event;
 	mutter->common.KeyboardEvent = mutter_shadow_input_keyboard_event;
 	mutter->common.UnicodeKeyboardEvent = mutter_shadow_input_unicode_keyboard_event;
@@ -3054,6 +2805,7 @@ static rdpShadowSubsystem* mutter_shadow_subsystem_new(void)
 	mutter->common.ExtendedMouseEvent = mutter_shadow_input_extended_mouse_event;
 	mutter->common.ClientConnect = mutter_shadow_client_connect;
 	mutter->common.ClientDisconnect = mutter_shadow_client_disconnect;
+	mutter->common.AudinServerReceiveSamples = mutter_shadow_microphone;
 #ifdef WITH_PAM
 	mutter->common.Authenticate = mutter_shadow_pam_authenticate;
 #endif

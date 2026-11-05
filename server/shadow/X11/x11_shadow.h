@@ -21,6 +21,10 @@
 
 #include <freerdp/server/shadow.h>
 
+#if defined(WITH_SHADOW_PIPEWIRE)
+#include "shadow_pipewire_audio.h"
+#endif
+
 typedef struct x11_shadow_subsystem x11ShadowSubsystem;
 
 #include <winpr/crt.h>
@@ -54,6 +58,11 @@ typedef struct x11_shadow_subsystem x11ShadowSubsystem;
 struct x11_shadow_subsystem
 {
 	rdpShadowSubsystem common;
+
+#if defined(WITH_SHADOW_PIPEWIRE)
+	ShadowPipewireAudio* audio; /* nullptr without PipeWire */
+	volatile LONG clients;
+#endif
 
 	HANDLE thread;
 
