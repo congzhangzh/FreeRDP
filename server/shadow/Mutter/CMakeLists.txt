@@ -8,7 +8,7 @@ pkg_check_modules(SYSTEMD REQUIRED IMPORTED_TARGET libsystemd)
 pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
 pkg_check_modules(LIBEI REQUIRED IMPORTED_TARGET libei-1.0)
 
-set(LIBS PkgConfig::SYSTEMD PkgConfig::PIPEWIRE PkgConfig::LIBEI)
+set(LIBS PkgConfig::SYSTEMD PkgConfig::PIPEWIRE PkgConfig::LIBEI freerdp-shadow-pipewire)
 
 find_package(PAM)
 if(PAM_FOUND)
