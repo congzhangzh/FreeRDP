@@ -1,3 +1,8 @@
+if(WITH_SHADOW_PIPEWIRE)
+  add_compile_definitions(WITH_SHADOW_PIPEWIRE)
+  list(APPEND LIBS freerdp-shadow-pipewire)
+endif()
+
 find_package(X11 REQUIRED)
 if(X11_FOUND)
   add_compile_definitions(WITH_X11)

@@ -20,6 +20,8 @@
 #define FREERDP_SERVER_SHADOW_MUTTER_SHADOW_H
 
 #include <freerdp/server/shadow.h>
+
+#include "shadow_pipewire_audio.h"
 #include <freerdp/codec/audio.h>
 
 #include <winpr/crt.h>
@@ -120,19 +122,7 @@ struct mutter_shadow_subsystem
 	INT32 cursorX;
 	INT32 cursorY;
 
-	/* sound: a capture of the default sink's monitor, running only while
-	 * clients are connected; samples go out in messages of 20 ms */
-	struct pw_stream* audio;
-	struct spa_hook audioListener;
-	wStream* audioStream;
-	/* the format of the samples in each message: it outlives every client, since
-	 * rdpsnd keeps the pointer as its source format */
-	AUDIO_FORMAT audioSourceFormat;
-	BOOL audioActive;
-	UINT64 audioFrames;
-	UINT64 audioMessages;
-	float audioPeak;
-	UINT64 audioLogged;
+	ShadowPipewireAudio* audio; /* nullptr without PipeWire */
 
 	/* clipboard: D-Bus on the subsystem thread; an application may stall the pipes
 	 * of a transfer, so the data moves on a thread of its own */
@@ -142,9 +132,8 @@ struct mutter_shadow_subsystem
 	wMessageQueue* clipboardJobs;
 	HANDLE clipboardThread;
 
-	/* the clients connected; the event tells the thread the count changed */
+	/* the clients connected */
 	volatile LONG clients;
-	HANDLE clientsEvent;
 
 	void* volatile sizeClient; /* the newest client, only ever compared */
 
