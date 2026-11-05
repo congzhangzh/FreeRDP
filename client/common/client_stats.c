@@ -42,6 +42,13 @@ enum
 	STATS_BANDWIDTH_KBPS,
 	STATS_RTT_BASE_MS,
 	STATS_RTT_AVERAGE_MS,
+	STATS_AUDIO_WAVES,
+	STATS_AUDIO_WAVE_BYTES,
+	STATS_AUDIO_WAVES_OVERRUN,
+	STATS_AUDIO_WAVES_UNDECODABLE,
+	STATS_AUDIO_DEVICE_OPENS,
+	STATS_AUDIO_FORMAT_TAG,
+	STATS_AUDIO_DELAY_MS,
 	STATS_GFX_CAPS_VERSION,
 	STATS_SESSION_MAX
 };
@@ -49,7 +56,11 @@ enum
 static const char* const sessionNames[] = { "NETWORK_BYTES_RECEIVED",   "NETWORK_BYTES_SENT",
 	                                        "NETWORK_PACKETS_RECEIVED", "NETWORK_PACKETS_SENT",
 	                                        "NETWORK_BANDWIDTH_KBPS",   "NETWORK_RTT_BASE_MS",
-	                                        "NETWORK_RTT_AVERAGE_MS",   "GFX_CAPS_VERSION" };
+	                                        "NETWORK_RTT_AVERAGE_MS",   "AUDIO_WAVES",
+	                                        "AUDIO_WAVE_BYTES",         "AUDIO_WAVES_OVERRUN",
+	                                        "AUDIO_WAVES_UNDECODABLE",  "AUDIO_DEVICE_OPENS",
+	                                        "AUDIO_FORMAT_TAG",         "AUDIO_DELAY_MS",
+	                                        "GFX_CAPS_VERSION" };
 
 static uint64_t network_value(const rdpContext* context, size_t index)
 {
@@ -75,6 +86,33 @@ static uint64_t network_value(const rdpContext* context, size_t index)
 			return autodetect->netCharBaseRTT;
 		case STATS_RTT_AVERAGE_MS:
 			return autodetect->netCharAverageRTT;
+		default:
+			return 0;
+	}
+}
+
+static uint64_t audio_value(const rdpContext* context, size_t index)
+{
+	const rdpMetrics* metrics = context->metrics;
+	if (!metrics)
+		return 0;
+
+	switch (index)
+	{
+		case STATS_AUDIO_WAVES:
+			return metrics->AudioWaves;
+		case STATS_AUDIO_WAVE_BYTES:
+			return metrics->AudioWaveBytes;
+		case STATS_AUDIO_WAVES_OVERRUN:
+			return metrics->AudioWavesOverrun;
+		case STATS_AUDIO_WAVES_UNDECODABLE:
+			return metrics->AudioWavesUndecodable;
+		case STATS_AUDIO_DEVICE_OPENS:
+			return metrics->AudioDeviceOpens;
+		case STATS_AUDIO_FORMAT_TAG:
+			return metrics->AudioFormatTag;
+		case STATS_AUDIO_DELAY_MS:
+			return metrics->AudioDelayMs;
 		default:
 			return 0;
 	}
@@ -111,6 +149,8 @@ uint64_t freerdp_client_stats_value_for_index(const rdpContext* context, size_t 
 
 	if (index <= STATS_RTT_AVERAGE_MS)
 		return network_value(context, index);
+	if (index <= STATS_AUDIO_DELAY_MS)
+		return audio_value(context, index);
 
 #if defined(CHANNEL_RDPGFX_CLIENT)
 	if ((index < freerdp_client_stats_max_index()) && context->gdi)
