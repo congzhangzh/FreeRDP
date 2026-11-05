@@ -118,7 +118,6 @@ struct rdpsnd_plugin
 	BOOL firstFlagReceived;
 	UINT32 totalLength;
 	BOOL connected;
-	UINT64 badWaves; /* waves dropped because they did not decode */
 };
 
 WINPR_ATTR_NODISCARD
@@ -413,6 +412,12 @@ static BOOL rdpsnd_apply_volume(rdpsndPlugin* rdpsnd)
 }
 
 WINPR_ATTR_NODISCARD
+static rdpMetrics* rdpsnd_metrics(const rdpsndPlugin* rdpsnd)
+{
+	return rdpsnd->rdpcontext ? rdpsnd->rdpcontext->metrics : nullptr;
+}
+
+WINPR_ATTR_NODISCARD
 static BOOL rdpsnd_ensure_device_is_open(rdpsndPlugin* rdpsnd, UINT16 wFormatNo,
                                          const AUDIO_FORMAT* format)
 {
@@ -460,6 +465,13 @@ static BOOL rdpsnd_ensure_device_is_open(rdpsndPlugin* rdpsnd, UINT16 wFormatNo,
 		rdpsnd->wCurrentFormatNo = wFormatNo;
 		rdpsnd->startPlayTime = 0;
 		rdpsnd->totalPlaySize = 0;
+
+		rdpMetrics* metrics = rdpsnd_metrics(rdpsnd);
+		if (metrics)
+		{
+			metrics->AudioDeviceOpens++;
+			metrics->AudioFormatTag = format->wFormatTag;
+		}
 	}
 
 	return rdpsnd_apply_volume(rdpsnd);
@@ -621,6 +633,9 @@ static BOOL rdpsnd_detect_overrun(rdpsndPlugin* rdpsnd, const AUDIO_FORMAT* form
 		{
 			WLog_Print(rdpsnd->log, WLOG_DEBUG, "%s Buffer overrun pending %u ms dropping %u ms",
 			           rdpsnd_is_dyn_str(rdpsnd->dynamic), remainingDuration, duration);
+			rdpMetrics* metrics = rdpsnd_metrics(rdpsnd);
+			if (metrics)
+				metrics->AudioWavesOverrun++;
 			return TRUE;
 		}
 
@@ -653,6 +668,13 @@ static UINT rdpsnd_treat_wave(rdpsndPlugin* rdpsnd, wStream* s, size_t size)
 	error = rdpsnd_send_wave_confirm_pdu(rdpsnd, rdpsnd->wTimeStamp, rdpsnd->cBlockNo);
 	if (error)
 		return error;
+
+	rdpMetrics* metrics = rdpsnd_metrics(rdpsnd);
+	if (metrics)
+	{
+		metrics->AudioWaves++;
+		metrics->AudioWaveBytes += size;
+	}
 
 	const BYTE* data = Stream_ConstPointer(s);
 	format = &rdpsnd->ClientFormats[rdpsnd->wCurrentFormatNo];
@@ -689,12 +711,14 @@ static UINT rdpsnd_treat_wave(rdpsndPlugin* rdpsnd, wStream* s, size_t size)
 		{
 			/* Dropped, and confirmed like the others: an error here would end the
 			 * thread that plays the sound, and with it the sound of the session */
-			rdpsnd->badWaves++;
-			WLog_Print(rdpsnd->log, (rdpsnd->badWaves == 1) ? WLOG_WARN : WLOG_DEBUG,
+			UINT64 dropped = 1;
+			if (metrics)
+				dropped = ++metrics->AudioWavesUndecodable;
+			WLog_Print(rdpsnd->log, (dropped == 1) ? WLOG_WARN : WLOG_DEBUG,
 			           "%s dropped a %s wave of %" PRIuz " bytes that does not decode (%" PRIu64
 			           " so far)",
 			           rdpsnd_is_dyn_str(rdpsnd->dynamic),
-			           audio_format_get_tag_string(format->wFormatTag), size, rdpsnd->badWaves);
+			           audio_format_get_tag_string(format->wFormatTag), size, dropped);
 		}
 
 		Stream_Release(pcmData);
@@ -703,6 +727,8 @@ static UINT rdpsnd_treat_wave(rdpsndPlugin* rdpsnd, wStream* s, size_t size)
 	end = GetTickCount64();
 	diffMS = end - rdpsnd->wArrivalTime + latency;
 	ts = (rdpsnd->wTimeStamp + diffMS) % UINT16_MAX;
+	if (metrics)
+		metrics->AudioDelayMs = diffMS;
 
 	/*
 	 * Send the second WaveConfirm PDU. With the first WaveConfirm PDU,
