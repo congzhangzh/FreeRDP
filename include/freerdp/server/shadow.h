@@ -37,6 +37,7 @@
 #include <freerdp/server/audin.h>
 #endif
 #include <freerdp/server/rdpgfx.h>
+#include <freerdp/server/disp.h>
 #if defined(CHANNEL_CLIPRDR_SERVER)
 #include <freerdp/server/cliprdr.h>
 #endif
@@ -86,6 +87,11 @@ extern "C"
 	                                          rdpShadowClient* client);
 	typedef BOOL (*pfnShadowClientCapabilities)(rdpShadowSubsystem* subsystem,
 	                                            rdpShadowClient* client);
+	/** The client asks for another desktop size. A subsystem that sets this offers Display
+	 *  Control to its clients. Runs on the channel's thread and must not block.
+	 *  @since version 3.34.0 */
+	typedef BOOL (*pfnShadowClientResize)(rdpShadowSubsystem* subsystem, rdpShadowClient* client,
+	                                      UINT32 width, UINT32 height);
 
 	typedef BOOL (*pfnShadowSynchronizeEvent)(rdpShadowSubsystem* subsystem,
 	                                          rdpShadowClient* client, UINT32 flags);
@@ -175,6 +181,7 @@ extern "C"
 #if defined(CHANNEL_CLIPRDR_SERVER)
 		CliprdrServerContext* cliprdr; /** @since version 3.34.0 */
 #endif
+		DispServerContext* disp; /** @since version 3.34.0 */
 	};
 
 	struct rdp_shadow_server
@@ -309,6 +316,8 @@ extern "C"
 		WINPR_ATTR_NODISCARD pfnShadowClipboardRead ClipboardRead;   /** @since version 3.34.0 */
 		WINPR_ATTR_NODISCARD pfnShadowClipboardProvide
 		    ClipboardProvide; /** @since version 3.34.0 */
+
+		WINPR_ATTR_NODISCARD pfnShadowClientResize ClientResize; /** @since version 3.34.0 */
 	};
 
 /* Definition of message between subsystem and clients */
