@@ -39,6 +39,10 @@ A headless GNOME started by the session manager keeps running after the client l
 so the next connection finds the same desktop. It ends when the user logs out
 in it, or with `systemctl stop freerdp-sesman-gnome-<user>`.
 
+An update of the shadow server takes effect at the next connection: the session manager
+sees that the running program is gone from disk and restarts it. The desktop stays; a client
+connected to the old server is dropped and reconnects.
+
 ## Security notes
 
 - The session manager runs as root, reads at most one 1 KiB packet from a client before
