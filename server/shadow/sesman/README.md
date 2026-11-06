@@ -46,9 +46,12 @@ connected to the old server is dropped and reconnects.
 A session started this way has no seat, and polkit takes a session with no seat for a
 remote one: what a desktop on a seat may simply do asks for an administrator. GNOME
 Software refreshes and updates in the background, so it would bring password dialogs
-nobody asked for, and those take the keyboard. The session manager keeps it out of the
-autostart of these sessions, through `/run/freerdp-sesman/xdg` first in
-`XDG_CONFIG_DIRS`. It still opens by hand, and then asks like any other program.
+nobody asked for, and those take the keyboard. It starts in two ways, and the session
+manager closes both for these sessions: `/run/freerdp-sesman/xdg` first in
+`XDG_CONFIG_DIRS` keeps it out of the autostart, and `systemctl --user mask --runtime`
+keeps `gnome-software.service` from starting, until the user's manager ends. So it does
+not open from the menu or show up in a search of Activities either. `gnome-software` in
+a terminal still starts it, and it then asks like any other program.
 
 ## Security notes
 

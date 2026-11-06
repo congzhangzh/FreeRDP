@@ -67,6 +67,8 @@
 #define SHADOW_TIMEOUT_S 120 /* for the shadow server to listen (GNOME may be starting) */
 #define GNOME_SESSION "/usr/bin/gnome-session"
 #define AUTOSTART_ROOT "/run/freerdp-sesman"
+#define START_SESSION \
+	"systemctl --user mask --runtime --quiet gnome-software.service; exec " GNOME_SESSION
 #define USER_MAX 64
 #ifndef SESMAN_SHADOW
 #define SESMAN_SHADOW "freerdp-shadow-cli"
@@ -352,8 +354,10 @@ static bool mutter_ready(const struct passwd* pw, int seconds)
 /* GNOME Software stays in the background of a desktop and refreshes and updates what
  * the system has. polkit takes a session with no seat for a remote one, so each of those
  * steps asks for an administrator: a dialog nobody asked for, which also takes the
- * keyboard. A desktop entry of the same name earlier in XDG_CONFIG_DIRS turns it off for
- * the sessions started here, and it still opens by hand. */
+ * keyboard. It starts in two ways: from the autostart, which a desktop entry of the same
+ * name earlier in XDG_CONFIG_DIRS turns off for the sessions started here, and as a unit
+ * the GNOME session wants, which START_SESSION masks for this boot of the user's
+ * manager. */
 static void hide_autostart(void)
 {
 	static const char* const dirs[] = { AUTOSTART_ROOT, AUTOSTART_ROOT "/xdg",
@@ -417,8 +421,9 @@ static bool start_headless(const Config* cfg, const struct passwd* pw)
 		                   "--setenv=XDG_SESSION_DESKTOP=gnome",
 		                   "--setenv=DESKTOP_SESSION=gnome",
 		                   "--setenv=XDG_CONFIG_DIRS=" AUTOSTART_ROOT "/xdg:/etc/xdg",
-		                   session ? GNOME_SESSION : "gnome-shell",
-		                   session ? NULL : "--headless",
+		                   session ? "/bin/sh" : "gnome-shell",
+		                   session ? "-c" : "--headless",
+		                   session ? START_SESSION : NULL,
 		                   NULL };
 	char* startPipewire[] = {
 		"systemctl",           machine, "--user", "start", "pipewire.socket", "pipewire.service",
