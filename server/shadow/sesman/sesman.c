@@ -42,6 +42,8 @@
 #include <getopt.h>
 #include <grp.h>
 #include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <pwd.h>
 #include <signal.h>
@@ -505,10 +507,28 @@ static void relay(int a, int b)
 	}
 }
 
+/* The shadow server sets these on a client's socket, but behind us it has a unix socket:
+ * without them a client that went away with no FIN (a closed laptop) stays connected for
+ * good. The same values as FreeRDP's defaults. */
+static void keep_alive(int fd)
+{
+	const int on = 1;
+	const int idle = 5;
+	const int interval = 2;
+	const int count = 3;
+	const unsigned ackMs = 9000;
+	(void)setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on));
+	(void)setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+	(void)setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
+	(void)setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count));
+	(void)setsockopt(fd, IPPROTO_TCP, TCP_USER_TIMEOUT, &ackMs, sizeof(ackMs));
+}
+
 static void handle(const Config* cfg, int client, const char* peer)
 {
 	const struct timeval tv = { .tv_sec = CR_TIMEOUT_S };
 	(void)setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	keep_alive(client);
 
 	uint8_t cr[CR_MAX];
 	const size_t len = read_connection_request(client, cr, sizeof(cr));
