@@ -97,14 +97,28 @@ class sdlClip
 	/* SDL3 has no clipboard driver for the browser: the page exchanges text with the
 	 * browser clipboard and these functions connect it to the cliprdr channel. */
 	[[nodiscard]] static bool webOffer(const char* utf8, const BYTE* dib, size_t dibSize);
+	/* The page owns the files: it builds the CLIPRDR_FILELIST and serves each FileContents
+	 * request itself, as only the main browser thread can read a File. */
+	[[nodiscard]] static bool webOfferFiles(const BYTE* list, size_t size);
+	[[nodiscard]] static bool webSendFileRequest(UINT32 streamId, UINT32 listIndex, UINT32 flags,
+	                                             UINT64 offset, UINT32 size);
+	[[nodiscard]] static bool webSendFileResponse(UINT32 streamId, const BYTE* data, UINT32 size,
+	                                              bool ok);
 
   private:
+	[[nodiscard]] static UINT
+	webReceiveFileRequest(CliprdrClientContext* context,
+	                      const CLIPRDR_FILE_CONTENTS_REQUEST* fileContentsRequest);
+	[[nodiscard]] static UINT
+	webReceiveFileResponse(CliprdrClientContext* context,
+	                       const CLIPRDR_FILE_CONTENTS_RESPONSE* fileContentsResponse);
 	[[nodiscard]] bool webRequestServerText();
 	[[nodiscard]] bool webAnswerDataRequest(const CLIPRDR_FORMAT_DATA_REQUEST* request);
 	[[nodiscard]] bool webTakeDataResponse(const CLIPRDR_FORMAT_DATA_RESPONSE* response);
-	std::string _web_local;           /* text from the browser clipboard, offered to the server */
-	std::vector<BYTE> _web_local_dib; /* image from the browser clipboard as CF_DIB */
-	std::deque<size_t> _web_recent;   /* hashes of recent offers, to recognise late echoes */
+	std::string _web_local;             /* text from the browser clipboard, offered to the server */
+	std::vector<BYTE> _web_local_dib;   /* image from the browser clipboard as CF_DIB */
+	std::vector<BYTE> _web_local_files; /* CLIPRDR_FILELIST of the files dropped on the page */
+	std::deque<size_t> _web_recent;     /* hashes of recent offers, to recognise late echoes */
 #endif
 
   private:
