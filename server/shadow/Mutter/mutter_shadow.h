@@ -123,6 +123,7 @@ struct mutter_shadow_subsystem
 	sd_bus_slot* selectionOwnerSlot;
 	sd_bus_slot* selectionTransferSlot;
 	wMessageQueue* clipboardJobs;
+	wArrayList* clipboardPipes;
 	HANDLE clipboardThread;
 
 	volatile LONG clients;
