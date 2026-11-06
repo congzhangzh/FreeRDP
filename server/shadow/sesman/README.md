@@ -45,10 +45,10 @@ connected to the old server is dropped and reconnects.
 
 A session started this way has no seat, and polkit takes a session with no seat for a
 remote one: what a desktop on a seat may simply do asks for an administrator. GNOME
-Software refreshes its catalogue in the background, so without a rule each login brings
-a password dialog that also takes the keyboard. `freerdp-shadow-sesman.rules` allows
-those refreshes for the group `freerdp-headless` and nothing else; it is installed
-into polkit's `rules.d`, so edit the group name if yours differs.
+Software refreshes and updates in the background, so it would bring password dialogs
+nobody asked for, and those take the keyboard. The session manager keeps it out of the
+autostart of these sessions, through `/run/freerdp-sesman/xdg` first in
+`XDG_CONFIG_DIRS`. It still opens by hand, and then asks like any other program.
 
 ## Security notes
 
