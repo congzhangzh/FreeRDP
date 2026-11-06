@@ -63,7 +63,8 @@
 
 #define CR_MAX 1024         /* a Connection Request is far smaller */
 #define CR_TIMEOUT_S 10     /* to send it */
-#define SHADOW_TIMEOUT_S 60 /* for the shadow server to listen (GNOME may be starting) */
+#define SHADOW_TIMEOUT_S 120 /* for the shadow server to listen (GNOME may be starting) */
+#define GNOME_SESSION "/usr/bin/gnome-session"
 #define USER_MAX 64
 #ifndef SESMAN_SHADOW
 #define SESMAN_SHADOW "freerdp-shadow-cli"
@@ -346,10 +347,12 @@ static bool mutter_ready(const struct passwd* pw, int seconds)
 	return false;
 }
 
-/* A headless GNOME Shell for a user of --headless-group that has no session.
- * It runs as a system unit with a PAM session, as a display manager would
- * start it: logind registers a (wayland) session for it, so the user's
- * systemd manager starts and stays as long as GNOME Shell runs. */
+/* A headless GNOME for a user of --headless-group that has no session. It runs as a
+ * system unit with a PAM session, as a display manager would start it: logind registers
+ * a (wayland) session with no seat, so the user's systemd manager starts and stays as
+ * long as it runs, and GNOME Shell comes up with no monitor. gnome-session gives the
+ * user a whole desktop: the settings daemons (keyboard layouts, shortcuts, what X11
+ * programs read for fonts and scale), the ssh agent, the autostart programs. */
 static bool start_headless(const Config* cfg, const struct passwd* pw)
 {
 	char unit[USER_MAX + 32];
@@ -365,6 +368,9 @@ static bool start_headless(const Config* cfg, const struct passwd* pw)
 	         (unsigned)pw->pw_uid);
 	snprintf(machine, sizeof(machine), "--machine=%s@.host", pw->pw_name);
 
+	/* a system with only the shell still gets a desktop to look at */
+	const bool session = access(GNOME_SESSION, X_OK) == 0;
+
 	/* no monitor of its own: the shadow server adds one (RecordVirtual) */
 	logmsg("%s has no GNOME session: starting a headless one (%s)", pw->pw_name, cfg->headlessSize);
 	char* startShell[] = { "systemd-run",
@@ -377,8 +383,11 @@ static bool start_headless(const Config* cfg, const struct passwd* pw)
 		                   "--setenv=XDG_SESSION_CLASS=user",
 		                   runtime,
 		                   bus,
-		                   "gnome-shell",
-		                   "--headless",
+		                   "--setenv=XDG_CURRENT_DESKTOP=GNOME",
+		                   "--setenv=XDG_SESSION_DESKTOP=gnome",
+		                   "--setenv=DESKTOP_SESSION=gnome",
+		                   session ? GNOME_SESSION : "gnome-shell",
+		                   session ? NULL : "--headless",
 		                   NULL };
 	char* startPipewire[] = {
 		"systemctl",           machine, "--user", "start", "pipewire.socket", "pipewire.service",
