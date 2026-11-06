@@ -27,3 +27,4 @@ target_compile_definitions(
 install(TARGETS ${MODULE_NAME} DESTINATION ${CMAKE_INSTALL_SBINDIR} COMPONENT server)
 configure_file(freerdp-shadow-sesman.service.in ${CMAKE_CURRENT_BINARY_DIR}/freerdp-shadow-sesman.service @ONLY)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/freerdp-shadow-sesman.service DESTINATION lib/systemd/system COMPONENT server)
+install(FILES freerdp-shadow-sesman.rules DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/polkit-1/rules.d COMPONENT server)

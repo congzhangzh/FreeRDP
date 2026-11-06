@@ -43,6 +43,13 @@ An update of the shadow server takes effect at the next connection: the session 
 sees that the running program is gone from disk and restarts it. The desktop stays; a client
 connected to the old server is dropped and reconnects.
 
+A session started this way has no seat, and polkit takes a session with no seat for a
+remote one: what a desktop on a seat may simply do asks for an administrator. GNOME
+Software refreshes its catalogue in the background, so without a rule each login brings
+a password dialog that also takes the keyboard. `freerdp-shadow-sesman.rules` allows
+those refreshes for the group `freerdp-headless` and nothing else; it is installed
+into polkit's `rules.d`, so edit the group name if yours differs.
+
 ## Security notes
 
 - The session manager runs as root, reads at most one 1 KiB packet from a client before
