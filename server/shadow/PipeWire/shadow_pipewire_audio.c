@@ -104,7 +104,6 @@ struct s_shadow_pipewire_audio
 	/* the format of the samples in each message: it outlives every client, since
 	 * rdpsnd keeps the pointer as its source format */
 	AUDIO_FORMAT sourceFormat;
-	BOOL captureActive;
 	UINT64 frames;
 	UINT64 messages;
 	float peak;
@@ -253,8 +252,9 @@ static const struct spa_pod* audio_format_pod(struct spa_pod_builder* b, uint32_
 	return spa_format_audio_raw_build(b, SPA_PARAM_EnumFormat, &info);
 }
 
-/* loop thread, or before it runs: a capture of the default sink's monitor, inactive until
- * a client connects */
+/* loop thread: a capture of the default sink's monitor, for as long as a client is connected.
+ * A stream made inactive and started later never gets its links going if the sink already
+ * plays, so the first client would hear nothing of what was playing when it connected. */
 WINPR_ATTR_NODISCARD
 static BOOL sound_create_capture(ShadowPipewireAudio* audio)
 {
@@ -275,10 +275,15 @@ static BOOL sound_create_capture(ShadowPipewireAudio* audio)
 	const struct spa_pod* params[] = { audio_format_pod(&b, SOUND_CHANNELS) };
 
 	/* PipeWire links it to the default sink's monitor and converts to our format */
-	return pw_stream_connect(audio->capture, PW_DIRECTION_INPUT, PW_ID_ANY,
-	                         PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS |
-	                             PW_STREAM_FLAG_INACTIVE,
-	                         params, ARRAYSIZE(params)) >= 0;
+	if (pw_stream_connect(audio->capture, PW_DIRECTION_INPUT, PW_ID_ANY,
+	                      PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS, params,
+	                      ARRAYSIZE(params)) < 0)
+	{
+		pw_stream_destroy(audio->capture);
+		audio->capture = nullptr;
+		return FALSE;
+	}
+	return TRUE;
 }
 
 /* The source plays what the ring holds, silence when it runs dry */
@@ -396,17 +401,23 @@ static int follow_clients(WINPR_ATTR_UNUSED struct spa_loop* loop, WINPR_ATTR_UN
 	if (!active)
 		mic_destroy(audio);
 
-	if (active == audio->captureActive)
+	if (active == (audio->capture != nullptr))
 		return 0;
 
-	if (pw_stream_set_active(audio->capture, active ? true : false) < 0)
+	if (active)
 	{
-		WLog_WARN(TAG, "sound: cannot %s the capture", active ? "start" : "stop");
-		return 0;
+		if (!sound_create_capture(audio))
+		{
+			WLog_WARN(TAG, "sound: cannot start the capture");
+			return 0;
+		}
 	}
-	audio->captureActive = active;
-	if (!active)
+	else
+	{
+		pw_stream_destroy(audio->capture);
+		audio->capture = nullptr;
 		Stream_ResetPosition(audio->pending);
+	}
 	WLog_DBG(TAG, "sound: capture %s", active ? "started" : "stopped");
 	return 0;
 }
@@ -590,7 +601,7 @@ ShadowPipewireAudio* shadow_pipewire_audio_new(rdpShadowSubsystem* subsystem)
 	if (audio->core)
 	{
 		pw_core_add_listener(audio->core, &audio->coreListener, &audio_core_events, audio);
-		ready = sound_create_capture(audio);
+		ready = TRUE;
 	}
 	pw_thread_loop_unlock(audio->loop);
 
