@@ -1,0 +1,15 @@
+// The sessions freerdp-shadow-sesman starts have no seat, so polkit takes them for
+// remote ones: what a desktop on a seat may simply do asks for an administrator here.
+// GNOME Software refreshes its catalogue in the background, so a user got a password
+// dialog a minute after each login, which also took the keyboard. Nothing else is
+// allowed by this file: anything that changes the system still asks.
+//
+// freerdp-headless is the group given to --headless-group; edit it if yours differs.
+polkit.addRule(function(action, subject) {
+    if ((action.id == "org.freedesktop.Flatpak.appstream-update" ||
+         action.id == "org.freedesktop.packagekit.system-sources-refresh") &&
+        subject.active && subject.isInGroup("freerdp-headless")) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});
