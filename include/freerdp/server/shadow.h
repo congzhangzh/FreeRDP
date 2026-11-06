@@ -124,6 +124,15 @@ extern "C"
 	 */
 #define SHADOW_CLIPBOARD_MAX_SIZE (256ull * 1024ull * 1024ull)
 
+	/** The mime types of files, with ClipboardFiles. A client's files reach the disk before
+	 *  shadow_clipboard_session_request() ends in ClipboardProvide: that may take as long as
+	 *  they take to arrive, not the moments of the other mime types.
+	 *
+	 *  @since version 3.34.0
+	 */
+#define SHADOW_CLIPBOARD_MIME_URI_LIST "text/uri-list"
+#define SHADOW_CLIPBOARD_MIME_GNOME_FILES "x-special/gnome-copied-files"
+
 	/** A client copied: the session offers its data from now on, in these mime types. With
 	 *  none, that client left or has nothing to offer: the session drops the offer. */
 	typedef BOOL (*pfnShadowClipboardOffer)(rdpShadowSubsystem* subsystem,
@@ -323,6 +332,8 @@ extern "C"
 		WINPR_ATTR_NODISCARD pfnShadowClipboardRead ClipboardRead;   /** @since version 3.34.0 */
 		WINPR_ATTR_NODISCARD pfnShadowClipboardProvide
 		    ClipboardProvide; /** @since version 3.34.0 */
+		/* it can wait for files, see SHADOW_CLIPBOARD_MIME_URI_LIST: the clients may copy them */
+		BOOL ClipboardFiles; /** @since version 3.34.0 */
 
 		WINPR_ATTR_NODISCARD pfnShadowClientResize ClientResize; /** @since version 3.34.0 */
 	};
