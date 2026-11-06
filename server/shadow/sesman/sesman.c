@@ -41,6 +41,7 @@
 #include <errno.h>
 #include <getopt.h>
 #include <grp.h>
+#include <limits.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -432,19 +433,68 @@ static int connect_unix(const char* path)
 
 /* The shadow server of the user, on a unix socket in the user's runtime
  * directory; started in the user's systemd manager when it does not answer */
+/* An update leaves the old server running for as long as anyone reaches it: is the program
+ * behind this socket gone from disk? Asked as the user: root may lack the capability to read
+ * another user's /proc/<pid>/exe, in a container for one. */
+static bool server_replaced(int fd, const struct passwd* pw)
+{
+	struct ucred cred = { 0 };
+	socklen_t len = sizeof(cred);
+	if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &len) < 0)
+		return false;
+
+	const pid_t pid = fork();
+	if (pid < 0)
+		return false;
+	if (pid == 0)
+	{
+		if ((setgroups(0, NULL) < 0) || (setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) < 0) ||
+		    (setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid) < 0))
+			_exit(0);
+
+		char link[64];
+		char exe[PATH_MAX];
+		snprintf(link, sizeof(link), "/proc/%d/exe", (int)cred.pid);
+		const ssize_t n = readlink(link, exe, sizeof(exe) - 1);
+		if (n <= 0)
+			_exit(0);
+		exe[n] = '\0';
+		_exit(strstr(exe, " (deleted)") ? 1 : 0);
+	}
+
+	int status = 0;
+	while (waitpid(pid, &status, 0) < 0)
+	{
+		if (errno != EINTR)
+			return false;
+	}
+	return WIFEXITED(status) && (WEXITSTATUS(status) == 1);
+}
+
 static int shadow_connect(const Config* cfg, const struct passwd* pw)
 {
 	char path[128];
 	snprintf(path, sizeof(path), "/run/user/%u/" SOCKET_NAME, (unsigned)pw->pw_uid);
 
+	char machine[USER_MAX + 16];
+	snprintf(machine, sizeof(machine), "--machine=%s@.host", pw->pw_name);
+
 	int fd = connect_unix(path);
 	if (fd >= 0)
-		return fd;
+	{
+		if (!server_replaced(fd, pw))
+			return fd;
 
-	char machine[USER_MAX + 16];
+		/* the desktop stays: a client connected to the old server has to reconnect */
+		logmsg("the shadow server of %s was replaced on disk: restarting it", pw->pw_name);
+		close(fd);
+		char* stop[] = { "systemctl", machine, "--user", "stop", SHADOW_UNIT, NULL };
+		if (!run(stop))
+			logmsg("could not stop the old shadow server of %s", pw->pw_name);
+	}
+
 	char ipc[160];
 	char virtualMonitor[64];
-	snprintf(machine, sizeof(machine), "--machine=%s@.host", pw->pw_name);
 	snprintf(ipc, sizeof(ipc), "/ipc-socket:%s", path);
 	/* a headless GNOME of ours has no monitor: the shadow server adds its own,
 	 * which also lets the clients draw the cursor */
