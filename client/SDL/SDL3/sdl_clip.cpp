@@ -41,6 +41,8 @@ class sdlClip;
  * offer from the page is being sent. */
 static std::mutex s_web_lock;
 static sdlClip* s_web_clip = nullptr;
+/* Does the server take files: 1 it said so, 0 it did not, -1 not known yet */
+static std::atomic<int> s_web_server_files{ -1 };
 #include <emscripten.h>
 #include <emscripten/proxying.h>
 #include <emscripten/threading.h>
@@ -243,7 +245,10 @@ sdlClip::~sdlClip()
 	{
 		std::scoped_lock web(s_web_lock);
 		if (s_web_clip == this)
+		{
 			s_web_clip = nullptr;
+			s_web_server_files = -1;
+		}
 	}
 #endif
 	cliprdr_file_context_free(_file);
@@ -268,6 +273,7 @@ bool sdlClip::init(CliprdrClientContext* clip)
 	{
 		std::scoped_lock web(s_web_lock);
 		s_web_clip = this;
+		s_web_server_files = -1;
 	}
 #endif
 
@@ -288,7 +294,10 @@ bool sdlClip::uninit(CliprdrClientContext* clip)
 	{
 		std::scoped_lock web(s_web_lock);
 		if (s_web_clip == this)
+		{
 			s_web_clip = nullptr;
+			s_web_server_files = -1;
+		}
 	}
 #endif
 	ClipboardLockGuard systemlock(_system);
@@ -521,6 +530,11 @@ bool sdlClip::handleEvent(const SDL_ClipboardEvent& ev)
 
 UINT sdlClip::MonitorReady(CliprdrClientContext* context, const CLIPRDR_MONITOR_READY* monitorReady)
 {
+#if defined(__EMSCRIPTEN__)
+	/* capabilities come before this, if a server sends any */
+	int unknown = -1;
+	s_web_server_files.compare_exchange_strong(unknown, 0);
+#endif
 	WINPR_UNUSED(monitorReady);
 	WINPR_ASSERT(context);
 	WINPR_ASSERT(monitorReady);
@@ -690,6 +704,9 @@ UINT sdlClip::ReceiveServerCapabilities(CliprdrClientContext* context,
 	if (!cliprdr_file_context_remote_set_flags(clipboard->_file, 0))
 		return ERROR_INTERNAL_ERROR;
 
+#if defined(__EMSCRIPTEN__)
+	s_web_server_files = 0;
+#endif
 	for (UINT32 i = 0; i < capabilities->cCapabilitiesSets; i++)
 	{
 		auto caps = reinterpret_cast<const CLIPRDR_CAPABILITY_SET*>(capsPtr);
@@ -700,6 +717,10 @@ UINT sdlClip::ReceiveServerCapabilities(CliprdrClientContext* context,
 
 			if (!cliprdr_file_context_remote_set_flags(clipboard->_file, generalCaps->generalFlags))
 				return ERROR_INTERNAL_ERROR;
+#if defined(__EMSCRIPTEN__)
+			if ((generalCaps->generalFlags & CB_STREAM_FILECLIP_ENABLED) != 0)
+				s_web_server_files = 1;
+#endif
 		}
 
 		capsPtr += caps->capabilitySetLength;
@@ -2034,6 +2055,13 @@ static int web_file_start(web_file_job* job, const BYTE* data, size_t size)
 	}
 	pthread_detach(tid);
 	return 1;
+}
+
+/* 1 the server takes files, 0 it does not, -1 not known yet. A server that sent no
+ * capabilities before it was ready has none to offer. */
+extern "C" EMSCRIPTEN_KEEPALIVE int freerdp_web_clipboard_server_files(void)
+{
+	return s_web_server_files.load();
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE int freerdp_web_clipboard_offer_files(const BYTE* list, size_t size)
