@@ -53,6 +53,11 @@ keeps `gnome-software.service` from starting, until the user's manager ends. So 
 not open from the menu or show up in a search of Activities either. `gnome-software` in
 a terminal still starts it, and it then asks like any other program.
 
+A login with the right password also unlocks a locked session that the session manager
+started, because such a session has no real screen anyone could be sitting at, and a lock
+screen would only ask for the same password again. It unlocks nothing else: a GNOME that
+is running on a real screen stays locked for a remote login.
+
 ## Security notes
 
 - The session manager runs as root, reads at most one 1 KiB packet from a client before
