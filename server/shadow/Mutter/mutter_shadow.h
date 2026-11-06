@@ -135,6 +135,8 @@ struct mutter_shadow_subsystem
 	/* the clients connected */
 	volatile LONG clients;
 
+	void* volatile sizeClient; /* the newest client, only ever compared */
+
 	HANDLE thread;
 	HANDLE stopEvent;
 };
