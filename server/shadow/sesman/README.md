@@ -16,7 +16,7 @@ cookie, `Cookie: mstshash=<user>`. The session manager reads that packet and not
 1. finds the user (or the one local user whose name starts with the cookie,
    since some clients cut it short);
 2. finds the user's GNOME Shell; without one, users of `--headless-group` get a
-   headless GNOME Shell (a system unit with a PAM session, so logind registers
+   headless GNOME session (a system unit with a PAM session, so logind registers
    it and the user's systemd manager stays up), others are refused;
 3. starts FreeRDP's shadow server (Mutter backend) in the user's own systemd
    manager unless it already listens on `/run/user/<uid>/freerdp-sesman-shadow.sock`;
