@@ -2017,6 +2017,13 @@ static void mutter_shadow_refresh(mutterShadowSubsystem* mutter)
 /* calls of RemoteDesktop.Session. Mutter hands out a pipe for each transfer.  */
 /* ------------------------------------------------------------------------- */
 
+/* A transfer that Mutter gave its pipe to before the data exists */
+typedef struct
+{
+	UINT32 serial;
+	int fd;
+} mutterClipboardPipe;
+
 typedef struct
 {
 	char** mimes; /* nullptr terminated */
@@ -2203,6 +2210,41 @@ static void mutter_clipboard_write_done(mutterShadowSubsystem* mutter, UINT32 se
 	}
 }
 
+static void mutter_clipboard_pipe_free(void* obj)
+{
+	mutterClipboardPipe* pipe = obj;
+	if (!pipe)
+		return;
+	if (pipe->fd >= 0)
+		(void)close(pipe->fd);
+	free(pipe);
+}
+
+/* subsystem thread. @return the pipe of a transfer, ours to close, or -1 */
+WINPR_ATTR_NODISCARD
+static int mutter_clipboard_take_pipe(mutterShadowSubsystem* mutter, UINT32 serial)
+{
+	WINPR_ASSERT(mutter);
+
+	if (!mutter->clipboardPipes)
+		return -1;
+
+	const size_t count = ArrayList_Count(mutter->clipboardPipes);
+	for (size_t x = 0; x < count; x++)
+	{
+		mutterClipboardPipe* pipe = ArrayList_GetItem(mutter->clipboardPipes, x);
+		if (pipe && (pipe->serial == serial))
+		{
+			const int fd = pipe->fd;
+			pipe->fd = -1;
+			if (!ArrayList_RemoveAt(mutter->clipboardPipes, x))
+				WLog_WARN(TAG, "clipboard: cannot drop a pipe");
+			return fd;
+		}
+	}
+	return -1;
+}
+
 /* subsystem thread: a client's clipboard becomes the session's selection */
 static void mutter_clipboard_set_selection(mutterShadowSubsystem* mutter,
                                            const mutterClipboardJob* job)
@@ -2277,9 +2319,15 @@ static void mutter_clipboard_start_write(mutterShadowSubsystem* mutter, wMessage
 	mutterClipboardJob* job = message->context;
 	WINPR_ASSERT(job);
 
+	const int early = mutter_clipboard_take_pipe(mutter, job->serial);
+	if (!job->ok && (early >= 0))
+		(void)close(early);
+
 	if (job->ok)
 	{
-		job->fd = mutter_clipboard_call_for_fd(mutter, "SelectionWrite", "u", job->serial);
+		job->fd = early;
+		if (job->fd < 0)
+			job->fd = mutter_clipboard_call_for_fd(mutter, "SelectionWrite", "u", job->serial);
 		if ((job->fd >= 0) && mutter->clipboardJobs)
 		{
 			const UINT32 serial = job->serial;
@@ -2512,8 +2560,34 @@ static int mutter_on_selection_transfer(sd_bus_message* msg, void* data,
 	if (sd_bus_message_read(msg, "su", &mime, &serial) < 0)
 		return 0;
 
+	/* Mutter cancels a transfer without a pipe after 15 s, and files may take longer.
+	 * With its pipe, the application just waits for the data. */
+	if ((strcmp(mime, SHADOW_CLIPBOARD_MIME_URI_LIST) == 0) ||
+	    (strcmp(mime, SHADOW_CLIPBOARD_MIME_GNOME_FILES) == 0))
+	{
+		mutterClipboardPipe* pipe = calloc(1, sizeof(mutterClipboardPipe));
+		if (!pipe)
+		{
+			mutter_clipboard_write_done(mutter, serial, FALSE);
+			return 0;
+		}
+		pipe->serial = serial;
+		pipe->fd = mutter_clipboard_call_for_fd(mutter, "SelectionWrite", "u", serial);
+		if ((pipe->fd < 0) || !ArrayList_Append(mutter->clipboardPipes, pipe))
+		{
+			mutter_clipboard_pipe_free(pipe);
+			mutter_clipboard_write_done(mutter, serial, FALSE);
+			return 0;
+		}
+	}
+
 	if (!shadow_clipboard_session_request(mutter->common.server, serial, mime))
+	{
+		const int fd = mutter_clipboard_take_pipe(mutter, serial);
+		if (fd >= 0)
+			(void)close(fd);
 		mutter_clipboard_write_done(mutter, serial, FALSE);
+	}
 	return 0;
 }
 
@@ -2573,9 +2647,13 @@ static void mutter_clipboard_enable(mutterShadowSubsystem* mutter)
 		else
 		{
 			mutter->clipboardEnabled = TRUE;
+			mutter->clipboardPipes = ArrayList_New(FALSE);
+			if (mutter->clipboardPipes)
+				ArrayList_Object(mutter->clipboardPipes)->fnObjectFree = mutter_clipboard_pipe_free;
 			mutter->common.ClipboardOffer = mutter_clipboard_offer;
 			mutter->common.ClipboardRead = mutter_clipboard_read;
 			mutter->common.ClipboardProvide = mutter_clipboard_provide;
+			mutter->common.ClipboardFiles = mutter->clipboardPipes != nullptr;
 		}
 	}
 	sd_bus_error_free(&err);
@@ -3014,6 +3092,8 @@ static int mutter_shadow_subsystem_stop(rdpShadowSubsystem* subsystem)
 	}
 	MessageQueue_Free(mutter->clipboardJobs);
 	mutter->clipboardJobs = nullptr;
+	if (mutter->clipboardPipes)
+		ArrayList_Clear(mutter->clipboardPipes);
 	return 1;
 }
 
@@ -3156,6 +3236,7 @@ static void mutter_shadow_subsystem_free(rdpShadowSubsystem* subsystem)
 		WLog_WARN(TAG, "the subsystem thread did not stop");
 	if (mutter_shadow_subsystem_uninit(subsystem) < 0)
 		WLog_WARN(TAG, "the subsystem was not uninitialized");
+	ArrayList_Free(mutter->clipboardPipes);
 	DeleteCriticalSection(&mutter->eiLock);
 	if (mutter->stopEvent)
 		(void)CloseHandle(mutter->stopEvent);
