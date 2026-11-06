@@ -271,7 +271,14 @@ bool sdlClip::init(CliprdrClientContext* clip)
 	}
 #endif
 
-	return cliprdr_file_context_init(_file, _ctx);
+	if (!cliprdr_file_context_init(_file, _ctx))
+		return false;
+#if defined(__EMSCRIPTEN__)
+	/* no local paths and no FUSE: the page reads and saves the files */
+	_ctx->ServerFileContentsRequest = sdlClip::webReceiveFileRequest;
+	_ctx->ServerFileContentsResponse = sdlClip::webReceiveFileResponse;
+#endif
+	return true;
 }
 
 bool sdlClip::uninit(CliprdrClientContext* clip)
@@ -1479,10 +1486,17 @@ const char* CliprdrFormat::formatName() const
 static const char s_web_mime_text[] = "x-freerdp-web-text";
 static const char s_web_mime_dib[] = "x-freerdp-web-dib";
 static const char s_web_mime_png[] = "x-freerdp-web-png";
+static const char s_web_mime_files[] = "x-freerdp-web-files";
 
 /* in sdl_clip_emscripten.js */
 extern "C" void freerdp_web_clipboard_write_js(const char* utf8);
 extern "C" void freerdp_web_clipboard_write_image_js(const BYTE* data, size_t size, int png);
+extern "C" void freerdp_web_clipboard_files_js(const BYTE* list, size_t size);
+extern "C" void freerdp_web_clipboard_file_request_js(UINT32 streamId, UINT32 listIndex,
+                                                      UINT32 flags, UINT32 offsetLow,
+                                                      UINT32 offsetHigh, UINT32 size);
+extern "C" void freerdp_web_clipboard_file_data_js(UINT32 streamId, int ok, const BYTE* data,
+                                                   UINT32 size);
 
 typedef struct
 {
@@ -1528,6 +1542,56 @@ static void web_write(char* text, BYTE* dib, size_t size, bool png = false)
 	}
 }
 
+/* What goes to the page runs on the main browser thread */
+static bool web_on_main(void (*fn)(void*), void* arg)
+{
+	if (emscripten_is_main_browser_thread())
+	{
+		fn(arg);
+		return true;
+	}
+	return emscripten_proxy_async(emscripten_proxy_get_system_queue(),
+	                              emscripten_main_runtime_thread_id(), fn, arg);
+}
+
+typedef struct
+{
+	BYTE* data;
+	size_t size;
+} web_files_job;
+
+static void web_files_on_main(void* arg)
+{
+	auto job = static_cast<web_files_job*>(arg);
+	freerdp_web_clipboard_files_js(job->data, job->size);
+	free(job->data);
+	free(job);
+}
+
+/* The session's list of files, or none: the page offers to save them */
+static void web_files(const BYTE* data, size_t size)
+{
+	auto job = static_cast<web_files_job*>(calloc(1, sizeof(web_files_job)));
+	if (!job)
+		return;
+	if (data && size)
+	{
+		job->data = static_cast<BYTE*>(malloc(size));
+		if (!job->data)
+		{
+			free(job);
+			return;
+		}
+		memcpy(job->data, data, size);
+		job->size = size;
+	}
+	if (!web_on_main(web_files_on_main, job))
+	{
+		free(job->data);
+		free(job);
+	}
+}
+
 bool sdlClip::webOffer(const char* utf8, const BYTE* dib, size_t dibSize)
 {
 	std::scoped_lock web(s_web_lock);
@@ -1542,6 +1606,7 @@ bool sdlClip::webOffer(const char* utf8, const BYTE* dib, size_t dibSize)
 			return true;
 		clip->_web_local = text;
 		clip->_web_local_dib.assign(dib, dib ? dib + dibSize : dib);
+		clip->_web_local_files.clear();
 		/* remember what we offered: the server may announce it back much later */
 		if (!clip->_web_local.empty())
 			clip->_web_recent.push_back(std::hash<std::string>{}(clip->_web_local));
@@ -1567,21 +1632,173 @@ bool sdlClip::webOffer(const char* utf8, const BYTE* dib, size_t dibSize)
 	return clip->_ctx->ClientFormatList(clip->_ctx, &list) == CHANNEL_RC_OK;
 }
 
+bool sdlClip::webOfferFiles(const BYTE* list, size_t size)
+{
+	std::scoped_lock web(s_web_lock);
+	auto clip = s_web_clip;
+	if (!clip || !clip->_ctx || !clip->_ctx->ClientFormatList || !list || !size)
+		return false;
+
+	char name[] = "FileGroupDescriptorW";
+	CLIPRDR_FORMAT format = {};
+	{
+		ClipboardLockGuard systemlock(clip->_system);
+		std::scoped_lock lock(clip->_lock);
+		clip->_web_local.clear();
+		clip->_web_local_dib.clear();
+		clip->_web_local_files.assign(list, list + size);
+		format.formatId = ClipboardRegisterFormat(clip->_system, s_type_FileGroupDescriptorW);
+		format.formatName = name;
+	}
+	CLIPRDR_FORMAT_LIST formats = {};
+	formats.common.msgType = CB_FORMAT_LIST;
+	formats.numFormats = 1;
+	formats.formats = &format;
+	return clip->_ctx->ClientFormatList(clip->_ctx, &formats) == CHANNEL_RC_OK;
+}
+
+bool sdlClip::webSendFileRequest(UINT32 streamId, UINT32 listIndex, UINT32 flags, UINT64 offset,
+                                 UINT32 size)
+{
+	std::scoped_lock web(s_web_lock);
+	auto clip = s_web_clip;
+	if (!clip || !clip->_ctx || !clip->_ctx->ClientFileContentsRequest)
+		return false;
+
+	CLIPRDR_FILE_CONTENTS_REQUEST request = {};
+	request.common.msgType = CB_FILECONTENTS_REQUEST;
+	request.streamId = streamId;
+	request.listIndex = listIndex;
+	request.dwFlags = flags;
+	request.nPositionLow = static_cast<UINT32>(offset & UINT32_MAX);
+	request.nPositionHigh = static_cast<UINT32>(offset >> 32);
+	request.cbRequested = size;
+	return clip->_ctx->ClientFileContentsRequest(clip->_ctx, &request) == CHANNEL_RC_OK;
+}
+
+bool sdlClip::webSendFileResponse(UINT32 streamId, const BYTE* data, UINT32 size, bool ok)
+{
+	std::scoped_lock web(s_web_lock);
+	auto clip = s_web_clip;
+	if (!clip || !clip->_ctx || !clip->_ctx->ClientFileContentsResponse)
+		return false;
+
+	CLIPRDR_FILE_CONTENTS_RESPONSE response = {};
+	response.common.msgType = CB_FILECONTENTS_RESPONSE;
+	response.common.msgFlags = ok ? CB_RESPONSE_OK : CB_RESPONSE_FAIL;
+	response.streamId = streamId;
+	response.cbRequested = ok ? size : 0;
+	response.requestedData = ok ? data : nullptr;
+	return clip->_ctx->ClientFileContentsResponse(clip->_ctx, &response) == CHANNEL_RC_OK;
+}
+
+typedef struct
+{
+	UINT32 streamId;
+	UINT32 listIndex;
+	UINT32 flags;
+	UINT32 offsetLow;
+	UINT32 offsetHigh;
+	UINT32 size;
+} web_file_request_job;
+
+static void web_file_request_on_main(void* arg)
+{
+	auto job = static_cast<web_file_request_job*>(arg);
+	freerdp_web_clipboard_file_request_js(job->streamId, job->listIndex, job->flags, job->offsetLow,
+	                                      job->offsetHigh, job->size);
+	free(job);
+}
+
+UINT sdlClip::webReceiveFileRequest(WINPR_ATTR_UNUSED CliprdrClientContext* context,
+                                    const CLIPRDR_FILE_CONTENTS_REQUEST* fileContentsRequest)
+{
+	WINPR_ASSERT(fileContentsRequest);
+
+	auto job = static_cast<web_file_request_job*>(calloc(1, sizeof(web_file_request_job)));
+	if (!job)
+		return CHANNEL_RC_NO_MEMORY;
+	job->streamId = fileContentsRequest->streamId;
+	job->listIndex = fileContentsRequest->listIndex;
+	job->flags = fileContentsRequest->dwFlags;
+	job->offsetLow = fileContentsRequest->nPositionLow;
+	job->offsetHigh = fileContentsRequest->nPositionHigh;
+	job->size = fileContentsRequest->cbRequested;
+	if (!web_on_main(web_file_request_on_main, job))
+	{
+		free(job);
+		return ERROR_INTERNAL_ERROR;
+	}
+	return CHANNEL_RC_OK;
+}
+
+typedef struct
+{
+	UINT32 streamId;
+	int ok;
+	BYTE* data;
+	UINT32 size;
+} web_file_data_job;
+
+static void web_file_data_on_main(void* arg)
+{
+	auto job = static_cast<web_file_data_job*>(arg);
+	freerdp_web_clipboard_file_data_js(job->streamId, job->ok, job->data, job->size);
+	free(job->data);
+	free(job);
+}
+
+UINT sdlClip::webReceiveFileResponse(WINPR_ATTR_UNUSED CliprdrClientContext* context,
+                                     const CLIPRDR_FILE_CONTENTS_RESPONSE* fileContentsResponse)
+{
+	WINPR_ASSERT(fileContentsResponse);
+
+	auto job = static_cast<web_file_data_job*>(calloc(1, sizeof(web_file_data_job)));
+	if (!job)
+		return CHANNEL_RC_NO_MEMORY;
+	job->streamId = fileContentsResponse->streamId;
+	job->ok = (fileContentsResponse->common.msgFlags & CB_RESPONSE_OK) != 0;
+	if (job->ok && fileContentsResponse->requestedData && fileContentsResponse->cbRequested)
+	{
+		job->data = static_cast<BYTE*>(malloc(fileContentsResponse->cbRequested));
+		if (!job->data)
+		{
+			free(job);
+			return CHANNEL_RC_NO_MEMORY;
+		}
+		memcpy(job->data, fileContentsResponse->requestedData, fileContentsResponse->cbRequested);
+		job->size = fileContentsResponse->cbRequested;
+	}
+	if (!web_on_main(web_file_data_on_main, job))
+	{
+		free(job->data);
+		free(job);
+		return ERROR_INTERNAL_ERROR;
+	}
+	return CHANNEL_RC_OK;
+}
+
 bool sdlClip::webRequestServerText()
 {
 	bool has_text = false;
 	bool has_dib = false;
 	UINT32 png_id = 0;
+	UINT32 files_id = 0;
 	std::scoped_lock lock(_lock);
 	for (const auto& f : _serverFormats)
 	{
+		if (f.formatName() && (strcmp(f.formatName(), s_type_FileGroupDescriptorW) == 0))
+			files_id = f.formatId();
 		has_text |= (f.formatId() == CF_UNICODETEXT);
 		has_dib |= (f.formatId() == CF_DIB);
 		/* GNOME Remote Desktop announces a PNG-only clipboard as "image/png" alone */
 		if (f.formatName() && (strcmp(f.formatName(), s_mime_png) == 0))
 			png_id = f.formatId();
 	}
-	if (!has_text && !has_dib && !png_id)
+	/* the files the page last offered to save are gone from the session's clipboard */
+	if (!files_id)
+		web_files(nullptr, 0);
+	if (!has_text && !has_dib && !png_id && !files_id)
 		return false;
 	/* Keep the browser data for now: servers often announce our own offer back (an echo, e.g.
 	 * GNOME's clipboard handling). Clearing it here left nothing to answer the following data
@@ -1593,6 +1810,8 @@ bool sdlClip::webRequestServerText()
 		ok &= (SendDataRequest(CF_DIB, s_web_mime_dib) == CHANNEL_RC_OK);
 	else if (png_id) /* browsers write PNG anyway: take it as it is */
 		ok &= (SendDataRequest(png_id, s_web_mime_png) == CHANNEL_RC_OK);
+	if (files_id) /* only the list: the page fetches the contents when it saves them */
+		ok &= (SendDataRequest(files_id, s_web_mime_files) == CHANNEL_RC_OK);
 	return ok;
 }
 
@@ -1604,7 +1823,8 @@ bool sdlClip::webTakeDataResponse(const CLIPRDR_FORMAT_DATA_RESPONSE* response)
 		if (_request_queue.empty())
 			return false;
 		kind = _request_queue.front().mime();
-		if ((kind != s_web_mime_text) && (kind != s_web_mime_dib) && (kind != s_web_mime_png))
+		if ((kind != s_web_mime_text) && (kind != s_web_mime_dib) && (kind != s_web_mime_png) &&
+		    (kind != s_web_mime_files))
 			return false;
 		_request_queue.pop();
 	}
@@ -1613,7 +1833,15 @@ bool sdlClip::webTakeDataResponse(const CLIPRDR_FORMAT_DATA_RESPONSE* response)
 		return true;
 	const BYTE* data = response->requestedFormatData;
 	const size_t size = response->common.dataLen;
-	if (kind == s_web_mime_text)
+	if (kind == s_web_mime_files)
+	{
+		{
+			std::scoped_lock lock(_lock);
+			_web_local_files.clear();
+		}
+		web_files(data, size);
+	}
+	else if (kind == s_web_mime_text)
 	{
 		char* utf8 = ConvertWCharNToUtf8Alloc(reinterpret_cast<const WCHAR*>(data),
 		                                      size / sizeof(WCHAR), nullptr);
@@ -1630,6 +1858,7 @@ bool sdlClip::webTakeDataResponse(const CLIPRDR_FORMAT_DATA_RESPONSE* response)
 			_web_local.clear(); /* new content from the server: it owns the clipboard now */
 			_web_local_dib.clear();
 			_web_offers.serverSentText(utf8);
+			_web_local_files.clear();
 		}
 		web_write(utf8, nullptr, 0);
 	}
@@ -1645,6 +1874,7 @@ bool sdlClip::webTakeDataResponse(const CLIPRDR_FORMAT_DATA_RESPONSE* response)
 			_web_local.clear();
 			_web_local_dib.clear();
 			_web_offers.serverSentImage();
+			_web_local_files.clear();
 		}
 		auto copy = static_cast<BYTE*>(malloc(size));
 		if (copy)
@@ -1660,12 +1890,22 @@ bool sdlClip::webAnswerDataRequest(const CLIPRDR_FORMAT_DATA_REQUEST* request)
 {
 	std::string text;
 	std::vector<BYTE> dib;
+	std::vector<BYTE> files;
+	UINT32 fileId = 0;
 	{
+		ClipboardLockGuard systemlock(_system);
 		std::scoped_lock lock(_lock);
-		if (_web_local.empty() && _web_local_dib.empty())
+		if (_web_local.empty() && _web_local_dib.empty() && _web_local_files.empty())
 			return false;
 		text = _web_local;
 		dib = _web_local_dib;
+		files = _web_local_files;
+		fileId = ClipboardRegisterFormat(_system, s_type_FileGroupDescriptorW);
+	}
+	if (!files.empty() && (request->requestedFormatId == fileId))
+	{
+		std::ignore = SendDataResponse(files.data(), files.size());
+		return true;
 	}
 	switch (request->requestedFormatId)
 	{
@@ -1719,6 +1959,119 @@ static void* web_offer_thread(void* arg)
 	free(job->dib);
 	free(job);
 	return nullptr;
+}
+
+/* As freerdp_web_clipboard_offer(): each of these leaves the main browser thread first */
+typedef struct
+{
+	int kind;
+	UINT32 streamId;
+	UINT32 listIndex;
+	UINT32 flags;
+	UINT64 offset;
+	UINT32 requested;
+	int ok;
+	BYTE* data;
+	size_t size;
+} web_file_job;
+
+enum
+{
+	WEB_FILE_OFFER,
+	WEB_FILE_REQUEST,
+	WEB_FILE_RESPONSE
+};
+
+static void* web_file_thread(void* arg)
+{
+	auto job = static_cast<web_file_job*>(arg);
+	switch (job->kind)
+	{
+		case WEB_FILE_OFFER:
+			std::ignore = sdlClip::webOfferFiles(job->data, job->size);
+			break;
+		case WEB_FILE_REQUEST:
+			std::ignore = sdlClip::webSendFileRequest(job->streamId, job->listIndex, job->flags,
+			                                          job->offset, job->requested);
+			break;
+		default:
+			std::ignore = sdlClip::webSendFileResponse(
+			    job->streamId, job->data, static_cast<UINT32>(job->size), job->ok != 0);
+			break;
+	}
+	free(job->data);
+	free(job);
+	return nullptr;
+}
+
+static int web_file_start(web_file_job* job, const BYTE* data, size_t size)
+{
+	{
+		std::scoped_lock web(s_web_lock);
+		if (!s_web_clip)
+		{
+			free(job);
+			return 0;
+		}
+	}
+	if (data && size)
+	{
+		job->data = static_cast<BYTE*>(malloc(size));
+		if (!job->data)
+		{
+			free(job);
+			return 0;
+		}
+		memcpy(job->data, data, size);
+		job->size = size;
+	}
+	pthread_t tid = {};
+	if (pthread_create(&tid, nullptr, web_file_thread, job) != 0)
+	{
+		free(job->data);
+		free(job);
+		return 0;
+	}
+	pthread_detach(tid);
+	return 1;
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE int freerdp_web_clipboard_offer_files(const BYTE* list, size_t size)
+{
+	auto job = static_cast<web_file_job*>(calloc(1, sizeof(web_file_job)));
+	if (!job)
+		return 0;
+	job->kind = WEB_FILE_OFFER;
+	return web_file_start(job, list, size);
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE int freerdp_web_clipboard_file_answer(UINT32 streamId, int ok,
+                                                                      const BYTE* data, size_t size)
+{
+	auto job = static_cast<web_file_job*>(calloc(1, sizeof(web_file_job)));
+	if (!job)
+		return 0;
+	job->kind = WEB_FILE_RESPONSE;
+	job->streamId = streamId;
+	job->ok = ok;
+	return web_file_start(job, data, size);
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE int freerdp_web_clipboard_file_fetch(UINT32 streamId,
+                                                                     UINT32 listIndex, UINT32 flags,
+                                                                     UINT32 offsetLow,
+                                                                     UINT32 offsetHigh, UINT32 size)
+{
+	auto job = static_cast<web_file_job*>(calloc(1, sizeof(web_file_job)));
+	if (!job)
+		return 0;
+	job->kind = WEB_FILE_REQUEST;
+	job->streamId = streamId;
+	job->listIndex = listIndex;
+	job->flags = flags;
+	job->offset = (static_cast<UINT64>(offsetHigh) << 32) | offsetLow;
+	job->requested = size;
+	return web_file_start(job, nullptr, 0);
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE int freerdp_web_clipboard_offer(const char* utf8, const BYTE* dib,

@@ -33,10 +33,40 @@ function freerdp_web_clipboard_write_image_js(data, size, png)
 		Module.freerdpClipboardWriteImage(bytes, !!png); /* CF_DIB, or PNG as it is */
 }
 
+function freerdp_web_clipboard_files_js(list, size)
+{
+	if (Module.freerdpClipboardFiles)
+		Module.freerdpClipboardFiles(size ? HEAPU8.slice(list, list + size) : null);
+}
+
+/* A page without file support offers no files, and refuses what it is asked for anyway */
+function freerdp_web_clipboard_file_request_js(streamId, listIndex, flags, offsetLow, offsetHigh,
+                                               size)
+{
+	if (Module.freerdpClipboardFileRequest)
+		Module.freerdpClipboardFileRequest(streamId, listIndex, flags, offsetLow, offsetHigh, size);
+	else
+		Module.ccall("freerdp_web_clipboard_file_answer", "number",
+		             [ "number", "number", "number", "number" ], [ streamId, 0, 0, 0 ]);
+}
+
+function freerdp_web_clipboard_file_data_js(streamId, ok, data, size)
+{
+	if (Module.freerdpClipboardFileData)
+		Module.freerdpClipboardFileData(streamId, !!ok, size ? HEAPU8.slice(data, data + size)
+		                                                     : new Uint8Array(0));
+}
+
 addToLibrary({
 	freerdp_web_clipboard_write_js,
 	freerdp_web_clipboard_write_js__sig: "vp",
 	freerdp_web_clipboard_write_js__deps: ["$UTF8ToString"],
 	freerdp_web_clipboard_write_image_js,
 	freerdp_web_clipboard_write_image_js__sig: "vppi",
+	freerdp_web_clipboard_files_js,
+	freerdp_web_clipboard_files_js__sig: "vpp",
+	freerdp_web_clipboard_file_request_js,
+	freerdp_web_clipboard_file_request_js__sig: "viiiiii",
+	freerdp_web_clipboard_file_data_js,
+	freerdp_web_clipboard_file_data_js__sig: "viipi",
 });
