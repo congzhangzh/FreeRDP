@@ -165,7 +165,11 @@ target_include_directories(${MODULE_NAME} INTERFACE $<INSTALL_INTERFACE:include/
 target_link_libraries(${MODULE_NAME} PRIVATE ${LIBS})
 
 if(NOT BUILD_SHARED_LIBS AND SHADOW_SUBSYSTEM_LIBS)
-  installwithrpath(TARGETS ${SHADOW_SUBSYSTEM_LIBS} DESTINATION ${CMAKE_INSTALL_LIBDIR} EXPORT FreeRDP-ShadowTargets)
+  set(SHADOW_INSTALL_LIBS ${SHADOW_SUBSYSTEM_LIBS})
+  if(TARGET freerdp-shadow-pipewire)
+    list(APPEND SHADOW_INSTALL_LIBS freerdp-shadow-pipewire)
+  endif()
+  installwithrpath(TARGETS ${SHADOW_INSTALL_LIBS} DESTINATION ${CMAKE_INSTALL_LIBDIR} EXPORT FreeRDP-ShadowTargets)
 endif()
 
 installwithrpath(
