@@ -77,6 +77,23 @@ freerdp-shadow-sesman [--port 3389] [--bind <address>] [--shadow <freerdp-shadow
 
 `freerdp-shadow-sesman.service` (installed with the server component) runs it as a system service.
 
+The shadow servers it starts take the AV1 and AV2 encoder settings from these variables
+of its own environment (`Environment=` in a drop-in for the service), as `freerdp-shadow-cli`
+does from its environment:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FREERDP_SHADOW_AV1_CQ_LEVEL` | 28 | libaom's quality, 1 to 63 (lower is better) |
+| `FREERDP_SHADOW_AV1_TARGET_BITRATE` | 0 | kbit/s; above 0 a constant bit rate instead of the quality |
+| `FREERDP_SHADOW_AV1_THREADS` | 0 | 0 for up to 4 |
+| `FREERDP_SHADOW_AV1_CPU_USED` | 10 | 0 (slowest) to 12 |
+| `FREERDP_SHADOW_AV2_QP` | 160 | libavm's quantizer, 1 to 255 (lower is better) |
+| `FREERDP_SHADOW_AV2_TARGET_BITRATE` | 0 | kbit/s; above 0 a constant bit rate instead of the quantizer |
+| `FREERDP_SHADOW_AV2_THREADS` | up to 4 | |
+| `FREERDP_SHADOW_AV2_CPU_USED` | 10 | 0 (slowest) to 10 |
+| `FREERDP_SHADOW_AV2_TILE_COLUMNS` | 1 | log2: 1 is two columns |
+| `FREERDP_SHADOW_AV2_DPB_SIZE` | 4 | reference frames, 1 to 16; libavm keeps 8, each a whole frame |
+
 ## Test
 
 `test/run-e2e.sh` runs it against GNOME Shell 50 in a systemd container (see its

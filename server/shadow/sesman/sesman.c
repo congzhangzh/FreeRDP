@@ -65,6 +65,8 @@
 #define CR_MAX 1024         /* a Connection Request is far smaller */
 #define CR_TIMEOUT_S 10     /* to send it */
 #define SHADOW_TIMEOUT_S 120 /* for the shadow server to listen (GNOME may be starting) */
+/* FREERDP_SHADOW_AV1_* and _AV2_* passed on to the shadow servers */
+#define SHADOW_ENV_MAX 16
 #define GNOME_SESSION "/usr/bin/gnome-session"
 #define AUTOSTART_ROOT "/run/freerdp-sesman"
 #define START_SESSION \
@@ -539,22 +541,41 @@ static int shadow_connect(const Config* cfg, const struct passwd* pw)
 
 	/* its log goes to the journal: WinPR's journald appender when it has one,
 	 * else lines on stdout, which a pipe would buffer in blocks (stdbuf) */
-	char* argv[32 + 16] = { "systemd-run",
-		                    machine,
-		                    "--user",
-		                    "--quiet",
-		                    "--collect",
-		                    "--unit=" SHADOW_UNIT,
-		                    "--setenv=WLOG_APPENDER=journald",
-		                    virtualMonitor,
-		                    "stdbuf",
-		                    "-oL",
-		                    "-eL",
-		                    (char*)cfg->shadow,
-		                    ipc,
-		                    "/sec:tls" };
-	int argc = 14;
-	for (int x = 0; (x < cfg->shadowArgCount) && (argc < 46); x++)
+	/* The encoders' settings of the shadow servers (shadow_server_encoder_defaults()): a
+	 * systemd-run unit starts from the user manager's environment, not from ours, so an admin's
+	 * Environment= on this service reaches them only this way. */
+	char env[SHADOW_ENV_MAX][160];
+	size_t envCount = 0;
+	for (char** e = environ; e && *e && (envCount < SHADOW_ENV_MAX); e++)
+	{
+		if ((strncmp(*e, "FREERDP_SHADOW_AV1_", 19) != 0) &&
+		    (strncmp(*e, "FREERDP_SHADOW_AV2_", 19) != 0))
+			continue;
+		const int n = snprintf(env[envCount], sizeof(env[envCount]), "--setenv=%s", *e);
+		if ((n > 0) && ((size_t)n < sizeof(env[envCount])))
+			envCount++;
+	}
+
+	char* argv[32 + 16 + SHADOW_ENV_MAX] = { "systemd-run",
+		                                     machine,
+		                                     "--user",
+		                                     "--quiet",
+		                                     "--collect",
+		                                     "--unit=" SHADOW_UNIT,
+		                                     "--setenv=WLOG_APPENDER=journald",
+		                                     virtualMonitor };
+	int argc = 8;
+	/* systemd-run's own options, before the command */
+	for (size_t x = 0; x < envCount; x++)
+		argv[argc++] = env[x];
+	argv[argc++] = "stdbuf";
+	argv[argc++] = "-oL";
+	argv[argc++] = "-eL";
+	argv[argc++] = (char*)cfg->shadow;
+	argv[argc++] = ipc;
+	argv[argc++] = "/sec:tls";
+	for (int x = 0; (x < cfg->shadowArgCount) && (argc < (int)(sizeof(argv) / sizeof(argv[0])) - 1);
+	     x++)
 		argv[argc++] = cfg->shadowArgs[x];
 	argv[argc] = NULL;
 
