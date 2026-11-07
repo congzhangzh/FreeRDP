@@ -1028,6 +1028,14 @@ BOOL freerdp_av1_context_reset(FREERDP_AV1_CONTEXT* av1, UINT32 width, UINT32 he
 
 		if (!av1_aom_apply_controls(av1))
 			return FALSE;
+
+		static const char* const modes[] = { "vbr", "cbr", "cq", "q" };
+		const UINT32 mode = (UINT32)av1->ecfg.rc_end_usage;
+		WLog_Print(av1->log, WLOG_DEBUG,
+		           "AV1 encoder %" PRIu32 "x%" PRIu32 ": %s, cq-level %" PRIu32 ", %" PRIu32
+		           " kbit/s, cpu-used %" PRIu32 ", %u thread(s)",
+		           width, height, (mode < ARRAYSIZE(modes)) ? modes[mode] : "?", av1->cqLevel,
+		           av1->ecfg.rc_target_bitrate, av1->speed, av1->ecfg.g_threads);
 #else
 		WLog_Print(av1->log, WLOG_ERROR,
 		           "AV1 encoder requires libaom, recompile with '-DWITH_AOM=ON'");
