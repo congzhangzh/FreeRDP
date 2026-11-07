@@ -1366,8 +1366,9 @@ static UINT32 shadow_server_cpus(void)
 /* The encoders' settings, all in one place: the best quality per bit measured on screen content
  * (1600x900 4:4:4, a terminal still and scrolling, video in a window and full screen).
  * Constrained quality: as sharp as the quality setting while the picture is cheap, the target
- * bit rate as a ceiling when it is busy. Text keeps its quality at any ceiling from 4 Mbit/s up
- * (AV1 47 dB, about 230 kbit/s still and 700 scrolling); the ceiling only decides video.
+ * bit rate as a ceiling when it is busy: quality most, limited by the bandwidth (AV1 12 Mbit/s,
+ * AV2 10 Mbit/s). Text keeps its quality at any ceiling from 4 Mbit/s up (AV1 47 dB, about 230
+ * kbit/s still and 720 scrolling); the ceiling decides video. A busy second went 4 to 6 % over it.
  * Each has an environment variable, read when the server is made: FREERDP_SHADOW_AV1_* and
  * FREERDP_SHADOW_AV2_* RATE_CONTROL (q, cq, cbr, vbr), TARGET_BITRATE (0: q), CQ_LEVEL or QP,
  * THREADS, CPU_USED, and for AV2 TILE_COLUMNS and DPB_SIZE. */
@@ -1375,24 +1376,24 @@ static void shadow_server_encoder_defaults(rdpShadowServer* server)
 {
 	WINPR_ASSERT(server);
 #if defined(WITH_GFX_AV1)
-	/* libaom: cq-level 20 under 8 Mbit/s, cpu-used 10, rows on up to 4 threads (0) */
+	/* libaom: cq-level 16 under 12 Mbit/s, cpu-used 10, rows on up to 4 threads (0) */
 	server->AV1BitRate =
-	    shadow_server_env_u32("FREERDP_SHADOW_AV1_TARGET_BITRATE", 8000, 0, 1000000);
+	    shadow_server_env_u32("FREERDP_SHADOW_AV1_TARGET_BITRATE", 12000, 0, 1000000);
 	server->AV1RateControlMode = (FREERDP_AV1_RATECONTROL)shadow_server_env_rate_control(
 	    "FREERDP_SHADOW_AV1_RATE_CONTROL", server->AV1BitRate);
-	server->AV1CQLevel = shadow_server_env_u32("FREERDP_SHADOW_AV1_CQ_LEVEL", 20, 1, 63);
+	server->AV1CQLevel = shadow_server_env_u32("FREERDP_SHADOW_AV1_CQ_LEVEL", 16, 1, 63);
 	server->AV1Threads = shadow_server_env_u32("FREERDP_SHADOW_AV1_THREADS", 0, 0, 64);
 	server->AV1Speed = shadow_server_env_u32("FREERDP_SHADOW_AV1_CPU_USED", 10, 0, 12);
 #endif
 #if defined(WITH_GFX_AV2)
-	/* libavm: qp 120 under 6 Mbit/s, cpu-used 10, 4 threads on 2 tile columns, 4 reference
+	/* libavm: qp 100 under 10 Mbit/s, cpu-used 10, 4 threads on 2 tile columns, 4 reference
 	 * frames (libavm keeps 8, each a whole frame in 16 bits: 4 saves about 100 MB at 1080p in
-	 * 4:4:4); qp 160 left marks on scrolling text */
+	 * 4:4:4); qp 160 left marks on scrolling text, 100 is 46 dB on it at 21 to 28 fps */
 	server->AV2BitRate =
-	    shadow_server_env_u32("FREERDP_SHADOW_AV2_TARGET_BITRATE", 6000, 0, 1000000);
+	    shadow_server_env_u32("FREERDP_SHADOW_AV2_TARGET_BITRATE", 10000, 0, 1000000);
 	server->AV2RateControlMode = (FREERDP_AV2_RATECONTROL)shadow_server_env_rate_control(
 	    "FREERDP_SHADOW_AV2_RATE_CONTROL", server->AV2BitRate);
-	server->AV2QP = shadow_server_env_u32("FREERDP_SHADOW_AV2_QP", 120, 1, 255);
+	server->AV2QP = shadow_server_env_u32("FREERDP_SHADOW_AV2_QP", 100, 1, 255);
 	server->AV2Threads =
 	    shadow_server_env_u32("FREERDP_SHADOW_AV2_THREADS", MIN(4, shadow_server_cpus()), 1, 64);
 	server->AV2Speed = shadow_server_env_u32("FREERDP_SHADOW_AV2_CPU_USED", 10, 0, 10);
