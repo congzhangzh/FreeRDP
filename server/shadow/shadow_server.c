@@ -29,6 +29,7 @@
 #include <winpr/path.h>
 #include <winpr/cmdline.h>
 #include <winpr/winsock.h>
+#include <winpr/sysinfo.h>
 
 #include <freerdp/log.h>
 #include <freerdp/version.h>
@@ -1292,6 +1293,68 @@ int shadow_server_uninit(rdpShadowServer* server)
 	return 1;
 }
 
+#if defined(WITH_GFX_AV1) || defined(WITH_GFX_AV2)
+/* A setting from the environment, or its default when unset or out of range */
+WINPR_ATTR_NODISCARD
+static UINT32 shadow_server_env_u32(const char* name, UINT32 value, UINT32 min, UINT32 max)
+{
+	const char* text = getenv(name);
+	if (!text || (*text == '\0'))
+		return value;
+
+	char* end = nullptr;
+	errno = 0;
+	const unsigned long long parsed = strtoull(text, &end, 10);
+	if ((errno != 0) || !end || (*end != '\0') || (parsed < min) || (parsed > max))
+	{
+		WLog_WARN(TAG, "%s=%s is not a number from %" PRIu32 " to %" PRIu32 ": %" PRIu32 " instead",
+		          name, text, min, max, value);
+		return value;
+	}
+	return (UINT32)parsed;
+}
+#endif
+
+#if defined(WITH_GFX_AV2)
+WINPR_ATTR_NODISCARD
+static UINT32 shadow_server_cpus(void)
+{
+	SYSTEM_INFO sysInfo = WINPR_C_ARRAY_INIT;
+	GetNativeSystemInfo(&sysInfo);
+	return (sysInfo.dwNumberOfProcessors > 0) ? sysInfo.dwNumberOfProcessors : 1;
+}
+#endif
+
+/* The encoders' settings, all in one place: xrdp's gfx.toml values, measured on screen content.
+ * Constant quality, not a bit rate: a quiet desktop costs a few dozen kbit/s and a busy one gets
+ * what it needs, where a target of a few hundred kbit/s blurred text and stalled big changes.
+ * Each has an environment variable, read when the server is made; a target bit rate above 0
+ * switches the codec to constant bit rate. */
+static void shadow_server_encoder_defaults(rdpShadowServer* server)
+{
+	WINPR_ASSERT(server);
+#if defined(WITH_GFX_AV1)
+	/* libaom: cq-level 28, cpu-used 10, rows on up to 4 threads (0) */
+	server->AV1BitRate = shadow_server_env_u32("FREERDP_SHADOW_AV1_TARGET_BITRATE", 0, 0, 1000000);
+	server->AV1RateControlMode = (server->AV1BitRate > 0) ? FREERDP_AV1_CBR : FREERDP_AV1_Q;
+	server->AV1CQLevel = shadow_server_env_u32("FREERDP_SHADOW_AV1_CQ_LEVEL", 28, 1, 63);
+	server->AV1Threads = shadow_server_env_u32("FREERDP_SHADOW_AV1_THREADS", 0, 0, 64);
+	server->AV1Speed = shadow_server_env_u32("FREERDP_SHADOW_AV1_CPU_USED", 10, 0, 12);
+#endif
+#if defined(WITH_GFX_AV2)
+	/* libavm: qp 160, cpu-used 10, 4 threads on 2 tile columns, 4 reference frames (libavm
+	 * keeps 8, each a whole frame in 16 bits: 4 saves about 100 MB at 1080p in 4:4:4) */
+	server->AV2BitRate = shadow_server_env_u32("FREERDP_SHADOW_AV2_TARGET_BITRATE", 0, 0, 1000000);
+	server->AV2RateControlMode = (server->AV2BitRate > 0) ? FREERDP_AV2_CBR : FREERDP_AV2_Q;
+	server->AV2QP = shadow_server_env_u32("FREERDP_SHADOW_AV2_QP", 160, 1, 255);
+	server->AV2Threads =
+	    shadow_server_env_u32("FREERDP_SHADOW_AV2_THREADS", MIN(4, shadow_server_cpus()), 1, 64);
+	server->AV2Speed = shadow_server_env_u32("FREERDP_SHADOW_AV2_CPU_USED", 10, 0, 10);
+	server->AV2TileColumns = shadow_server_env_u32("FREERDP_SHADOW_AV2_TILE_COLUMNS", 1, 0, 6);
+	server->AV2DpbSize = shadow_server_env_u32("FREERDP_SHADOW_AV2_DPB_SIZE", 4, 1, 16);
+#endif
+}
+
 rdpShadowServer* shadow_server_new(void)
 {
 	rdpShadowServer* server = nullptr;
@@ -1310,14 +1373,7 @@ rdpShadowServer* shadow_server_new(void)
 	server->h264QP = 0;
 	server->h264HwAccel = FALSE;
 	server->authentication = TRUE;
-#if defined(WITH_GFX_AV1)
-	server->AV1BitRate = 3000; /* kbit/s */
-	server->AV1RateControlMode = FREERDP_AV1_VBR;
-#endif
-#if defined(WITH_GFX_AV2)
-	server->AV2BitRate = 500;
-	server->AV2RateControlMode = FREERDP_AV2_VBR;
-#endif
+	shadow_server_encoder_defaults(server);
 #if defined(WITH_GFX_AZURE)
 	server->HEVCBitRate = 500000;
 	server->HEVCRateControlMode = FREERDP_HEVC_VBR;
