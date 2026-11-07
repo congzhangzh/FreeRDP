@@ -877,8 +877,9 @@ BOOL freerdp_av2_context_reset(FREERDP_AV2_CONTEXT* av2, UINT32 width, UINT32 he
 		    !av2_avm_control(av2, AV2E_SET_TILE_COLUMNS, "AV2E_SET_TILE_COLUMNS",
 		                     (int)av2->tileColumns))
 			return FALSE;
-		if ((av2->ecfg.rc_end_usage == AVM_Q) && (av2->qp > 0) &&
-		    !av2_avm_control(av2, AVME_SET_QP, "AVME_SET_QP", (int)av2->qp))
+		/* Q: the quantizer of every frame; CQ: the best it may get, a bit rate on top */
+		if (((av2->ecfg.rc_end_usage == AVM_Q) || (av2->ecfg.rc_end_usage == AVM_CQ)) &&
+		    (av2->qp > 0) && !av2_avm_control(av2, AVME_SET_QP, "AVME_SET_QP", (int)av2->qp))
 			return FALSE;
 		/* Each reference frame is kept whole, in 16 bits with a border: the setting that
 		 * decides most of the encoder's memory. libavm has no control for it, only the
@@ -891,12 +892,14 @@ BOOL freerdp_av2_context_reset(FREERDP_AV2_CONTEXT* av2, UINT32 width, UINT32 he
 				WLog_Print(av2->log, WLOG_WARN, "dpb-size %s refused: %s", dpb,
 				           avm_codec_error(&av2->ctx));
 		}
+		static const char* const modes[] = { "vbr", "cbr", "cq", "q" };
+		const UINT32 mode = (UINT32)av2->ecfg.rc_end_usage;
 		WLog_Print(av2->log, WLOG_DEBUG,
-		           "AV2 encoder %" PRIu32 "x%" PRIu32 ": cpu-used %d, %s %" PRIu32
-		           ", %u thread(s), %d tile column(s), dpb-size %" PRIu32,
-		           width, height, cpuUsed, (av2->ecfg.rc_end_usage == AVM_Q) ? "qp" : "kbit/s",
-		           (av2->ecfg.rc_end_usage == AVM_Q) ? av2->qp : av2->ecfg.rc_target_bitrate,
-		           av2->ecfg.g_threads, 1 << av2->tileColumns, av2->dpbSize);
+		           "AV2 encoder %" PRIu32 "x%" PRIu32 ": %s, qp %" PRIu32 ", %" PRIu32
+		           " kbit/s, cpu-used %d, %u thread(s), %d tile column(s), dpb-size %" PRIu32,
+		           width, height, (mode < ARRAYSIZE(modes)) ? modes[mode] : "?", av2->qp,
+		           av2->ecfg.rc_target_bitrate, cpuUsed, av2->ecfg.g_threads, 1 << av2->tileColumns,
+		           av2->dpbSize);
 
 		av2->framecount = 0;
 		av2->eflags = AVM_EFLAG_FORCE_KF;
