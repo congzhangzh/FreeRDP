@@ -162,6 +162,10 @@ typedef struct
 	CliprdrFileContext* context;
 } CliprdrLocalStream;
 
+#if defined(WITH_FUSE)
+#define CLIPRDR_FUSE_MOUNT_WAIT_MS 5000
+#endif
+
 struct cliprdr_file_context
 {
 #if defined(WITH_FUSE)
@@ -1217,6 +1221,13 @@ static void fuse_abort(int sig, const char* signame, void* context)
 	}
 }
 
+static void fuse_mount_failed(CliprdrFileContext* file)
+{
+	(void)InterlockedExchange(&file->fuse_failed, 1);
+	WLog_Print(file->log, WLOG_WARN,
+	           "cannot mount '%s': files from the server cannot be pasted here", file->path);
+}
+
 static DWORD WINAPI cliprdr_file_fuse_thread(LPVOID arg)
 {
 	CliprdrFileContext* file = (CliprdrFileContext*)arg;
@@ -1229,28 +1240,25 @@ static DWORD WINAPI cliprdr_file_fuse_thread(LPVOID arg)
 	fuse_opt_add_arg(&args, file->path);
 	file->fuse_sess = fuse_session_new(&args, &cliprdr_file_fuse_oper,
 	                                   sizeof(cliprdr_file_fuse_oper), (void*)file);
+
+	const BOOL handler =
+	    (file->fuse_sess != nullptr) && freerdp_add_signal_cleanup_handler(file, fuse_abort);
+	const BOOL mounted = handler && (0 == fuse_session_mount(file->fuse_sess, file->path));
+	if (!mounted)
+		fuse_mount_failed(file);
+	/* set after the mount: the channel's first message finds fuse_failed decided */
 	(void)SetEvent(file->fuse_start_sync);
+
+	if (mounted)
+	{
+		fuse_session_loop(file->fuse_sess);
+		fuse_session_unmount(file->fuse_sess);
+	}
+	if (handler)
+		freerdp_del_signal_cleanup_handler(file, fuse_abort);
 
 	if (file->fuse_sess != nullptr)
 	{
-		if (freerdp_add_signal_cleanup_handler(file, fuse_abort))
-		{
-			if (0 == fuse_session_mount(file->fuse_sess, file->path))
-			{
-				fuse_session_loop(file->fuse_sess);
-				fuse_session_unmount(file->fuse_sess);
-			}
-			else
-			{
-				const LONG old = InterlockedExchange(&file->fuse_failed, 1);
-				WLog_Print(
-				    file->log, WLOG_WARN,
-				    "cannot mount '%s': files from the server cannot be pasted here (%" PRId32 ")",
-				    file->path, old);
-			}
-			freerdp_del_signal_cleanup_handler(file, fuse_abort);
-		}
-
 		WLog_Print(file->log, WLOG_DEBUG, "Waiting for FUSE stop sync");
 		if (WaitForSingleObject(file->fuse_stop_sync, INFINITE) == WAIT_FAILED)
 			WLog_Print(file->log, WLOG_ERROR, "Failed to wait for stop sync");
@@ -1287,6 +1295,35 @@ static UINT cliprdr_fail_content_reponse(CliprdrFileContext* file_context,
 	HashTable_Remove(file_context->request_table, (void*)(uintptr_t)streamID);
 	HashTable_Unlock(file_context->inode_table);
 	return CHANNEL_RC_OK;
+}
+
+/* Once per context, at the first connect: the mount then stays until
+ * cliprdr_file_context_free(), through a disconnect and into the next connect. A context whose
+ * channel never connects (/version, /list:monitor, -clipboard) mounts nothing.
+ * Text and images do not need any of this, so a failure here only turns file paste off. */
+static void cliprdr_file_fuse_start(CliprdrFileContext* file)
+{
+	WINPR_ASSERT(file);
+
+	if (file->fuse_thread)
+		return;
+
+	if (!winpr_PathFileExists(file->path) && !winpr_PathMakePath(file->path, nullptr))
+	{
+		fuse_mount_failed(file);
+		return;
+	}
+
+	file->fuse_thread = CreateThread(nullptr, 0, cliprdr_file_fuse_thread, file, 0, nullptr);
+	if (!file->fuse_thread)
+	{
+		fuse_mount_failed(file);
+		return;
+	}
+
+	/* fusermount3 is a child process: a stuck one must not hold the connection */
+	if (WaitForSingleObject(file->fuse_start_sync, CLIPRDR_FUSE_MOUNT_WAIT_MS) != WAIT_OBJECT_0)
+		WLog_Print(file->log, WLOG_WARN, "mounting '%s' takes long, going on", file->path);
 }
 
 static UINT cliprdr_file_context_server_file_contents_response(
@@ -2064,7 +2101,10 @@ BOOL cliprdr_file_context_init(CliprdrFileContext* file, CliprdrClientContext* c
 	cliprdr->ServerFileContentsResponse = cliprdr_file_context_server_file_contents_response;
 
 	CliprdrFuseFile* root_dir = fuse_file_new_root(file);
-	return root_dir != nullptr;
+	if (!root_dir)
+		return FALSE;
+	cliprdr_file_fuse_start(file);
+	return TRUE;
 #elif defined(WITH_CLIPRDR_FILE_APPLE)
 	cliprdr->ServerFileContentsResponse = cliprdr_file_context_apple_contents_response;
 	return TRUE;
@@ -2563,7 +2603,8 @@ void cliprdr_file_context_free(CliprdrFileContext* file)
 	free(file);
 }
 
-static BOOL create_base_path(CliprdrFileContext* file)
+/* The name only: nothing on disk until a connect needs it, see cliprdr_file_fuse_start() */
+static BOOL set_base_path(CliprdrFileContext* file)
 {
 	WINPR_ASSERT(file);
 
@@ -2580,15 +2621,7 @@ static BOOL create_base_path(CliprdrFileContext* file)
 
 	file->path = GetKnownSubPath(KNOWN_PATH_TEMP, base);
 	winpr_znfree(base, blen);
-	if (!file->path)
-		return FALSE;
-
-	if (!winpr_PathFileExists(file->path) && !winpr_PathMakePath(file->path, nullptr))
-	{
-		WLog_Print(file->log, WLOG_ERROR, "Failed to create directory '%s'", file->path);
-		return FALSE;
-	}
-	return TRUE;
+	return file->path != nullptr;
 }
 
 static void cliprdr_local_file_free(CliprdrLocalFile* file)
@@ -2922,7 +2955,7 @@ CliprdrFileContext* cliprdr_file_context_new(void* context)
 	}
 #endif
 
-	if (!create_base_path(file))
+	if (!set_base_path(file))
 		goto fail;
 
 #if defined(WITH_CLIPRDR_FILE_APPLE)
@@ -2940,11 +2973,6 @@ CliprdrFileContext* cliprdr_file_context_new(void* context)
 		goto fail;
 	if (!(file->fuse_stop_sync = CreateEvent(nullptr, TRUE, FALSE, nullptr)))
 		goto fail;
-	if (!(file->fuse_thread = CreateThread(nullptr, 0, cliprdr_file_fuse_thread, file, 0, nullptr)))
-		goto fail;
-
-	if (WaitForSingleObject(file->fuse_start_sync, INFINITE) == WAIT_FAILED)
-		WLog_Print(file->log, WLOG_ERROR, "Failed to wait for start sync");
 #endif
 	return file;
 
