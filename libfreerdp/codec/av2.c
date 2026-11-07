@@ -808,6 +808,14 @@ BOOL freerdp_av2_context_reset(FREERDP_AV2_CONTEXT* av2, UINT32 width, UINT32 he
 				WLog_Print(av2->log, WLOG_WARN, "dpb-size %s refused: %s", dpb,
 				           avm_codec_error(&av2->ctx));
 		}
+		static const char* const modes[] = { "vbr", "cbr", "cq", "q" };
+		const UINT32 mode = (UINT32)av2->ecfg.rc_end_usage;
+		WLog_Print(av2->log, WLOG_DEBUG,
+		           "AV2 encoder %" PRIu32 "x%" PRIu32 ": %s, qp %" PRIu32 ", %" PRIu32
+		           " kbit/s, cpu-used %d, %u thread(s), %d tile column(s), dpb-size %" PRIu32,
+		           width, height, (mode < ARRAYSIZE(modes)) ? modes[mode] : "?", av2->qp,
+		           av2->ecfg.rc_target_bitrate, cpuUsed, av2->ecfg.g_threads, 1 << av2->tileColumns,
+		           av2->dpbSize);
 
 		av2->framecount = 0;
 		av2->eflags = AVM_EFLAG_FORCE_KF;
