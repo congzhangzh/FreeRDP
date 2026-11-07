@@ -844,6 +844,8 @@ static inline void shadow_client_common_frame_acknowledge(rdpShadowClient* clien
 	WINPR_ASSERT(client);
 	WINPR_ASSERT(client->encoder);
 	client->encoder->lastAckframeId = frameId;
+	client->encoder->lastAckTick = GetTickCount64();
+	client->encoder->everAcked = TRUE;
 }
 
 WINPR_ATTR_NODISCARD
@@ -2992,6 +2994,74 @@ static void shadow_client_sound_thread_stop(rdpShadowClient* client)
 	client->soundThread = nullptr;
 }
 
+/* A client that has never acknowledged a frame (and did not suspend the acknowledgements) still
+ * gets one frame this often, so it is not frozen; 5 s, because on a slow link the first frames
+ * take seconds (a 1280x800 AV1 key frame at 1 Mbit/s took more than 2 s). A client that
+ * acknowledges is held at the limit: one that stops reading for longer than TcpAckTimeout (9 s) is
+ * disconnected by TCP anyway. */
+#define SHADOW_GFX_ACK_STALL_MS 5000
+
+/* GFX flow control: TRUE when this round's frame must wait. The server sent every damaged frame
+ * however far the client was behind, and on a slow link the frames queued up in TCP for seconds:
+ * the client showed old pictures, the sound and the pointer came late. Like xrdp, at most
+ * maxInFlight frames go out without an acknowledgement; the damage of the rounds in between
+ * waits in the client's region and goes out in one frame when an acknowledgement comes. */
+WINPR_ATTR_NODISCARD
+static BOOL shadow_client_gfx_must_wait(rdpShadowClient* client, const SHADOW_GFX_STATUS* status)
+{
+	WINPR_ASSERT(client);
+	WINPR_ASSERT(status);
+	rdpShadowEncoder* encoder = client->encoder;
+	WINPR_ASSERT(encoder);
+
+	if ((encoder->maxInFlight == 0) || !status->gfxOpened || !client->areGfxCapsReady ||
+	    !freerdp_settings_get_bool(client->context.settings, FreeRDP_SupportGraphicsPipeline))
+		return FALSE;
+
+	/* 0 when the client suspended its acknowledgements */
+	const UINT32 inFlight = shadow_encoder_inflight_frames(encoder);
+	encoder->statsMaxInFlight = MAX(encoder->statsMaxInFlight, inFlight);
+	if (inFlight < encoder->maxInFlight)
+		return FALSE;
+
+	const UINT64 now = GetTickCount64();
+	if (!encoder->everAcked && (now - encoder->lastAckTick >= SHADOW_GFX_ACK_STALL_MS))
+	{
+		if (!encoder->warnedNoAck)
+		{
+			encoder->warnedNoAck = TRUE;
+			WLog_WARN(TAG,
+			          "gfx: the client acknowledges no frame, one frame every %u ms (%" PRIu32
+			          " in flight)",
+			          SHADOW_GFX_ACK_STALL_MS, inFlight);
+		}
+		/* the next one after another stall period */
+		encoder->lastAckTick = now;
+		return FALSE;
+	}
+	return TRUE;
+}
+
+/* the 5 s line for the flow control, at debug level */
+static void shadow_client_gfx_stats(rdpShadowClient* client)
+{
+	WINPR_ASSERT(client);
+	rdpShadowEncoder* encoder = client->encoder;
+	WINPR_ASSERT(encoder);
+
+	const UINT64 now = GetTickCount64();
+	if (now - encoder->statsLogged < 5000)
+		return;
+	if (encoder->statsLogged != 0)
+		WLog_DBG(TAG,
+		         "gfx: at most %" PRIu32 " of %" PRIu32 " frames in flight, %" PRIu64
+		         " round(s) waited",
+		         encoder->statsMaxInFlight, encoder->maxInFlight, encoder->statsHeld);
+	encoder->statsMaxInFlight = 0;
+	encoder->statsHeld = 0;
+	encoder->statsLogged = now;
+}
+
 WINPR_ATTR_NODISCARD
 static DWORD WINAPI shadow_client_thread(LPVOID arg)
 {
@@ -3120,7 +3190,9 @@ static DWORD WINAPI shadow_client_thread(LPVOID arg)
 			events[nCount++] = gfxevent;
 #endif
 
-		status = WaitForMultipleObjects(nCount, events, FALSE, INFINITE);
+		/* a frame that waits for an acknowledgement also goes out after a stall */
+		const DWORD timeout = client->encoder->gfxHeld ? 100 : INFINITE;
+		status = WaitForMultipleObjects(nCount, events, FALSE, timeout);
 
 		if (status == WAIT_FAILED)
 			goto fail;
@@ -3148,6 +3220,17 @@ static DWORD WINAPI shadow_client_thread(LPVOID arg)
 						break;
 					}
 				}
+				else if (shadow_client_gfx_must_wait(client, &gfxstatus))
+				{
+					/* the client is behind: keep the damage for when it caught up */
+					if (!shadow_client_no_surface_update(client, &gfxstatus))
+					{
+						WLog_ERR(TAG, "Failed to handle surface update");
+						break;
+					}
+					client->encoder->gfxHeld = TRUE;
+					client->encoder->statsHeld++;
+				}
 				else
 				{
 					/* Send frame */
@@ -3156,6 +3239,7 @@ static DWORD WINAPI shadow_client_thread(LPVOID arg)
 						WLog_ERR(TAG, "Failed to send surface update");
 						break;
 					}
+					client->encoder->gfxHeld = FALSE;
 				}
 			}
 			else
@@ -3267,6 +3351,21 @@ static DWORD WINAPI shadow_client_thread(LPVOID arg)
 			}
 		}
 #endif
+
+		/* an acknowledgement (or a stall) let the waiting damage go: one frame of the surface as
+		 * it is now, not the frames that were skipped */
+		if (client->encoder->gfxHeld && client->activated && !client->suppressOutput &&
+		    !shadow_client_gfx_must_wait(client, &gfxstatus))
+		{
+			if (!shadow_client_send_surface_update(client, &gfxstatus))
+			{
+				WLog_ERR(TAG, "Failed to send surface update");
+				goto fail;
+			}
+			client->encoder->gfxHeld = FALSE;
+		}
+		if (client->activated)
+			shadow_client_gfx_stats(client);
 
 		if (WaitForSingleObject(MessageQueue_Event(MsgQueue), 0) == WAIT_OBJECT_0)
 		{
