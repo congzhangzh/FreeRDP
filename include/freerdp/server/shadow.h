@@ -261,6 +261,26 @@ extern "C"
 #else
 	    UINT32 reservedHEVC[2];
 #endif
+#if defined(WITH_GFX_AV1)
+		/** FREERDP_AV1_CONTEXT_OPTION_CQ_LEVEL, _THREADS and _SPEED, see
+		 *  shadow_server_encoder_defaults() @since version 3.34.0 */
+		UINT32 AV1CQLevel;
+		UINT32 AV1Threads;
+		UINT32 AV1Speed;
+#else
+	    UINT32 reservedAV1Tune[3];
+#endif
+#if defined(WITH_GFX_AV2)
+		/** FREERDP_AV2_CONTEXT_OPTION_QP, _THREADS, _SPEED, _TILE_COLUMNS and _DPB_SIZE, see
+		 *  shadow_server_encoder_defaults() @since version 3.34.0 */
+		UINT32 AV2QP;
+		UINT32 AV2Threads;
+		UINT32 AV2Speed;
+		UINT32 AV2TileColumns;
+		UINT32 AV2DpbSize;
+#else
+	    UINT32 reservedAV2Tune[5];
+#endif
 	};
 
 	struct rdp_shadow_surface

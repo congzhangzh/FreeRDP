@@ -302,17 +302,28 @@ static int shadow_encoder_init_av1(rdpShadowEncoder* encoder, UINT32 codecs)
 	if (!encoder->av1)
 		goto fail;
 
-	if (!freerdp_av1_context_reset(encoder->av1, encoder->width, encoder->height))
-		goto fail;
-
 	if (!freerdp_av1_context_set_option(encoder->av1, FREERDP_AV1_CONTEXT_OPTION_PROFILE, profile))
 		goto fail;
 
+	const rdpShadowServer* server = encoder->server;
 	if (!freerdp_av1_context_set_option(encoder->av1, FREERDP_AV1_CONTEXT_OPTION_RATECONTROL,
-	                                    encoder->server->AV1RateControlMode))
+	                                    server->AV1RateControlMode))
 		goto fail;
-	if (!freerdp_av1_context_set_option(encoder->av1, FREERDP_AV1_CONTEXT_OPTION_BITRATE,
-	                                    encoder->server->AV1BitRate))
+	/* 0: constant quality, the target stays libaom's and goes unused */
+	if ((server->AV1BitRate > 0) &&
+	    !freerdp_av1_context_set_option(encoder->av1, FREERDP_AV1_CONTEXT_OPTION_BITRATE,
+	                                    server->AV1BitRate))
+		goto fail;
+	if (!freerdp_av1_context_set_option(encoder->av1, FREERDP_AV1_CONTEXT_OPTION_CQ_LEVEL,
+	                                    server->AV1CQLevel) ||
+	    !freerdp_av1_context_set_option(encoder->av1, FREERDP_AV1_CONTEXT_OPTION_THREADS,
+	                                    server->AV1Threads) ||
+	    !freerdp_av1_context_set_option(encoder->av1, FREERDP_AV1_CONTEXT_OPTION_SPEED,
+	                                    server->AV1Speed))
+		goto fail;
+
+	/* the options first, so the encoder starts once */
+	if (!freerdp_av1_context_reset(encoder->av1, encoder->width, encoder->height))
 		goto fail;
 
 	encoder->codecs &= ~(FREERDP_CODEC_AV1_I420 | FREERDP_CODEC_AV1_I444);
@@ -341,17 +352,32 @@ static int shadow_encoder_init_av2(rdpShadowEncoder* encoder, UINT32 codecs)
 	if (!encoder->av2)
 		goto fail;
 
-	if (!freerdp_av2_context_reset(encoder->av2, encoder->width, encoder->height))
-		goto fail;
-
 	if (!freerdp_av2_context_set_option(encoder->av2, FREERDP_AV2_CONTEXT_OPTION_PROFILE, profile))
 		goto fail;
 
+	const rdpShadowServer* server = encoder->server;
 	if (!freerdp_av2_context_set_option(encoder->av2, FREERDP_AV2_CONTEXT_OPTION_RATECONTROL,
-	                                    encoder->server->AV2RateControlMode))
+	                                    server->AV2RateControlMode))
 		goto fail;
-	if (!freerdp_av2_context_set_option(encoder->av2, FREERDP_AV2_CONTEXT_OPTION_BITRATE,
-	                                    encoder->server->AV2BitRate))
+	/* 0: constant quality, the target stays libavm's and goes unused */
+	if ((server->AV2BitRate > 0) &&
+	    !freerdp_av2_context_set_option(encoder->av2, FREERDP_AV2_CONTEXT_OPTION_BITRATE,
+	                                    server->AV2BitRate))
+		goto fail;
+	if (!freerdp_av2_context_set_option(encoder->av2, FREERDP_AV2_CONTEXT_OPTION_QP,
+	                                    server->AV2QP) ||
+	    !freerdp_av2_context_set_option(encoder->av2, FREERDP_AV2_CONTEXT_OPTION_THREADS,
+	                                    server->AV2Threads) ||
+	    !freerdp_av2_context_set_option(encoder->av2, FREERDP_AV2_CONTEXT_OPTION_SPEED,
+	                                    server->AV2Speed) ||
+	    !freerdp_av2_context_set_option(encoder->av2, FREERDP_AV2_CONTEXT_OPTION_TILE_COLUMNS,
+	                                    server->AV2TileColumns) ||
+	    !freerdp_av2_context_set_option(encoder->av2, FREERDP_AV2_CONTEXT_OPTION_DPB_SIZE,
+	                                    server->AV2DpbSize))
+		goto fail;
+
+	/* the options first, so the encoder starts once */
+	if (!freerdp_av2_context_reset(encoder->av2, encoder->width, encoder->height))
 		goto fail;
 
 	encoder->codecs &= ~(FREERDP_CODEC_AV2_I420 | FREERDP_CODEC_AV2_I444);
