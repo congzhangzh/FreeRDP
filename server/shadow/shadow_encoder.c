@@ -485,6 +485,31 @@ static int shadow_encoder_uninit_av2(rdpShadowEncoder* encoder)
 }
 #endif
 
+/* The capabilities test makes every enabled encoder, before the client has chosen: the one it
+ * did not choose goes, an AV2 encoder alone keeps hundreds of MB once it runs. */
+void shadow_encoder_release_av(rdpShadowEncoder* encoder, BOOL av1, BOOL av2)
+{
+	WINPR_ASSERT(encoder);
+#if defined(WITH_GFX_AV1)
+	if (av1 && encoder->av1)
+	{
+		WLog_DBG(TAG, "releasing the AV1 encoder: the client chose another codec");
+		(void)shadow_encoder_uninit_av1(encoder);
+	}
+#else
+	WINPR_UNUSED(av1);
+#endif
+#if defined(WITH_GFX_AV2)
+	if (av2 && encoder->av2)
+	{
+		WLog_DBG(TAG, "releasing the AV2 encoder: the client chose another codec");
+		(void)shadow_encoder_uninit_av2(encoder);
+	}
+#else
+	WINPR_UNUSED(av2);
+#endif
+}
+
 static int shadow_encoder_uninit_progressive(rdpShadowEncoder* encoder)
 {
 	WINPR_ASSERT(encoder);

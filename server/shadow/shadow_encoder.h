@@ -83,6 +83,7 @@ extern "C"
 
 	WINPR_ATTR_NODISCARD int shadow_encoder_reset(rdpShadowEncoder* encoder);
 	WINPR_ATTR_NODISCARD int shadow_encoder_prepare(rdpShadowEncoder* encoder, UINT32 codecs);
+	void shadow_encoder_release_av(rdpShadowEncoder* encoder, BOOL av1, BOOL av2);
 	WINPR_ATTR_NODISCARD UINT32 shadow_encoder_create_frame_id(rdpShadowEncoder* encoder);
 
 	void shadow_encoder_free(rdpShadowEncoder* encoder);
