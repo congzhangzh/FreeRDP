@@ -191,6 +191,13 @@ extern "C"
 		CliprdrServerContext* cliprdr; /** @since version 3.34.0 */
 #endif
 		DispServerContext* disp; /** @since version 3.34.0 */
+		/** sound samples and volume: a thread of their own sends them, so that a frame being
+		 *  encoded does not hold the sound back
+		 *  @since version 3.34.0 */
+		wMessageQueue* SoundQueue;
+		HANDLE soundThread;       /** @since version 3.34.0 */
+		CRITICAL_SECTION vcmLock; /** one drain of the channel queue at a time
+		                           *  @since version 3.34.0 */
 	};
 
 	struct rdp_shadow_server
