@@ -298,11 +298,19 @@ static BOOL testTuning(uint32_t width, uint32_t height)
 		goto fail;
 
 	const RECTANGLE_16 rect = { .left = 0, .top = 0, .right = width, .bottom = height };
-	for (size_t frame = 0; frame < 2; frame++)
+	for (size_t frame = 0; frame < 3; frame++)
 	{
-		/* the second frame after a change once the encoder runs: it starts again */
+		/* the next frames after a change once the encoder runs: it starts again, the last one
+		 * in constrained quality, the quality up to a bit rate */
 		if ((frame == 1) &&
 		    !freerdp_av2_context_set_option(enc, FREERDP_AV2_CONTEXT_OPTION_QP, 120))
+			goto fail;
+		if ((frame == 2) &&
+		    (!freerdp_av2_context_set_option(enc, FREERDP_AV2_CONTEXT_OPTION_BITRATE, 500) ||
+		     !freerdp_av2_context_set_option(enc, FREERDP_AV2_CONTEXT_OPTION_RATECONTROL,
+		                                     FREERDP_AV2_CQ) ||
+		     (freerdp_av2_context_get_option(enc, FREERDP_AV2_CONTEXT_OPTION_RATECONTROL) !=
+		      FREERDP_AV2_CQ)))
 			goto fail;
 		uint8_t* dst = nullptr;
 		uint32_t dstsize = 0;
