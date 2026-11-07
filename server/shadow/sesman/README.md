@@ -78,12 +78,14 @@ does from its environment:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `FREERDP_SHADOW_AV1_CQ_LEVEL` | 28 | libaom's quality, 1 to 63 (lower is better) |
-| `FREERDP_SHADOW_AV1_TARGET_BITRATE` | 0 | kbit/s; above 0 a constant bit rate instead of the quality |
+| `FREERDP_SHADOW_AV1_CQ_LEVEL` | 20 | libaom's quality, 1 to 63 (lower is better) |
+| `FREERDP_SHADOW_AV1_TARGET_BITRATE` | 8000 | kbit/s, the ceiling of `cq` and the target of `cbr` and `vbr`; 0 for `q` |
+| `FREERDP_SHADOW_AV1_RATE_CONTROL` | `cq` (`q` without a target) | `q` constant quality, `cq` the quality up to the target, `cbr`, `vbr` |
 | `FREERDP_SHADOW_AV1_THREADS` | 0 | 0 for up to 4 |
 | `FREERDP_SHADOW_AV1_CPU_USED` | 10 | 0 (slowest) to 12 |
-| `FREERDP_SHADOW_AV2_QP` | 160 | libavm's quantizer, 1 to 255 (lower is better) |
-| `FREERDP_SHADOW_AV2_TARGET_BITRATE` | 0 | kbit/s; above 0 a constant bit rate instead of the quantizer |
+| `FREERDP_SHADOW_AV2_QP` | 120 | libavm's quantizer, 1 to 255 (lower is better) |
+| `FREERDP_SHADOW_AV2_TARGET_BITRATE` | 6000 | kbit/s, the ceiling of `cq` and the target of `cbr` and `vbr`; 0 for `q` |
+| `FREERDP_SHADOW_AV2_RATE_CONTROL` | `cq` (`q` without a target) | as for AV1 |
 | `FREERDP_SHADOW_AV2_THREADS` | up to 4 | |
 | `FREERDP_SHADOW_AV2_CPU_USED` | 10 | 0 (slowest) to 10 |
 | `FREERDP_SHADOW_AV2_TILE_COLUMNS` | 1 | log2: 1 is two columns |
