@@ -985,9 +985,17 @@ static UINT shadow_client_send_caps_confirm(RdpgfxServerContext* context, rdpSha
 	rdpSettings* clientSettings = client->context.settings;
 	WINPR_ASSERT(clientSettings);
 
-	/* the capabilities test made each enabled AV encoder: keep only the chosen one */
-	shadow_encoder_release_av(client->encoder, pdu->capsSet->version != RDPGFX_CAPVERSION_FRDP_1,
-	                          pdu->capsSet->version != RDPGFX_CAPVERSION_FRDP_2);
+	/* the capabilities test made each enabled AV encoder: keep only the chosen one (the
+	 * capversions exist only in builds with that codec) */
+	BOOL releaseAv1 = TRUE;
+	BOOL releaseAv2 = TRUE;
+#if defined(WITH_GFX_AV1)
+	releaseAv1 = (pdu->capsSet->version != RDPGFX_CAPVERSION_FRDP_1);
+#endif
+#if defined(WITH_GFX_AV2)
+	releaseAv2 = (pdu->capsSet->version != RDPGFX_CAPVERSION_FRDP_2);
+#endif
+	shadow_encoder_release_av(client->encoder, releaseAv1, releaseAv2);
 
 #if defined(WITH_GFX_AV2)
 	if (pdu->capsSet->version == RDPGFX_CAPVERSION_FRDP_2)
