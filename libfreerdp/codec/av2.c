@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+#include <winpr/sysinfo.h>
+
 #include <freerdp/codec/av2.h>
 #include <freerdp/primitives.h>
 #include <freerdp/log.h>
@@ -83,6 +85,19 @@ struct S_FREERDP_AV2_CONTEXT
 	avm_codec_enc_cfg_t ecfg;
 	avm_codec_pts_t framecount;
 	avm_enc_frame_flags_t eflags;
+	UINT32 qp;          /* FREERDP_AV2_CONTEXT_OPTION_QP, 0: libavm's */
+	UINT32 speed;       /* FREERDP_AV2_CONTEXT_OPTION_SPEED, UINT32_MAX: by usage */
+	UINT32 tileColumns; /* FREERDP_AV2_CONTEXT_OPTION_TILE_COLUMNS, log2 */
+	UINT32 dpbSize;     /* FREERDP_AV2_CONTEXT_OPTION_DPB_SIZE, 0: libavm's */
+	/* encoder statistics, see av2_encoder_stats() */
+	struct
+	{
+		UINT64 startNS;
+		UINT64 encodeNS;
+		UINT64 maxEncodeNS;
+		UINT64 bytes;
+		UINT32 frames;
+	} stats;
 #endif
 	avm_codec_flags_t flags;
 	avm_codec_iface_t* iface;
@@ -144,6 +159,45 @@ static BOOL allocate_h264_metablock(UINT32 QP, RECTANGLE_16* rectangles,
 		cur->qualityVal = 100 - (QP & 0x3F);
 	}
 	return TRUE;
+}
+
+/* At debug level, a line every 5 s: frames, encode time and bit rate, as for AV1 */
+#define AV2_STATS_INTERVAL_NS (5ull * 1000ull * 1000ull * 1000ull)
+
+static void av2_encoder_stats(FREERDP_AV2_CONTEXT* av2, UINT64 startNS, size_t bytes)
+{
+	WINPR_ASSERT(av2);
+
+	if (!WLog_IsLevelActive(av2->log, WLOG_DEBUG))
+		return;
+
+	const UINT64 endNS = winpr_GetTickCount64NS();
+	const UINT64 encodeNS = endNS - startNS;
+	if (av2->stats.frames == 0)
+		av2->stats.startNS = startNS;
+	av2->stats.frames++;
+	av2->stats.encodeNS += encodeNS;
+	av2->stats.bytes += bytes;
+	if (encodeNS > av2->stats.maxEncodeNS)
+		av2->stats.maxEncodeNS = encodeNS;
+
+	const UINT64 elapsedNS = endNS - av2->stats.startNS;
+	if (elapsedNS < AV2_STATS_INTERVAL_NS)
+		return;
+
+	const double seconds = (double)elapsedNS / 1e9;
+	WLog_Print(
+	    av2->log, WLOG_DEBUG,
+	    "AV2 %" PRIu32 "x%" PRIu32 " %s: %" PRIu32 " frames in %.1f s (%.1f fps), "
+	    "encode avg %.1f ms max %.1f ms, %.0f kbit/s",
+	    av2->ecfg.g_w, av2->ecfg.g_h, (av2->profile == 1) ? "I444" : "I420", av2->stats.frames,
+	    seconds, av2->stats.frames / seconds, (double)av2->stats.encodeNS / av2->stats.frames / 1e6,
+	    (double)av2->stats.maxEncodeNS / 1e6, (double)av2->stats.bytes * 8.0 / 1000.0 / seconds);
+
+	av2->stats.frames = 0;
+	av2->stats.encodeNS = 0;
+	av2->stats.maxEncodeNS = 0;
+	av2->stats.bytes = 0;
 }
 
 WINPR_ATTR_NODISCARD
@@ -216,11 +270,39 @@ BOOL freerdp_av2_context_set_option(FREERDP_AV2_CONTEXT* av2, FREERDP_AV2_CONTEX
 				return FALSE;
 			av2->ecfg.g_usage = value;
 			break;
+		case FREERDP_AV2_CONTEXT_OPTION_QP:
+			if (!av2->encoder || (value > 255))
+				return FALSE;
+			av2->qp = value;
+			break;
+		case FREERDP_AV2_CONTEXT_OPTION_THREADS:
+			if (!av2->encoder || (value > 64))
+				return FALSE;
+			av2->ecfg.g_threads = (value > 0) ? value : 1;
+			break;
+		case FREERDP_AV2_CONTEXT_OPTION_SPEED:
+			if (!av2->encoder || ((value > 10) && (value != UINT32_MAX)))
+				return FALSE;
+			av2->speed = value;
+			break;
+		case FREERDP_AV2_CONTEXT_OPTION_TILE_COLUMNS:
+			if (!av2->encoder || (value > 6))
+				return FALSE;
+			av2->tileColumns = value;
+			break;
+		case FREERDP_AV2_CONTEXT_OPTION_DPB_SIZE:
+			if (!av2->encoder || (value > 16))
+				return FALSE;
+			av2->dpbSize = value;
+			break;
 		default:
 			WLog_Print(av2->log, WLOG_ERROR, "Unknown FREERDP_AV2_CONTEXT_OPTION[0x%08" PRIx32 "]",
 			           option);
 			return TRUE;
 	}
+	/* before the first reset only kept: the encoder starts once, with all of them */
+	if (!av2->initialized)
+		return TRUE;
 	return freerdp_av2_context_reset(av2, av2->ecfg.g_w, av2->ecfg.g_h);
 #else
 	WLog_Print(av2->log, WLOG_WARN,
@@ -263,6 +345,26 @@ UINT32 freerdp_av2_context_get_option(FREERDP_AV2_CONTEXT* av2, FREERDP_AV2_CONT
 			if (!av2->encoder)
 				return 0;
 			return av2->ecfg.g_usage;
+		case FREERDP_AV2_CONTEXT_OPTION_QP:
+			if (!av2->encoder)
+				return 0;
+			return av2->qp;
+		case FREERDP_AV2_CONTEXT_OPTION_THREADS:
+			if (!av2->encoder)
+				return 0;
+			return av2->ecfg.g_threads;
+		case FREERDP_AV2_CONTEXT_OPTION_SPEED:
+			if (!av2->encoder)
+				return 0;
+			return av2->speed;
+		case FREERDP_AV2_CONTEXT_OPTION_TILE_COLUMNS:
+			if (!av2->encoder)
+				return 0;
+			return av2->tileColumns;
+		case FREERDP_AV2_CONTEXT_OPTION_DPB_SIZE:
+			if (!av2->encoder)
+				return 0;
+			return av2->dpbSize;
 		default:
 			WLog_Print(av2->log, WLOG_ERROR, "Unknown FREERDP_AV2_CONTEXT_OPTION[0x%08" PRIx32 "]",
 			           option);
@@ -290,6 +392,7 @@ INT32 freerdp_av2_compress(FREERDP_AV2_CONTEXT* av2, const BYTE* pSrcData, DWORD
 	}
 
 #if defined(AV2_ENCODER_LIBAVM)
+	const UINT64 startNS = winpr_GetTickCount64NS();
 	primitives_t* primitives = primitives_get();
 	if (!primitives)
 	{
@@ -404,6 +507,7 @@ INT32 freerdp_av2_compress(FREERDP_AV2_CONTEXT* av2, const BYTE* pSrcData, DWORD
 		*ppDstData = pkt->data.frame.buf;
 		*pDstSize = WINPR_ASSERTING_INT_CAST(UINT32, pkt->data.frame.sz);
 	}
+	av2_encoder_stats(av2, startNS, *pDstSize);
 	if (*pDstSize == 0)
 		return 0;
 
@@ -755,13 +859,45 @@ BOOL freerdp_av2_context_reset(FREERDP_AV2_CONTEXT* av2, UINT32 width, UINT32 he
 		}
 		av2->initialized = true;
 
-		/* A remote desktop: screen content, the fastest preset of the usage */
-		const int cpuUsed = (av2->ecfg.g_usage == AVM_USAGE_REALTIME) ? 9 : 6;
-		if (!av2_avm_control(av2, AVME_SET_CPUUSED, "AVME_SET_CPUUSED", cpuUsed) ||
-		    !av2_avm_control(av2, AV2E_SET_TUNE_CONTENT, "AV2E_SET_TUNE_CONTENT",
+		/* A remote desktop: screen content, the fastest preset of the usage unless set */
+		int cpuUsed = (av2->ecfg.g_usage == AVM_USAGE_REALTIME) ? 9 : 6;
+		if (av2->speed != UINT32_MAX)
+			cpuUsed = (int)av2->speed;
+		if ((avm_codec_control(&av2->ctx, AVME_SET_CPUUSED, cpuUsed) != AVM_CODEC_OK) &&
+		    (cpuUsed > 9))
+		{
+			/* speed 10 is newer than libavm v1.0.0, and realtime only */
+			WLog_Print(av2->log, WLOG_WARN, "AVME_SET_CPUUSED %d refused: 9 instead", cpuUsed);
+			cpuUsed = 9;
+			if (!av2_avm_control(av2, AVME_SET_CPUUSED, "AVME_SET_CPUUSED", cpuUsed))
+				return FALSE;
+		}
+		if (!av2_avm_control(av2, AV2E_SET_TUNE_CONTENT, "AV2E_SET_TUNE_CONTENT",
 		                     AVM_CONTENT_SCREEN) ||
-		    !av2_avm_control(av2, AV2E_SET_ROW_MT, "AV2E_SET_ROW_MT", 1))
+		    !av2_avm_control(av2, AV2E_SET_ROW_MT, "AV2E_SET_ROW_MT", 1) ||
+		    !av2_avm_control(av2, AV2E_SET_TILE_COLUMNS, "AV2E_SET_TILE_COLUMNS",
+		                     (int)av2->tileColumns))
 			return FALSE;
+		if ((av2->ecfg.rc_end_usage == AVM_Q) && (av2->qp > 0) &&
+		    !av2_avm_control(av2, AVME_SET_QP, "AVME_SET_QP", (int)av2->qp))
+			return FALSE;
+		/* Each reference frame is kept whole, in 16 bits with a border: the setting that
+		 * decides most of the encoder's memory. libavm has no control for it, only the
+		 * option avmenc's --dpb-size sets, before the first frame. */
+		if (av2->dpbSize > 0)
+		{
+			char dpb[8] = WINPR_C_ARRAY_INIT;
+			(void)_snprintf(dpb, sizeof(dpb), "%" PRIu32, av2->dpbSize);
+			if (avm_codec_set_option(&av2->ctx, "dpb-size", dpb) != AVM_CODEC_OK)
+				WLog_Print(av2->log, WLOG_WARN, "dpb-size %s refused: %s", dpb,
+				           avm_codec_error(&av2->ctx));
+		}
+		WLog_Print(av2->log, WLOG_DEBUG,
+		           "AV2 encoder %" PRIu32 "x%" PRIu32 ": cpu-used %d, %s %" PRIu32
+		           ", %u thread(s), %d tile column(s), dpb-size %" PRIu32,
+		           width, height, cpuUsed, (av2->ecfg.rc_end_usage == AVM_Q) ? "qp" : "kbit/s",
+		           (av2->ecfg.rc_end_usage == AVM_Q) ? av2->qp : av2->ecfg.rc_target_bitrate,
+		           av2->ecfg.g_threads, 1 << av2->tileColumns, av2->dpbSize);
 
 		av2->framecount = 0;
 		av2->eflags = AVM_EFLAG_FORCE_KF;
@@ -901,6 +1037,7 @@ FREERDP_AV2_CONTEXT* freerdp_av2_context_new(BOOL Compressor)
 		ctx->ecfg.g_profile = AV2_PROFILE_MAIN_420_10_IP0;
 		ctx->ecfg.g_bit_depth = AVM_BITS_8;
 		ctx->ecfg.g_input_bit_depth = 8;
+		ctx->speed = UINT32_MAX;
 #else
 		WLog_Print(ctx->log, WLOG_ERROR,
 		           "AV2 encoder requires libavm with its encoder, recompile with '-DWITH_AVM=ON'");
