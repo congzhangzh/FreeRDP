@@ -92,6 +92,13 @@ extern "C"
 	 *  @since version 3.34.0 */
 	typedef BOOL (*pfnShadowClientResize)(rdpShadowSubsystem* subsystem, rdpShadowClient* client,
 	                                      UINT32 width, UINT32 height);
+	/** The client's monitors: their rects in the client's coordinates (its primary at 0,0) and
+	 *  which one is the primary, from Display Control. A subsystem that sets this (with
+	 *  ClientResize) gets the whole layout instead of the primary's size, and can give the
+	 *  session a monitor per client monitor. Runs on the channel's thread and must not block.
+	 *  @since version 3.34.0 */
+	typedef BOOL (*pfnShadowClientLayout)(rdpShadowSubsystem* subsystem, rdpShadowClient* client,
+	                                      const rdpMonitor* monitors, UINT32 count);
 
 	typedef BOOL (*pfnShadowSynchronizeEvent)(rdpShadowSubsystem* subsystem,
 	                                          rdpShadowClient* client, UINT32 flags);
@@ -356,6 +363,7 @@ extern "C"
 		BOOL ClipboardFiles; /** @since version 3.34.0 */
 
 		WINPR_ATTR_NODISCARD pfnShadowClientResize ClientResize; /** @since version 3.34.0 */
+		WINPR_ATTR_NODISCARD pfnShadowClientLayout ClientLayout; /** @since version 3.34.0 */
 	};
 
 /* Definition of message between subsystem and clients */

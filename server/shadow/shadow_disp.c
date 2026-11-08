@@ -45,6 +45,27 @@ static UINT shadow_disp_monitor_layout(DispServerContext* context,
 	if (!client->mayInteract || (pdu->NumMonitors == 0))
 		return CHANNEL_RC_OK;
 
+	rdpShadowSubsystem* subsystem = client->subsystem;
+
+	/* the whole layout, for a subsystem that gives the session a monitor per client monitor */
+	if (subsystem->ClientLayout)
+	{
+		rdpMonitor monitors[SHADOW_DISP_MAX_MONITORS] = WINPR_C_ARRAY_INIT;
+		const UINT32 count = MIN(pdu->NumMonitors, SHADOW_DISP_MAX_MONITORS);
+		for (UINT32 x = 0; x < count; x++)
+		{
+			const DISPLAY_CONTROL_MONITOR_LAYOUT* m = &pdu->Monitors[x];
+			monitors[x].x = m->Left;
+			monitors[x].y = m->Top;
+			monitors[x].width = (INT32)MIN(m->Width, (UINT32)SHADOW_DISP_MAX_SIDE);
+			monitors[x].height = (INT32)MIN(m->Height, (UINT32)SHADOW_DISP_MAX_SIDE);
+			monitors[x].is_primary = (m->Flags & DISPLAY_CONTROL_MONITOR_PRIMARY) ? 1 : 0;
+		}
+		if (!subsystem->ClientLayout(subsystem, client, monitors, count))
+			WLog_WARN(TAG, "cannot follow the client to its %" PRIu32 " monitor(s)", count);
+		return CHANNEL_RC_OK;
+	}
+
 	const DISPLAY_CONTROL_MONITOR_LAYOUT* monitor = &pdu->Monitors[0];
 	for (UINT32 x = 0; x < pdu->NumMonitors; x++)
 	{
@@ -55,7 +76,6 @@ static UINT shadow_disp_monitor_layout(DispServerContext* context,
 		}
 	}
 
-	rdpShadowSubsystem* subsystem = client->subsystem;
 	if (!subsystem->ClientResize(subsystem, client, monitor->Width, monitor->Height))
 		WLog_WARN(TAG, "cannot follow the client to %" PRIu32 "x%" PRIu32, monitor->Width,
 		          monitor->Height);
