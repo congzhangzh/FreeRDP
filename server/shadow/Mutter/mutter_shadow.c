@@ -1401,6 +1401,23 @@ static void mutter_on_process(void* data)
 		const BYTE* src = (const BYTE*)d->data + d->chunk->offset;
 		const UINT32 stride = (d->chunk->stride > 0) ? (UINT32)d->chunk->stride : output->width * 4;
 
+		/* the picture is read at the output's size: a buffer that is smaller (one of the old
+		 * size, still queued when the stream grew) is skipped, and the next one goes whole */
+		const size_t need = (output->height == 0)
+		                        ? 0
+		                        : (size_t)stride * (output->height - 1) + 4ull * output->width;
+		if ((stride < 4ull * output->width) || (d->chunk->offset > d->maxsize) ||
+		    (d->chunk->size < need) || (d->maxsize - d->chunk->offset < need))
+		{
+			WLog_DBG(TAG,
+			         "output %" PRIu32 ": a buffer of %" PRIu32 " bytes (stride %" PRIu32
+			         ") is smaller than %" PRIu32 "x%" PRIu32 ", skipped",
+			         output->index, d->chunk->size, stride, output->width, output->height);
+			output->fullPaint = TRUE;
+			(void)pw_stream_queue_buffer(output->stream, pb);
+			continue;
+		}
+
 		EnterCriticalSection(&surface->lock);
 		struct spa_meta* dm = spa_buffer_find_meta(buf, SPA_META_VideoDamage);
 		if (!dm || output->fullPaint)
