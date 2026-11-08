@@ -155,6 +155,13 @@ static BOOL mutter_virtual_size(UINT32* width, UINT32* height)
 #define MUTTER_MSG_CLIPBOARD_WRITE_DONE 0x10004
 #define MUTTER_MSG_VIRTUAL_SIZE 0x10005
 #define MUTTER_MSG_UNLOCK 0x10006
+#define MUTTER_MSG_LAYOUT 0x10007
+
+/* GNOME's layout waits this long for the outputs' streams at most */
+#define MUTTER_LAYOUT_WAIT_MS 5000
+/* gaps and overlaps between the client's monitors that GNOME gets closed: it refuses monitors
+ * that do not touch, and a client that splits an area can be a pixel off */
+#define MUTTER_LAYOUT_SNAP 4
 
 /* How long a client waits for the virtual monitor to take its size */
 #define MUTTER_VIRTUAL_SIZE_WAIT_MS 1000
@@ -174,9 +181,17 @@ static BOOL mutter_virtual_size(UINT32* width, UINT32* height)
 typedef struct
 {
 	char connector[MUTTER_SHADOW_CONNECTOR_SIZE];
+	char modeId[MUTTER_SHADOW_CONNECTOR_SIZE];
 	INT32 width;
 	INT32 height;
 } MUTTER_MODE;
+
+/* the client's monitors, to the subsystem thread */
+typedef struct
+{
+	UINT32 count;
+	rdpMonitor monitors[MUTTER_SHADOW_MAX_MONITORS];
+} MUTTER_LAYOUT;
 
 /* DisplayConfig.GetCurrentState: a logical monitor, where it is in the layout */
 typedef struct
@@ -329,10 +344,11 @@ static BOOL mutter_read_monitor(sd_bus_message* reply, MUTTER_MODE* mode, BOOL* 
 		if (modeEntered == 0)
 			break;
 
+		const char* modeId = nullptr;
 		int32_t width = 0;
 		int32_t height = 0;
 		int current = 0;
-		if ((sd_bus_message_read(reply, "siidd", nullptr, &width, &height, nullptr, nullptr) < 0) ||
+		if ((sd_bus_message_read(reply, "siidd", &modeId, &width, &height, nullptr, nullptr) < 0) ||
 		    (sd_bus_message_skip(reply, "ad") < 0) ||
 		    !mutter_read_dict(reply, "is-current", 'b', &current) ||
 		    (sd_bus_message_exit_container(reply) < 0))
@@ -342,6 +358,7 @@ static BOOL mutter_read_monitor(sd_bus_message* reply, MUTTER_MODE* mode, BOOL* 
 		{
 			mode->width = width;
 			mode->height = height;
+			(void)_snprintf(mode->modeId, sizeof(mode->modeId), "%s", modeId ? modeId : "");
 		}
 	}
 
@@ -405,7 +422,8 @@ static BOOL mutter_read_logical(sd_bus_message* reply, MUTTER_LOGICAL* logical, 
  * monitors, and the layout mode */
 WINPR_ATTR_NODISCARD
 static BOOL mutter_read_state(sd_bus_message* reply, MUTTER_MODE* modes, size_t* nmodes,
-                              MUTTER_LOGICAL* logical, size_t* nlogical, uint32_t* layoutMode)
+                              MUTTER_LOGICAL* logical, size_t* nlogical, uint32_t* layoutMode,
+                              uint32_t* serial)
 {
 	WINPR_ASSERT(reply);
 	WINPR_ASSERT(modes);
@@ -414,7 +432,7 @@ static BOOL mutter_read_state(sd_bus_message* reply, MUTTER_MODE* modes, size_t*
 	WINPR_ASSERT(nlogical);
 	WINPR_ASSERT(layoutMode);
 
-	if ((sd_bus_message_read(reply, "u", nullptr) < 0) ||
+	if ((sd_bus_message_read(reply, "u", serial) < 0) ||
 	    (sd_bus_message_enter_container(reply, 'a', "((ssss)a(siiddada{sv})a{sv})") < 0))
 		return FALSE;
 	for (;;)
@@ -478,7 +496,8 @@ static UINT32 mutter_list_monitors(sd_bus* bus, MONITOR_DEF* monitors,
 		return 0;
 	}
 
-	const BOOL parsed = mutter_read_state(reply, modes, &nmodes, logical, &nlogical, &layoutMode);
+	const BOOL parsed =
+	    mutter_read_state(reply, modes, &nmodes, logical, &nlogical, &layoutMode, nullptr);
 	sd_bus_message_unref(reply);
 	if (!parsed)
 		WLog_WARN(TAG, "GetCurrentState: unexpected reply");
@@ -713,6 +732,7 @@ out:
 	return rc;
 }
 static void mutter_clipboard_enable(mutterShadowSubsystem* mutter);
+static void mutter_note_foreign_monitors(mutterShadowSubsystem* mutter);
 
 WINPR_ATTR_NODISCARD
 static BOOL mutter_setup_sessions(mutterShadowSubsystem* mutter, const char* connector)
@@ -758,6 +778,8 @@ static BOOL mutter_setup_sessions(mutterShadowSubsystem* mutter, const char* con
 	call = sd_bus_message_unref(call);
 
 	/* 3. the monitor: output 0 */
+	if (mutter->virtualMonitor)
+		mutter_note_foreign_monitors(mutter);
 	mutterOutput* output = &mutter->outputs[0];
 	if (!mutter_record_monitor(mutter, output, connector))
 		goto out;
@@ -1024,6 +1046,13 @@ static void mutter_cursor_update(mutterShadowSubsystem* mutter, const mutterOutp
 	if (mc->id == 0)
 		return; /* no cursor in this buffer */
 
+	/* with several outputs only the one the pointer is on speaks for it: another one may
+	 * call it hidden */
+	if ((mutter->outputCount > 1) &&
+	    ((mc->position.x < 0) || (mc->position.y < 0) ||
+	     ((UINT32)mc->position.x >= output->width) || ((UINT32)mc->position.y >= output->height)))
+		return;
+
 	if (mc->bitmap_offset != 0)
 	{
 		if ((size_t)mc->bitmap_offset + sizeof(struct spa_meta_bitmap) > meta->size)
@@ -1158,11 +1187,14 @@ static void mutter_on_param_changed(void* data, uint32_t id, const struct spa_po
 
 	/* the first format of the first output sizes the surface the server starts with */
 	const BOOL sized = (mutter->width > 0) && (mutter->height > 0);
+	/* the client threads map the pointer with it */
+	EnterCriticalSection(&mutter->eiLock);
 	output->width = info.size.width;
 	output->height = info.size.height;
+	output->haveFormat = TRUE;
+	LeaveCriticalSection(&mutter->eiLock);
 	output->format =
 	    (info.format == SPA_VIDEO_FORMAT_BGRA) ? PIXEL_FORMAT_BGRA32 : PIXEL_FORMAT_BGRX32;
-	output->haveFormat = TRUE;
 	output->fullPaint = TRUE;
 	const BOOL changed = mutter_update_desktop(mutter);
 	if (mutter->outputCount > 1)
@@ -1572,26 +1604,466 @@ static BOOL mutter_stream_connect_node(mutterShadowSubsystem* mutter, mutterOutp
 }
 
 /* Subsystem thread: ask for another size, Mutter resizes the virtual monitor and
- * mutter_stream_param_changed takes it from there */
-static void mutter_virtual_resize(mutterShadowSubsystem* mutter, UINT32 width, UINT32 height)
+ * mutter_on_param_changed takes it from there */
+static void mutter_output_resize(mutterOutput* output, UINT32 width, UINT32 height)
 {
-	WINPR_ASSERT(mutter);
+	WINPR_ASSERT(output);
 
-	mutterOutput* output = &mutter->outputs[0];
-	if (!output->stream)
-		return;
-
-	mutter->virtualWidth = width;
-	mutter->virtualHeight = height;
 	output->wantWidth = width;
 	output->wantHeight = height;
+	if (!output->stream)
+		return;
 
 	uint8_t podBuffer[1024] = WINPR_C_ARRAY_INIT;
 	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(podBuffer, sizeof(podBuffer));
 	const struct spa_rectangle size = SPA_RECTANGLE(width, height);
 	const struct spa_pod* params[] = { mutter_stream_format(&b, &size) };
 	if (pw_stream_update_params(output->stream, params, ARRAYSIZE(params)) < 0)
-		WLog_WARN(TAG, "cannot ask for %" PRIu32 "x%" PRIu32, width, height);
+		WLog_WARN(TAG, "output %" PRIu32 ": cannot ask for %" PRIu32 "x%" PRIu32, output->index,
+		          width, height);
+}
+
+static void mutter_virtual_resize(mutterShadowSubsystem* mutter, UINT32 width, UINT32 height)
+{
+	WINPR_ASSERT(mutter);
+
+	mutter->virtualWidth = width;
+	mutter->virtualHeight = height;
+	mutter_output_resize(&mutter->outputs[0], width, height);
+}
+
+/* ------------------------------------------------------------------------ */
+/* several monitors: a virtual monitor per client monitor                    */
+/* ------------------------------------------------------------------------ */
+
+static UINT32 mutter_virtual_side(UINT32 side, UINT32 least);
+
+/* GetCurrentState: the config's serial, each monitor's connector and current mode, the logical
+ * monitors */
+WINPR_ATTR_NODISCARD
+static BOOL mutter_get_state(sd_bus* bus, uint32_t* serial, MUTTER_MODE* modes, size_t* nmodes,
+                             MUTTER_LOGICAL* logical, size_t* nlogical)
+{
+	WINPR_ASSERT(bus);
+
+	sd_bus_error err = SD_BUS_ERROR_NULL;
+	sd_bus_message* reply = nullptr;
+	uint32_t layoutMode = 1;
+	const int called =
+	    sd_bus_call_method(bus, DC_NAME, DC_PATH, DC_NAME, "GetCurrentState", &err, &reply, "");
+	if (called < 0)
+	{
+		WLog_WARN(TAG, "GetCurrentState failed: %s", err.message ? err.message : strerror(-called));
+		sd_bus_error_free(&err);
+		return FALSE;
+	}
+	const BOOL parsed =
+	    mutter_read_state(reply, modes, nmodes, logical, nlogical, &layoutMode, serial);
+	sd_bus_message_unref(reply);
+	if (!parsed)
+		WLog_WARN(TAG, "GetCurrentState: unexpected reply");
+	return parsed;
+}
+
+/* Before the first virtual monitor: the monitors GNOME has of its own (a desktop with a real
+ * screen, or a headless GNOME started with one). A layout of ours would turn them off. */
+static void mutter_note_foreign_monitors(mutterShadowSubsystem* mutter)
+{
+	WINPR_ASSERT(mutter);
+
+	MUTTER_MODE modes[MUTTER_SHADOW_MAX_MONITORS] = WINPR_C_ARRAY_INIT;
+	MUTTER_LOGICAL logical[MUTTER_SHADOW_MAX_MONITORS] = WINPR_C_ARRAY_INIT;
+	size_t nmodes = 0;
+	size_t nlogical = 0;
+	if (!mutter_get_state(mutter->bus, nullptr, modes, &nmodes, logical, &nlogical))
+		return;
+
+	mutter->foreignCount = 0;
+	for (size_t i = 0; (i < nlogical) && (i < MUTTER_SHADOW_MAX_MONITORS); i++)
+		(void)_snprintf(mutter->foreign[mutter->foreignCount++], MUTTER_SHADOW_CONNECTOR_SIZE, "%s",
+		                logical[i].connector);
+	mutter->foreignKnown = TRUE;
+	if (mutter->foreignCount > 0)
+		WLog_INFO(TAG,
+		          "GNOME has %" PRIu32 " monitor(s) of its own (%s ...): it keeps its layout with "
+		          "the virtual monitors",
+		          mutter->foreignCount, mutter->foreign[0]);
+}
+
+static void mutter_output_stop(mutterShadowSubsystem* mutter, mutterOutput* output)
+{
+	WINPR_ASSERT(mutter);
+	WINPR_ASSERT(output);
+
+	if (mutter->bus && output->streamPath)
+		(void)sd_bus_call_method(mutter->bus, SC_NAME, output->streamPath, SC_STREAM_IFACE, "Stop",
+		                         nullptr, nullptr, "");
+	if (output->stream)
+		pw_stream_destroy(output->stream);
+	output->stream = nullptr;
+	output->streamAddedSlot = sd_bus_slot_unref(output->streamAddedSlot);
+	free(output->streamPath);
+	output->streamPath = nullptr;
+
+	EnterCriticalSection(&mutter->eiLock);
+	free(output->mappingId);
+	output->mappingId = nullptr;
+	output->used = FALSE;
+	output->haveFormat = FALSE;
+	LeaveCriticalSection(&mutter->eiLock);
+
+	output->haveNode = FALSE;
+	output->awaitNode = FALSE;
+	output->reconnect = FALSE;
+	output->streamGone = FALSE;
+	output->connector[0] = '\0';
+	WLog_INFO(TAG, "output %" PRIu32 ": its virtual monitor is gone", output->index);
+}
+
+/* A new virtual monitor in the running session; its PipeWire node comes later and the
+ * subsystem thread connects to it (output->reconnect) */
+WINPR_ATTR_NODISCARD
+static BOOL mutter_output_start(mutterShadowSubsystem* mutter, mutterOutput* output, UINT32 width,
+                                UINT32 height)
+{
+	WINPR_ASSERT(mutter);
+	WINPR_ASSERT(output);
+
+	output->wantWidth = width;
+	output->wantHeight = height;
+	output->haveNode = FALSE;
+	output->reconnect = FALSE;
+	output->streamGone = FALSE;
+	output->fullPaint = TRUE;
+	output->connector[0] = '\0';
+	output->createdSeq = ++mutter->outputSeq;
+	EnterCriticalSection(&mutter->eiLock);
+	output->used = TRUE;
+	output->haveFormat = FALSE;
+	LeaveCriticalSection(&mutter->eiLock);
+
+	if (!mutter_record_monitor(mutter, output, ""))
+	{
+		mutter_output_stop(mutter, output);
+		return FALSE;
+	}
+	output->awaitNode = TRUE;
+
+	sd_bus_error err = SD_BUS_ERROR_NULL;
+	const int started = sd_bus_call_method(mutter->bus, SC_NAME, output->streamPath,
+	                                       SC_STREAM_IFACE, "Start", &err, nullptr, "");
+	if (started < 0)
+	{
+		WLog_WARN(TAG, "output %" PRIu32 ": ScreenCast.Stream.Start failed: %s", output->index,
+		          err.message ? err.message : strerror(-started));
+		sd_bus_error_free(&err);
+		mutter_output_stop(mutter, output);
+		return FALSE;
+	}
+	sd_bus_error_free(&err);
+	WLog_INFO(TAG,
+	          "output %" PRIu32 ": a virtual monitor of %" PRIu32 "x%" PRIu32 " at %" PRId32
+	          ",%" PRId32 "%s",
+	          output->index, width, height, output->x, output->y,
+	          output->primary ? ", primary" : "");
+	return TRUE;
+}
+
+/* Subsystem thread: a virtual monitor per client monitor. The client's primary is output 0,
+ * which keeps the virtual monitor that holds the session's windows; the others get new ones.
+ * The rects move into the desktop (no negative positions), each output copies to its rect. */
+static void mutter_apply_layout(mutterShadowSubsystem* mutter, const MUTTER_LAYOUT* layout)
+{
+	WINPR_ASSERT(mutter);
+	WINPR_ASSERT(layout);
+
+	if (!mutter->virtualMonitor || (layout->count == 0))
+		return;
+	const UINT32 count = MIN(layout->count, MUTTER_SHADOW_MAX_MONITORS);
+
+	UINT32 order[MUTTER_SHADOW_MAX_MONITORS] = WINPR_C_ARRAY_INIT;
+	UINT32 primary = 0;
+	for (UINT32 i = 0; i < count; i++)
+	{
+		if (layout->monitors[i].is_primary)
+		{
+			primary = i;
+			break;
+		}
+	}
+	UINT32 n = 0;
+	order[n++] = primary;
+	for (UINT32 i = 0; i < count; i++)
+	{
+		if (i != primary)
+			order[n++] = i;
+	}
+
+	INT32 minX = INT32_MAX;
+	INT32 minY = INT32_MAX;
+	for (UINT32 i = 0; i < count; i++)
+	{
+		minX = MIN(minX, layout->monitors[i].x);
+		minY = MIN(minY, layout->monitors[i].y);
+	}
+
+	/* the client threads map the pointer with the outputs' places */
+	EnterCriticalSection(&mutter->eiLock);
+	for (UINT32 k = 0; k < count; k++)
+	{
+		const rdpMonitor* m = &layout->monitors[order[k]];
+		mutterOutput* output = &mutter->outputs[k];
+		output->x = m->x - minX;
+		output->y = m->y - minY;
+		output->primary = (k == 0);
+	}
+	LeaveCriticalSection(&mutter->eiLock);
+
+	for (UINT32 k = 0; k < count; k++)
+	{
+		const rdpMonitor* m = &layout->monitors[order[k]];
+		mutterOutput* output = &mutter->outputs[k];
+		const UINT32 width = mutter_virtual_side((UINT32)MAX(m->width, 0), 320);
+		const UINT32 height = mutter_virtual_side((UINT32)MAX(m->height, 0), 200);
+		if (!output->used)
+		{
+			if (!mutter_output_start(mutter, output, width, height))
+				WLog_WARN(TAG, "output %" PRIu32 ": no virtual monitor for the client's monitor",
+				          output->index);
+		}
+		else if ((width != output->wantWidth) || (height != output->wantHeight))
+			mutter_output_resize(output, width, height);
+		if (k == 0)
+		{
+			mutter->virtualWidth = width;
+			mutter->virtualHeight = height;
+		}
+	}
+	for (UINT32 k = count; k < mutter->outputCount; k++)
+	{
+		if (mutter->outputs[k].used)
+			mutter_output_stop(mutter, &mutter->outputs[k]);
+	}
+	mutter->outputCount = count;
+
+	/* the outputs may have moved: the desktop, the clients' size and a whole picture */
+	if (mutter_update_desktop(mutter))
+	{
+		mutter_set_monitor_size(mutter);
+		if (mutter->common.server && !shadow_screen_resize(mutter->common.server->screen))
+			WLog_ERR(TAG, "cannot resize the screen to %" PRIu32 "x%" PRIu32, mutter->width,
+			         mutter->height);
+	}
+	for (UINT32 k = 0; k < count; k++)
+		mutter->outputs[k].fullPaint = TRUE;
+
+	if (count > 1)
+		mutter->layoutPending = TRUE;
+	mutter->layoutAt = GetTickCount64();
+	WLog_INFO(TAG, "the client's layout: %" PRIu32 " monitor(s), its primary is output 0", count);
+}
+
+/* the number in Meta-<n>, or a large one */
+static UINT32 mutter_meta_number(const char* connector)
+{
+	WINPR_ASSERT(connector);
+	if (strncmp(connector, "Meta-", 5) != 0)
+		return UINT32_MAX;
+	return (UINT32)strtoul(&connector[5], nullptr, 10);
+}
+
+/* Subsystem thread, once the outputs have their streams: GNOME gets the client's layout, each
+ * virtual monitor at its place and the client's primary as its primary (the top bar), for this
+ * session only (method 1, temporary) */
+static void mutter_apply_monitors_config(mutterShadowSubsystem* mutter)
+{
+	WINPR_ASSERT(mutter);
+
+	mutter->layoutPending = FALSE;
+	if (!mutter->foreignKnown || (mutter->foreignCount > 0))
+		return;
+
+	uint32_t serial = 0;
+	MUTTER_MODE modes[MUTTER_SHADOW_MAX_MONITORS] = WINPR_C_ARRAY_INIT;
+	MUTTER_LOGICAL logical[MUTTER_SHADOW_MAX_MONITORS] = WINPR_C_ARRAY_INIT;
+	size_t nmodes = 0;
+	size_t nlogical = 0;
+	if (!mutter_get_state(mutter->bus, &serial, modes, &nmodes, logical, &nlogical))
+		return;
+
+	/* each output's monitor: the ones it had if they are still there; for the others the
+	 * monitors nobody has, Meta-<n> counting up as they were made, of the same size */
+	BOOL taken[MUTTER_SHADOW_MAX_MONITORS] = WINPR_C_ARRAY_INIT;
+	for (UINT32 k = 0; k < mutter->outputCount; k++)
+	{
+		mutterOutput* output = &mutter->outputs[k];
+		BOOL found = FALSE;
+		for (size_t m = 0; output->used && output->connector[0] && (m < nmodes); m++)
+		{
+			if (strcmp(modes[m].connector, output->connector) == 0)
+			{
+				taken[m] = TRUE;
+				found = TRUE;
+			}
+		}
+		if (!found)
+			output->connector[0] = '\0';
+	}
+	for (;;)
+	{
+		mutterOutput* next = nullptr;
+		for (UINT32 k = 0; k < mutter->outputCount; k++)
+		{
+			mutterOutput* output = &mutter->outputs[k];
+			if (output->used && output->haveFormat && !output->connector[0] &&
+			    (!next || (output->createdSeq < next->createdSeq)))
+				next = output;
+		}
+		if (!next)
+			break;
+		size_t best = SIZE_MAX;
+		for (int sameSize = 1; (sameSize >= 0) && (best == SIZE_MAX); sameSize--)
+		{
+			for (size_t m = 0; m < nmodes; m++)
+			{
+				if (taken[m] || (mutter_meta_number(modes[m].connector) == UINT32_MAX))
+					continue;
+				if (sameSize && (((UINT32)modes[m].width != next->width) ||
+				                 ((UINT32)modes[m].height != next->height)))
+					continue;
+				if ((best == SIZE_MAX) || (mutter_meta_number(modes[m].connector) <
+				                           mutter_meta_number(modes[best].connector)))
+					best = m;
+			}
+		}
+		if (best == SIZE_MAX)
+		{
+			WLog_WARN(TAG, "output %" PRIu32 ": no monitor of GNOME's is its", next->index);
+			next->connector[0] = '-';
+			next->connector[1] = '\0';
+			continue;
+		}
+		taken[best] = TRUE;
+		(void)_snprintf(next->connector, sizeof(next->connector), "%s", modes[best].connector);
+	}
+
+	/* GNOME's positions: the client's, with gaps and overlaps of a few pixels closed */
+	INT32 gx[MUTTER_SHADOW_MAX_MONITORS] = WINPR_C_ARRAY_INIT;
+	INT32 gy[MUTTER_SHADOW_MAX_MONITORS] = WINPR_C_ARRAY_INIT;
+	for (UINT32 k = 0; k < mutter->outputCount; k++)
+	{
+		gx[k] = mutter->outputs[k].x;
+		gy[k] = mutter->outputs[k].y;
+	}
+	for (UINT32 a = 0; a < mutter->outputCount; a++)
+	{
+		const mutterOutput* oa = &mutter->outputs[a];
+		if (abs(gx[a]) <= MUTTER_LAYOUT_SNAP)
+			gx[a] = 0;
+		if (abs(gy[a]) <= MUTTER_LAYOUT_SNAP)
+			gy[a] = 0;
+		for (UINT32 b = 0; b < mutter->outputCount; b++)
+		{
+			const mutterOutput* ob = &mutter->outputs[b];
+			if ((a == b) || !oa->used || !ob->used)
+				continue;
+			const BOOL rowsMeet =
+			    (oa->y < ob->y + (INT32)ob->height) && (ob->y < oa->y + (INT32)oa->height);
+			const BOOL colsMeet =
+			    (oa->x < ob->x + (INT32)ob->width) && (ob->x < oa->x + (INT32)oa->width);
+			const INT32 right = gx[b] + (INT32)ob->width;
+			const INT32 bottom = gy[b] + (INT32)ob->height;
+			if (rowsMeet && (gx[a] != right) && (abs(gx[a] - right) <= MUTTER_LAYOUT_SNAP))
+				gx[a] = right;
+			if (colsMeet && (gy[a] != bottom) && (abs(gy[a] - bottom) <= MUTTER_LAYOUT_SNAP))
+				gy[a] = bottom;
+		}
+	}
+
+	sd_bus_message* call = nullptr;
+	sd_bus_message* reply = nullptr;
+	sd_bus_error err = SD_BUS_ERROR_NULL;
+	UINT32 given = 0;
+	BOOL ok = (sd_bus_message_new_method_call(mutter->bus, &call, DC_NAME, DC_PATH, DC_NAME,
+	                                          "ApplyMonitorsConfig") >= 0) &&
+	          (sd_bus_message_append(call, "uu", serial, (uint32_t)1) >= 0) &&
+	          (sd_bus_message_open_container(call, 'a', "(iiduba(ssa{sv}))") >= 0);
+	for (UINT32 k = 0; ok && (k < mutter->outputCount); k++)
+	{
+		const mutterOutput* output = &mutter->outputs[k];
+		const char* modeId = nullptr;
+		for (size_t m = 0; m < nmodes; m++)
+		{
+			if (strcmp(modes[m].connector, output->connector) == 0)
+				modeId = modes[m].modeId;
+		}
+		if (!output->used || !modeId || !modeId[0])
+			continue;
+		ok = (sd_bus_message_open_container(call, 'r', "iiduba(ssa{sv})") >= 0) &&
+		     (sd_bus_message_append(call, "iidub", gx[k], gy[k], 1.0, (uint32_t)0,
+		                            output->primary ? 1 : 0) >= 0) &&
+		     (sd_bus_message_open_container(call, 'a', "(ssa{sv})") >= 0) &&
+		     (sd_bus_message_open_container(call, 'r', "ssa{sv}") >= 0) &&
+		     (sd_bus_message_append(call, "ss", output->connector, modeId) >= 0) &&
+		     (sd_bus_message_open_container(call, 'a', "{sv}") >= 0) &&
+		     (sd_bus_message_close_container(call) >= 0) &&
+		     (sd_bus_message_close_container(call) >= 0) &&
+		     (sd_bus_message_close_container(call) >= 0) &&
+		     (sd_bus_message_close_container(call) >= 0);
+		given++;
+	}
+	ok = ok && (sd_bus_message_close_container(call) >= 0) &&
+	     (sd_bus_message_open_container(call, 'a', "{sv}") >= 0) &&
+	     (sd_bus_message_close_container(call) >= 0);
+	if (!ok || (given == 0))
+	{
+		WLog_WARN(TAG, "GNOME's layout: nothing to give (%" PRIu32 " monitor(s))", given);
+		sd_bus_message_unref(call);
+		return;
+	}
+	const int applied = sd_bus_call(mutter->bus, call, 0, &err, &reply);
+	if (applied < 0)
+		WLog_WARN(TAG, "ApplyMonitorsConfig failed: %s",
+		          err.message ? err.message : strerror(-applied));
+	else
+	{
+		for (UINT32 k = 0; k < mutter->outputCount; k++)
+		{
+			const mutterOutput* output = &mutter->outputs[k];
+			if (output->used)
+				WLog_INFO(TAG,
+				          "GNOME's monitor %s is output %" PRIu32 ": %" PRIu32 "x%" PRIu32
+				          " at %" PRId32 ",%" PRId32 "%s",
+				          output->connector, k, output->width, output->height, gx[k], gy[k],
+				          output->primary ? ", primary" : "");
+		}
+	}
+	sd_bus_error_free(&err);
+	sd_bus_message_unref(reply);
+	sd_bus_message_unref(call);
+}
+
+/* the layout for GNOME waits for every output's stream, a while at most */
+static BOOL mutter_layout_ready(const mutterShadowSubsystem* mutter)
+{
+	WINPR_ASSERT(mutter);
+
+	if (GetTickCount64() - mutter->layoutAt >= MUTTER_LAYOUT_WAIT_MS)
+		return TRUE;
+	for (UINT32 k = 0; k < mutter->outputCount; k++)
+	{
+		const mutterOutput* output = &mutter->outputs[k];
+		if (output->used && !output->haveFormat)
+			return FALSE;
+	}
+	return TRUE;
+}
+
+static void mutter_layout_message_free(wMessage* message)
+{
+	WINPR_ASSERT(message);
+	free(message->context);
+	message->context = nullptr;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2771,6 +3243,10 @@ static void mutter_shadow_process_message(mutterShadowSubsystem* mutter, wMessag
 			                      (UINT32)(size_t)message->lParam);
 			break;
 
+		case MUTTER_MSG_LAYOUT:
+			mutter_apply_layout(mutter, (const MUTTER_LAYOUT*)message->context);
+			break;
+
 		case MUTTER_MSG_UNLOCK:
 			mutter_unlock_screen(mutter);
 			break;
@@ -2823,6 +3299,12 @@ static void mutter_record_again(mutterShadowSubsystem* mutter, mutterOutput* out
 	output->streamAddedSlot = sd_bus_slot_unref(output->streamAddedSlot);
 	free(output->streamPath);
 	output->streamPath = nullptr;
+	output->connector[0] = '\0';
+	if (mutter->outputCount > 1)
+	{
+		mutter->layoutPending = TRUE;
+		mutter->layoutAt = GetTickCount64();
+	}
 
 	sd_bus_error err = SD_BUS_ERROR_NULL;
 	int started = -1;
@@ -2922,6 +3404,8 @@ static DWORD WINAPI mutter_shadow_subsystem_thread(LPVOID arg)
 			if (mutter->outputs[i].used && mutter->outputs[i].streamGone)
 				timeout = MIN(timeout, 50);
 		}
+		if (mutter->layoutPending)
+			timeout = MIN(timeout, 100);
 
 		const DWORD status = WaitForMultipleObjects(count, events, FALSE, timeout);
 		if ((status == WAIT_FAILED) || (WaitForSingleObject(mutter->stopEvent, 0) == WAIT_OBJECT_0))
@@ -2966,6 +3450,8 @@ static DWORD WINAPI mutter_shadow_subsystem_thread(LPVOID arg)
 			if (output->reconnect && !mutter->closed)
 				mutter_reconnect(mutter, output);
 		}
+		if (mutter->layoutPending && !mutter->closed && mutter_layout_ready(mutter))
+			mutter_apply_monitors_config(mutter);
 
 		if (mutter->ei)
 		{
@@ -2997,6 +3483,9 @@ out:
 WINPR_ATTR_NODISCARD
 static BOOL mutter_shadow_client_resize(rdpShadowSubsystem* subsystem, rdpShadowClient* client,
                                         UINT32 width, UINT32 height);
+WINPR_ATTR_NODISCARD
+static BOOL mutter_shadow_client_layout(rdpShadowSubsystem* subsystem, rdpShadowClient* client,
+                                        const rdpMonitor* monitors, UINT32 count);
 
 WINPR_ATTR_NODISCARD
 static int mutter_shadow_subsystem_init(rdpShadowSubsystem* subsystem)
@@ -3036,6 +3525,7 @@ static int mutter_shadow_subsystem_init(rdpShadowSubsystem* subsystem)
 	if (mutter->virtualMonitor)
 	{
 		mutter->common.ClientResize = mutter_shadow_client_resize;
+		mutter->common.ClientLayout = mutter_shadow_client_layout;
 		/* one monitor, this server's own */
 		subsystem->monitors[0] = (MONITOR_DEF){ 0, 0, (INT32)mutter->virtualWidth - 1,
 			                                    (INT32)mutter->virtualHeight - 1, 1 };
@@ -3234,6 +3724,21 @@ static UINT32 mutter_virtual_side(UINT32 side, UINT32 least)
 	return MIN(MAX(side, least), 8192) & ~1u;
 }
 
+/* the layout goes to the subsystem thread, which frees it */
+WINPR_ATTR_NODISCARD
+static BOOL mutter_layout_request(mutterShadowSubsystem* mutter, MUTTER_LAYOUT* layout)
+{
+	WINPR_ASSERT(mutter);
+	WINPR_ASSERT(mutter->common.MsgPipe);
+	WINPR_ASSERT(layout);
+
+	wMessage message = WINPR_C_ARRAY_INIT;
+	message.id = MUTTER_MSG_LAYOUT;
+	message.context = layout;
+	message.Free = mutter_layout_message_free;
+	return MessageQueue_Dispatch(mutter->common.MsgPipe->In, &message);
+}
+
 WINPR_ATTR_NODISCARD
 static BOOL mutter_virtual_request(mutterShadowSubsystem* mutter, UINT32 width, UINT32 height)
 {
@@ -3249,23 +3754,91 @@ static void mutter_virtual_follow_client(mutterShadowSubsystem* mutter, rdpShado
 	WINPR_ASSERT(client);
 
 	const rdpSettings* settings = client->context.settings;
-	const UINT32 width =
+	UINT32 width =
 	    mutter_virtual_side(freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth), 320);
-	const UINT32 height =
+	UINT32 height =
 	    mutter_virtual_side(freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight), 200);
 
-	if ((width == mutter->width) && (height == mutter->height))
+	/* a client with several monitors gets a virtual monitor for each */
+	const UINT32 count = MIN(freerdp_settings_get_uint32(settings, FreeRDP_MonitorCount),
+	                         MUTTER_SHADOW_MAX_MONITORS);
+	MUTTER_LAYOUT* layout = calloc(1, sizeof(MUTTER_LAYOUT));
+	if (!layout)
 		return;
-
-	if (!mutter_virtual_request(mutter, width, height))
+	if (count > 1)
+	{
+		INT32 minX = INT32_MAX;
+		INT32 minY = INT32_MAX;
+		INT32 maxX = INT32_MIN;
+		INT32 maxY = INT32_MIN;
+		for (UINT32 i = 0; i < count; i++)
+		{
+			const rdpMonitor* m =
+			    freerdp_settings_get_pointer_array(settings, FreeRDP_MonitorDefArray, i);
+			if (!m)
+				continue;
+			layout->monitors[layout->count++] = *m;
+			minX = MIN(minX, m->x);
+			minY = MIN(minY, m->y);
+			maxX = MAX(maxX, m->x + m->width);
+			maxY = MAX(maxY, m->y + m->height);
+		}
+		if (layout->count > 1)
+		{
+			width = (UINT32)(maxX - minX);
+			height = (UINT32)(maxY - minY);
+		}
+	}
+	if (layout->count <= 1)
+	{
+		layout->count = 1;
+		layout->monitors[0] = (rdpMonitor){
+			.x = 0, .y = 0, .width = (INT32)width, .height = (INT32)height, .is_primary = 1
+		};
+	}
+	const BOOL same = (layout->count == 1) && (mutter->outputCount == 1) &&
+	                  (width == mutter->width) && (height == mutter->height);
+	const UINT32 posted = layout->count; /* the subsystem thread owns the layout */
+	if (same || !mutter_layout_request(mutter, layout))
+	{
+		free(layout);
 		return;
+	}
 
-	const UINT64 end = GetTickCount64() + MUTTER_VIRTUAL_SIZE_WAIT_MS;
+	/* new virtual monitors take longer than a new size */
+	const UINT64 end = GetTickCount64() + ((posted > 1) ? 3 * MUTTER_VIRTUAL_SIZE_WAIT_MS
+	                                                    : MUTTER_VIRTUAL_SIZE_WAIT_MS);
 	while ((GetTickCount64() < end) && ((mutter->width != width) || (mutter->height != height)))
 		Sleep(10);
 	WLog_INFO(TAG,
 	          "the virtual monitor for a %" PRIu32 "x%" PRIu32 " client is %" PRIu32 "x%" PRIu32,
 	          width, height, mutter->width, mutter->height);
+}
+
+/* The newest connection decides (see mutter_shadow_client_resize); the client's monitors go to
+ * the subsystem thread, mutter_apply_layout */
+WINPR_ATTR_NODISCARD
+static BOOL mutter_shadow_client_layout(rdpShadowSubsystem* subsystem, rdpShadowClient* client,
+                                        const rdpMonitor* monitors, UINT32 count)
+{
+	mutterShadowSubsystem* mutter = (mutterShadowSubsystem*)subsystem;
+	WINPR_ASSERT(mutter);
+	WINPR_ASSERT(monitors || (count == 0));
+
+	const void* newest = InterlockedCompareExchangePointer(&mutter->sizeClient, nullptr, nullptr);
+	if ((newest && (newest != client)) || (count == 0))
+		return TRUE;
+
+	MUTTER_LAYOUT* layout = calloc(1, sizeof(MUTTER_LAYOUT));
+	if (!layout)
+		return FALSE;
+	layout->count = MIN(count, MUTTER_SHADOW_MAX_MONITORS);
+	memcpy(layout->monitors, monitors, layout->count * sizeof(rdpMonitor));
+	WLog_INFO(TAG, "the client asks for %" PRIu32 " monitor(s)", layout->count);
+	if (mutter_layout_request(mutter, layout))
+		return TRUE;
+	free(layout);
+	return FALSE;
 }
 
 /* The newest connection decides: an older one may be a laptop that was closed, and
