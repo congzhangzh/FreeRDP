@@ -1793,6 +1793,15 @@ static void mutter_apply_layout(mutterShadowSubsystem* mutter, const MUTTER_LAYO
 		return;
 	const UINT32 count = MIN(layout->count, MUTTER_SHADOW_MAX_MONITORS);
 
+	for (UINT32 i = 0; i < count; i++)
+	{
+		const rdpMonitor* m = &layout->monitors[i];
+		WLog_INFO(TAG,
+		          "the client's monitor %" PRIu32 ": %" PRId32 "x%" PRId32 " at %" PRId32
+		          ",%" PRId32 "%s",
+		          i, m->width, m->height, m->x, m->y, m->is_primary ? ", primary" : "");
+	}
+
 	UINT32 order[MUTTER_SHADOW_MAX_MONITORS] = WINPR_C_ARRAY_INIT;
 	UINT32 primary = 0;
 	for (UINT32 i = 0; i < count; i++)
@@ -2065,7 +2074,10 @@ static BOOL mutter_layout_ready(const mutterShadowSubsystem* mutter)
 	for (UINT32 k = 0; k < mutter->outputCount; k++)
 	{
 		const mutterOutput* output = &mutter->outputs[k];
-		if (output->used && !output->haveFormat)
+		/* a resized output keeps its old format until the new one comes: GNOME's monitors
+		 * would be placed with the sizes they are leaving */
+		if (output->used && (!output->haveFormat || (output->width != output->wantWidth) ||
+		                     (output->height != output->wantHeight)))
 			return FALSE;
 	}
 	return TRUE;
