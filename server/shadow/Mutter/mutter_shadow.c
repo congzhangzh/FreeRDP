@@ -2048,6 +2048,32 @@ static void mutter_layout_message_free(wMessage* message)
 /* libei                                                                     */
 /* ------------------------------------------------------------------------ */
 
+/* a libei device and its regions, at debug level */
+static void mutter_log_ei_device(const char* what, struct ei_device* dev)
+{
+	if (!dev || !WLog_IsLevelActive(WLog_Get(TAG), WLOG_DEBUG))
+		return;
+	char regions[512] = WINPR_C_ARRAY_INIT;
+	size_t used = 0;
+	for (size_t index = 0; used < sizeof(regions) - 64; index++)
+	{
+		struct ei_region* r = ei_device_get_region(dev, index);
+		if (!r)
+			break;
+		const char* id = ei_region_get_mapping_id(r);
+		const int n =
+		    _snprintf(&regions[used], sizeof(regions) - used,
+		              "%s[%.8s %" PRIu32 ",%" PRIu32 " %" PRIu32 "x%" PRIu32 "]", index ? " " : "",
+		              id ? id : "-", ei_region_get_x(r), ei_region_get_y(r), ei_region_get_width(r),
+		              ei_region_get_height(r));
+		if (n < 0)
+			break;
+		used += (size_t)n;
+	}
+	WLog_DBG(TAG, "libei %s %p '%s': %s", what, (void*)dev, ei_device_get_name(dev),
+	         used ? regions : "no regions");
+}
+
 /* under eiLock */
 static void mutter_process_ei_events(mutterShadowSubsystem* mutter)
 {
@@ -2062,6 +2088,19 @@ static void mutter_process_ei_events(mutterShadowSubsystem* mutter)
 
 		switch (ei_event_get_type(e))
 		{
+			case EI_EVENT_DEVICE_ADDED:
+			case EI_EVENT_DEVICE_RESUMED:
+			case EI_EVENT_DEVICE_PAUSED:
+			case EI_EVENT_DEVICE_REMOVED:
+				if (dev && ei_device_has_capability(dev, EI_DEVICE_CAP_POINTER_ABSOLUTE))
+					mutter_log_ei_device(ei_event_type_to_string(ei_event_get_type(e)), dev);
+				break;
+			default:
+				break;
+		}
+
+		switch (ei_event_get_type(e))
+		{
 			case EI_EVENT_SEAT_ADDED:
 				ei_seat_bind_capabilities(ei_event_get_seat(e), EI_DEVICE_CAP_POINTER_ABSOLUTE,
 				                          EI_DEVICE_CAP_KEYBOARD, EI_DEVICE_CAP_BUTTON,
@@ -2073,9 +2112,15 @@ static void mutter_process_ei_events(mutterShadowSubsystem* mutter)
 					mutter->keyboard = ei_device_ref(dev);
 					WLog_DBG(TAG, "libei keyboard '%s'", ei_device_get_name(dev));
 				}
+				/* Mutter gives a new pointer when the monitors change, with their regions; the
+				 * older one may still be there, and GNOME clamps what it sends to the old layout
+				 * (a move to the second monitor stopped at the first one's edge) */
 				if (ei_device_has_capability(dev, EI_DEVICE_CAP_POINTER_ABSOLUTE) &&
-				    !mutter->pointer)
+				    (dev != mutter->pointer))
 				{
+					if (mutter->pointer)
+						mutter->pointer = ei_device_unref(mutter->pointer);
+					mutter->pointerReady = FALSE;
 					mutter->pointer = ei_device_ref(dev);
 					WLog_DBG(TAG, "libei pointer '%s'", ei_device_get_name(dev));
 				}
@@ -2287,9 +2332,9 @@ static void mutter_pointer_move(mutterShadowSubsystem* mutter, UINT16 x, UINT16 
 		py = ei_region_get_y(region) + (double)ly * ei_region_get_height(region) / output->height;
 	}
 	WLog_VRB(TAG,
-	         "pointer %" PRIu16 ",%" PRIu16 " -> %.1f,%.1f (region %s %" PRIu32 ",%" PRIu32
+	         "pointer %" PRIu16 ",%" PRIu16 " -> %.1f,%.1f on %p (region %s %" PRIu32 ",%" PRIu32
 	         " %" PRIu32 "x%" PRIu32 ")",
-	         x, y, px, py,
+	         x, y, px, py, (void*)mutter->pointer,
 	         region ? (ei_region_get_mapping_id(region) ? ei_region_get_mapping_id(region) : "-")
 	                : "none",
 	         region ? ei_region_get_x(region) : 0, region ? ei_region_get_y(region) : 0,
