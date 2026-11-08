@@ -37,6 +37,50 @@
 #define MUTTER_SHADOW_CONNECTOR_SIZE 64
 
 typedef struct mutter_shadow_subsystem mutterShadowSubsystem;
+typedef struct mutter_output mutterOutput;
+
+/* A monitor the server records: the shared monitor, or one virtual monitor per client
+ * monitor. Its stream is copied to its place (x, y) in the desktop, the shadow surface.
+ * Only the subsystem thread uses it, but for mappingId (under eiLock). */
+struct mutter_output
+{
+	mutterShadowSubsystem* mutter;
+	UINT32 index;
+	BOOL used;
+
+	/* the screen cast stream on the session bus */
+	char* streamPath;
+	sd_bus_slot* streamAddedSlot;
+	char* mappingId; /* ties the stream to its libei region */
+	UINT32 nodeId;
+	BOOL haveNode;
+	BOOL streamGone; /* Mutter ended the stream (the monitor's layout changed) */
+	UINT64 streamGoneAt;
+	BOOL awaitNode; /* a stream recorded again waits for its PipeWire node */
+	BOOL reconnect; /* that node is there: connect the PipeWire stream to it */
+
+	/* PipeWire: width and height are the stream's */
+	struct pw_stream* stream;
+	struct spa_hook streamListener;
+	UINT32 width;
+	UINT32 height;
+	UINT32 format; /* FreeRDP pixel format of the stream */
+	BOOL haveFormat;
+	BOOL fullPaint;
+
+	/* its place in the desktop, and the size asked for a virtual monitor */
+	INT32 x;
+	INT32 y;
+	BOOL primary;
+	UINT32 wantWidth;
+	UINT32 wantHeight;
+
+	/* the check for changes Mutter left out of its damage (mutter_repair_missed_damage) */
+	BOOL damageMissSeen;
+	UINT64 damageFrames;
+	UINT64 damageTiles;
+	UINT64 damageLogged;
+};
 
 struct mutter_shadow_subsystem
 {
@@ -50,18 +94,10 @@ struct mutter_shadow_subsystem
 	sd_bus_slot* ownerSlot; /* GNOME Shell leaving the bus */
 	char* rdSessionPath;
 	char* scSessionPath;
-	char* streamPath;
-	char* mappingId; /* ties the stream to its libei region */
-	UINT32 nodeId;
-	BOOL haveNode;
 	BOOL closed;
 	BOOL shellGone;
 	BOOL monitorGone; /* the shared monitor left the layout */
 	BOOL closedLogged;
-	BOOL streamGone; /* Mutter ended the stream (the monitor's layout changed) */
-	UINT64 streamGoneAt;
-	BOOL awaitNode; /* a stream recorded again waits for its PipeWire node */
-	BOOL reconnect; /* that node is there: connect the PipeWire stream to it */
 
 	/* FREERDP_SHADOW_MUTTER_VIRTUAL=<w>x<h>: a monitor of its own for this server
 	 * (RecordVirtual), for a session started without one (a headless GNOME),
@@ -73,29 +109,23 @@ struct mutter_shadow_subsystem
 	/* the monitors as Mutter lays them out, and their connectors */
 	char connectors[MUTTER_SHADOW_MAX_MONITORS][MUTTER_SHADOW_CONNECTOR_SIZE];
 
-	/* PipeWire: the stream of the shared monitor, only in the subsystem thread
-	 * once started. width and height are the stream's, which the surface follows */
+	/* PipeWire, only in the subsystem thread once started: the outputs' streams.
+	 * width and height are the desktop's, the box around the outputs, which the
+	 * surface follows */
 	struct pw_loop* loop;
 	struct pw_context* context;
 	struct pw_core* core;
 	struct spa_hook coreListener;
 	struct pw_registry* registry; /* tells when Mutter's node goes away */
 	struct spa_hook registryListener;
-	struct pw_stream* stream;
-	struct spa_hook streamListener;
+	mutterOutput outputs[MUTTER_SHADOW_MAX_MONITORS];
+	UINT32 outputCount;
 	UINT32 width;
 	UINT32 height;
-	UINT32 format; /* FreeRDP pixel format of the stream */
-	BOOL haveFormat;
-	BOOL started;
-	BOOL fullPaint;
+	BOOL started; /* the remote desktop session */
 
 	/* the check for changes Mutter left out of its damage (mutter_repair_missed_damage) */
 	BOOL damageCheck;
-	BOOL damageMissSeen;
-	UINT64 damageFrames;
-	UINT64 damageTiles;
-	UINT64 damageLogged;
 
 	/* libei, under eiLock: the client threads post input, the subsystem
 	 * thread reads its events */

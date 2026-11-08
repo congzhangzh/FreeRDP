@@ -567,20 +567,20 @@ WINPR_ATTR_NODISCARD
 static int mutter_on_stream_added(sd_bus_message* msg, void* data,
                                   WINPR_ATTR_UNUSED sd_bus_error* err)
 {
-	mutterShadowSubsystem* mutter = (mutterShadowSubsystem*)data;
+	mutterOutput* output = (mutterOutput*)data;
 	WINPR_ASSERT(msg);
-	WINPR_ASSERT(mutter);
+	WINPR_ASSERT(output);
 
 	uint32_t node = 0;
 	if (sd_bus_message_read(msg, "u", &node) >= 0)
 	{
-		mutter->nodeId = node;
-		mutter->haveNode = TRUE;
-		WLog_DBG(TAG, "PipeWire node %" PRIu32, mutter->nodeId);
-		if (mutter->awaitNode)
+		output->nodeId = node;
+		output->haveNode = TRUE;
+		WLog_DBG(TAG, "output %" PRIu32 ": PipeWire node %" PRIu32, output->index, output->nodeId);
+		if (output->awaitNode)
 		{
-			mutter->awaitNode = FALSE;
-			mutter->reconnect = TRUE;
+			output->awaitNode = FALSE;
+			output->reconnect = TRUE;
 		}
 	}
 	return 0;
@@ -619,15 +619,16 @@ static int mutter_on_name_owner_changed(sd_bus_message* msg, void* data,
 }
 
 /* The stream's "mapping-id" parameter names the libei region of its monitor */
-static void mutter_read_stream_parameters(mutterShadowSubsystem* mutter)
+static void mutter_read_stream_parameters(mutterShadowSubsystem* mutter, mutterOutput* output)
 {
 	WINPR_ASSERT(mutter);
+	WINPR_ASSERT(output);
 
 	sd_bus_error err = SD_BUS_ERROR_NULL;
 	sd_bus_message* reply = nullptr;
 	const char* mappingId = nullptr;
 
-	const int got = sd_bus_get_property(mutter->bus, SC_NAME, mutter->streamPath, SC_STREAM_IFACE,
+	const int got = sd_bus_get_property(mutter->bus, SC_NAME, output->streamPath, SC_STREAM_IFACE,
 	                                    "Parameters", &err, &reply, "a{sv}");
 	if (got < 0)
 	{
@@ -643,8 +644,8 @@ static void mutter_read_stream_parameters(mutterShadowSubsystem* mutter)
 		/* the client threads look it up when they move the pointer */
 		char* copy = _strdup(mappingId);
 		EnterCriticalSection(&mutter->eiLock);
-		free(mutter->mappingId);
-		mutter->mappingId = copy;
+		free(output->mappingId);
+		output->mappingId = copy;
 		LeaveCriticalSection(&mutter->eiLock);
 	}
 	sd_bus_message_unref(reply);
@@ -660,9 +661,11 @@ static void mutter_read_stream_parameters(mutterShadowSubsystem* mutter)
  * nor later changes (MUTTER_DEBUG=screen-cast: no full frame and about a
  * thousand skipped in 10 s). Drawn in, there are no cursor frames to skip. */
 WINPR_ATTR_NODISCARD
-static BOOL mutter_record_monitor(mutterShadowSubsystem* mutter, const char* connector)
+static BOOL mutter_record_monitor(mutterShadowSubsystem* mutter, mutterOutput* output,
+                                  const char* connector)
 {
 	WINPR_ASSERT(mutter);
+	WINPR_ASSERT(output);
 	WINPR_ASSERT(connector);
 
 	sd_bus_message* call = nullptr;
@@ -677,10 +680,11 @@ static BOOL mutter_record_monitor(mutterShadowSubsystem* mutter, const char* con
 		    (sd_bus_message_append(call, "a{sv}", 1, "cursor-mode", "u",
 		                           (uint32_t)MUTTER_CURSOR_MODE_METADATA) < 0))
 			goto out;
-		WLog_DBG(TAG, "ScreenCast.Session.RecordVirtual(%" PRIu32 "x%" PRIu32 ")",
-		         mutter->virtualWidth, mutter->virtualHeight);
+		WLog_DBG(TAG,
+		         "ScreenCast.Session.RecordVirtual(%" PRIu32 "x%" PRIu32 ") for output %" PRIu32,
+		         output->wantWidth, output->wantHeight, output->index);
 		if (!mutter_call_for_path(mutter->bus, call, "ScreenCast.Session.RecordVirtual",
-		                          &mutter->streamPath))
+		                          &output->streamPath))
 			goto out;
 	}
 	else
@@ -692,13 +696,13 @@ static BOOL mutter_record_monitor(mutterShadowSubsystem* mutter, const char* con
 			goto out;
 		WLog_DBG(TAG, "ScreenCast.Session.RecordMonitor('%s')", connector);
 		if (!mutter_call_for_path(mutter->bus, call, "ScreenCast.Session.RecordMonitor",
-		                          &mutter->streamPath))
+		                          &output->streamPath))
 			goto out;
 	}
 
-	if (sd_bus_match_signal(mutter->bus, &mutter->streamAddedSlot, SC_NAME, mutter->streamPath,
+	if (sd_bus_match_signal(mutter->bus, &output->streamAddedSlot, SC_NAME, output->streamPath,
 	                        SC_STREAM_IFACE, "PipeWireStreamAdded", mutter_on_stream_added,
-	                        mutter) < 0)
+	                        output) < 0)
 	{
 		WLog_ERR(TAG, "cannot watch the stream's signals");
 		goto out;
@@ -753,8 +757,9 @@ static BOOL mutter_setup_sessions(mutterShadowSubsystem* mutter, const char* con
 		goto out;
 	call = sd_bus_message_unref(call);
 
-	/* 3. the monitor */
-	if (!mutter_record_monitor(mutter, connector))
+	/* 3. the monitor: output 0 */
+	mutterOutput* output = &mutter->outputs[0];
+	if (!mutter_record_monitor(mutter, output, connector))
 		goto out;
 
 	if ((sd_bus_match_signal(mutter->bus, &mutter->closedSlot, RD_NAME, mutter->rdSessionPath,
@@ -783,7 +788,7 @@ static BOOL mutter_setup_sessions(mutterShadowSubsystem* mutter, const char* con
 	mutter->started = TRUE;
 
 	const UINT64 start = GetTickCount64();
-	while (!mutter->haveNode)
+	while (!output->haveNode)
 	{
 		const int processed = sd_bus_process(mutter->bus, nullptr);
 		if (processed < 0)
@@ -797,7 +802,7 @@ static BOOL mutter_setup_sessions(mutterShadowSubsystem* mutter, const char* con
 		}
 		(void)sd_bus_wait(mutter->bus, 100ull * 1000ull);
 	}
-	mutter_read_stream_parameters(mutter);
+	mutter_read_stream_parameters(mutter, output);
 
 	/* 5. input */
 	int fd = -1;
@@ -1004,9 +1009,11 @@ static void mutter_cursor_send_default(mutterShadowSubsystem* mutter)
 }
 
 /* The cursor in a buffer's metadata: its position, and its shape when it changed */
-static void mutter_cursor_update(mutterShadowSubsystem* mutter, struct spa_buffer* buf)
+static void mutter_cursor_update(mutterShadowSubsystem* mutter, const mutterOutput* output,
+                                 struct spa_buffer* buf)
 {
 	WINPR_ASSERT(mutter);
+	WINPR_ASSERT(output);
 	WINPR_ASSERT(buf);
 
 	struct spa_meta* meta = spa_buffer_find_meta(buf, SPA_META_Cursor);
@@ -1076,7 +1083,8 @@ static void mutter_cursor_update(mutterShadowSubsystem* mutter, struct spa_buffe
 		}
 	}
 
-	mutter_cursor_send_position(mutter, mc->position.x, mc->position.y);
+	/* the position is the output's: the clients have the desktop */
+	mutter_cursor_send_position(mutter, output->x + mc->position.x, output->y + mc->position.y);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1107,9 +1115,32 @@ static void mutter_set_monitor_size(mutterShadowSubsystem* mutter)
 	virtualScreen->flags = 1;
 }
 
+/* The desktop is the box around the outputs that have a format; TRUE when its size changed */
+static BOOL mutter_update_desktop(mutterShadowSubsystem* mutter)
+{
+	WINPR_ASSERT(mutter);
+
+	UINT32 width = 0;
+	UINT32 height = 0;
+	for (UINT32 i = 0; i < mutter->outputCount; i++)
+	{
+		const mutterOutput* output = &mutter->outputs[i];
+		if (!output->used || !output->haveFormat)
+			continue;
+		width = MAX(width, (UINT32)output->x + output->width);
+		height = MAX(height, (UINT32)output->y + output->height);
+	}
+	const BOOL changed = (width != mutter->width) || (height != mutter->height);
+	mutter->width = width;
+	mutter->height = height;
+	return changed;
+}
+
 static void mutter_on_param_changed(void* data, uint32_t id, const struct spa_pod* param)
 {
-	mutterShadowSubsystem* mutter = (mutterShadowSubsystem*)data;
+	mutterOutput* output = (mutterOutput*)data;
+	WINPR_ASSERT(output);
+	mutterShadowSubsystem* mutter = output->mutter;
 	WINPR_ASSERT(mutter);
 
 	struct spa_video_info_raw info = WINPR_C_ARRAY_INIT;
@@ -1125,16 +1156,25 @@ static void mutter_on_param_changed(void* data, uint32_t id, const struct spa_po
 		return;
 	}
 
-	const BOOL sized = mutter->haveFormat;
-	const BOOL changed = (info.size.width != mutter->width) || (info.size.height != mutter->height);
-	mutter->width = info.size.width;
-	mutter->height = info.size.height;
-	mutter->format =
+	/* the first format of the first output sizes the surface the server starts with */
+	const BOOL sized = (mutter->width > 0) && (mutter->height > 0);
+	output->width = info.size.width;
+	output->height = info.size.height;
+	output->format =
 	    (info.format == SPA_VIDEO_FORMAT_BGRA) ? PIXEL_FORMAT_BGRA32 : PIXEL_FORMAT_BGRX32;
-	mutter->haveFormat = TRUE;
-	mutter->fullPaint = TRUE;
-	WLog_INFO(TAG, "stream: %" PRIu32 "x%" PRIu32 " %s", mutter->width, mutter->height,
-	          (info.format == SPA_VIDEO_FORMAT_BGRA) ? "BGRA" : "BGRx");
+	output->haveFormat = TRUE;
+	output->fullPaint = TRUE;
+	const BOOL changed = mutter_update_desktop(mutter);
+	if (mutter->outputCount > 1)
+		WLog_INFO(TAG,
+		          "stream of output %" PRIu32 " at %" PRId32 ",%" PRId32 ": %" PRIu32 "x%" PRIu32
+		          " %s, desktop %" PRIu32 "x%" PRIu32,
+		          output->index, output->x, output->y, output->width, output->height,
+		          (info.format == SPA_VIDEO_FORMAT_BGRA) ? "BGRA" : "BGRx", mutter->width,
+		          mutter->height);
+	else
+		WLog_INFO(TAG, "stream: %" PRIu32 "x%" PRIu32 " %s", output->width, output->height,
+		          (info.format == SPA_VIDEO_FORMAT_BGRA) ? "BGRA" : "BGRx");
 
 	if (sized && changed)
 	{
@@ -1146,11 +1186,11 @@ static void mutter_on_param_changed(void* data, uint32_t id, const struct spa_po
 	}
 
 	/* shared memory only (no dma-buf), with the damage and the cursor */
-	const int32_t stride = (int32_t)mutter->width * 4;
+	const int32_t stride = (int32_t)output->width * 4;
 	params[0] = spa_pod_builder_add_object(
 	    &b, SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers, SPA_PARAM_BUFFERS_buffers,
 	    SPA_POD_CHOICE_RANGE_Int(4, 2, 16), SPA_PARAM_BUFFERS_blocks, SPA_POD_Int(1),
-	    SPA_PARAM_BUFFERS_size, SPA_POD_Int(stride * (int32_t)mutter->height),
+	    SPA_PARAM_BUFFERS_size, SPA_POD_Int(stride * (int32_t)output->height),
 	    SPA_PARAM_BUFFERS_stride, SPA_POD_Int(stride), SPA_PARAM_BUFFERS_dataType,
 	    SPA_POD_CHOICE_FLAGS_Int((1 << SPA_DATA_MemFd) | (1 << SPA_DATA_MemPtr)));
 	params[1] = spa_pod_builder_add_object(&b, SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
@@ -1169,20 +1209,22 @@ static void mutter_on_param_changed(void* data, uint32_t id, const struct spa_po
 	    SPA_POD_CHOICE_RANGE_Int(
 	        MUTTER_CURSOR_META_SIZE(64, 64), MUTTER_CURSOR_META_SIZE(1, 1),
 	        MUTTER_CURSOR_META_SIZE(MUTTER_CURSOR_META_MAX, MUTTER_CURSOR_META_MAX)));
-	(void)pw_stream_update_params(mutter->stream, params, ARRAYSIZE(params));
+	(void)pw_stream_update_params(output->stream, params, ARRAYSIZE(params));
 }
 
-/* Copies one rectangle of a frame to the surface and marks it changed */
-static void mutter_copy_rect(mutterShadowSubsystem* mutter, rdpShadowSurface* surface,
-                             const BYTE* src, UINT32 stride, INT32 x, INT32 y, INT32 width,
-                             INT32 height)
+/* Copies one rectangle of an output's frame (in the output's coordinates) to its place in the
+ * surface and marks it changed */
+static void mutter_copy_rect(mutterOutput* output, rdpShadowSurface* surface, const BYTE* src,
+                             UINT32 stride, INT32 x, INT32 y, INT32 width, INT32 height)
 {
-	WINPR_ASSERT(mutter);
+	WINPR_ASSERT(output);
 	WINPR_ASSERT(surface);
 	WINPR_ASSERT(src);
 
-	const INT32 maxW = (INT32)MIN(mutter->width, surface->width);
-	const INT32 maxH = (INT32)MIN(mutter->height, surface->height);
+	const INT32 ox = output->x;
+	const INT32 oy = output->y;
+	const INT32 maxW = MIN((INT32)output->width, (INT32)surface->width - ox);
+	const INT32 maxH = MIN((INT32)output->height, (INT32)surface->height - oy);
 	const INT32 left = MAX(x, 0);
 	const INT32 top = MAX(y, 0);
 	const INT32 right = MIN(x + width, maxW);
@@ -1190,15 +1232,16 @@ static void mutter_copy_rect(mutterShadowSubsystem* mutter, rdpShadowSurface* su
 	if ((right <= left) || (bottom <= top))
 		return;
 
-	if (!freerdp_image_copy_no_overlap(surface->data, surface->format, surface->scanline,
-	                                   (UINT32)left, (UINT32)top, (UINT32)(right - left),
-	                                   (UINT32)(bottom - top), src, mutter->format, stride,
-	                                   (UINT32)left, (UINT32)top, nullptr, FREERDP_FLIP_NONE))
+	if (!freerdp_image_copy_no_overlap(
+	        surface->data, surface->format, surface->scanline, (UINT32)(left + ox),
+	        (UINT32)(top + oy), (UINT32)(right - left), (UINT32)(bottom - top), src, output->format,
+	        stride, (UINT32)left, (UINT32)top, nullptr, FREERDP_FLIP_NONE))
 	{
 		WLog_ERR(TAG, "cannot copy the frame to the surface");
 		return;
 	}
-	const RECTANGLE_16 rect = { (UINT16)left, (UINT16)top, (UINT16)right, (UINT16)bottom };
+	const RECTANGLE_16 rect = { (UINT16)(left + ox), (UINT16)(top + oy), (UINT16)(right + ox),
+		                        (UINT16)(bottom + oy) };
 	if (!region16_union_rect(&surface->invalidRegion, &surface->invalidRegion, &rect))
 		WLog_ERR(TAG, "cannot mark the changed region");
 }
@@ -1208,18 +1251,22 @@ static void mutter_copy_rect(mutterShadowSubsystem* mutter, rdpShadowSurface* su
  * Compare the buffer with the surface in tiles after the damage was copied, and copy the tiles that
  * still differ. When the damage was right, every tile is equal and nothing is copied. Returns the
  * tiles copied. */
-static UINT32 mutter_repair_missed_damage(mutterShadowSubsystem* mutter, rdpShadowSurface* surface,
+static UINT32 mutter_repair_missed_damage(mutterOutput* output, rdpShadowSurface* surface,
                                           const BYTE* src, UINT32 stride)
 {
-	WINPR_ASSERT(mutter);
+	WINPR_ASSERT(output);
 	WINPR_ASSERT(surface);
 	WINPR_ASSERT(src);
 
-	const UINT32 width = MIN(mutter->width, surface->width);
-	const UINT32 height = MIN(mutter->height, surface->height);
+	const UINT32 ox = (UINT32)output->x;
+	const UINT32 oy = (UINT32)output->y;
+	if ((ox >= surface->width) || (oy >= surface->height))
+		return 0;
+	const UINT32 width = MIN(output->width, surface->width - ox);
+	const UINT32 height = MIN(output->height, surface->height - oy);
 	/* the same format is copied byte for byte; otherwise compare the colour (alpha is undefined
 	 * in BGRx) */
-	const BOOL sameFormat = (mutter->format == surface->format);
+	const BOOL sameFormat = (output->format == surface->format);
 	UINT32 tiles = 0;
 
 	for (UINT32 ty = 0; ty < height; ty += MUTTER_CHECK_TILE)
@@ -1232,7 +1279,8 @@ static UINT32 mutter_repair_missed_damage(mutterShadowSubsystem* mutter, rdpShad
 			for (UINT32 y = ty; (y < ty + th) && !dirty; y++)
 			{
 				const BYTE* a = &src[1ull * y * stride + 4ull * tx];
-				const BYTE* b = &surface->data[1ull * y * surface->scanline + 4ull * tx];
+				const BYTE* b =
+				    &surface->data[1ull * (oy + y) * surface->scanline + 4ull * (ox + tx)];
 				if (sameFormat)
 					dirty = (memcmp(a, b, 4ull * tw) != 0);
 				else
@@ -1243,7 +1291,7 @@ static UINT32 mutter_repair_missed_damage(mutterShadowSubsystem* mutter, rdpShad
 			}
 			if (dirty)
 			{
-				mutter_copy_rect(mutter, surface, src, stride, (INT32)tx, (INT32)ty, (INT32)tw,
+				mutter_copy_rect(output, surface, src, stride, (INT32)tx, (INT32)ty, (INT32)tw,
 				                 (INT32)th);
 				tiles++;
 			}
@@ -1253,15 +1301,15 @@ static UINT32 mutter_repair_missed_damage(mutterShadowSubsystem* mutter, rdpShad
 }
 
 /* counts and logs what mutter_repair_missed_damage found */
-static void mutter_damage_stats(mutterShadowSubsystem* mutter, UINT32 tiles)
+static void mutter_damage_stats(mutterOutput* output, UINT32 tiles)
 {
-	WINPR_ASSERT(mutter);
+	WINPR_ASSERT(output);
 
-	mutter->damageFrames++;
-	mutter->damageTiles += tiles;
-	if ((tiles > 0) && !mutter->damageMissSeen)
+	output->damageFrames++;
+	output->damageTiles += tiles;
+	if ((tiles > 0) && !output->damageMissSeen)
 	{
-		mutter->damageMissSeen = TRUE;
+		output->damageMissSeen = TRUE;
 		WLog_INFO(TAG,
 		          "Mutter left changes out of its damage: %" PRIu32
 		          " tile(s) copied, the check stays on (" MUTTER_DAMAGE_CHECK_ENV
@@ -1269,19 +1317,23 @@ static void mutter_damage_stats(mutterShadowSubsystem* mutter, UINT32 tiles)
 		          tiles);
 	}
 	const UINT64 now = GetTickCount64();
-	if (now - mutter->damageLogged >= 5000)
+	if (now - output->damageLogged >= 5000)
 	{
-		WLog_DBG(TAG, "damage check: %" PRIu64 " tile(s) Mutter left out, in %" PRIu64 " frame(s)",
-		         mutter->damageTiles, mutter->damageFrames);
-		mutter->damageTiles = 0;
-		mutter->damageFrames = 0;
-		mutter->damageLogged = now;
+		WLog_DBG(TAG,
+		         "damage check, output %" PRIu32 ": %" PRIu64
+		         " tile(s) Mutter left out, in %" PRIu64 " frame(s)",
+		         output->index, output->damageTiles, output->damageFrames);
+		output->damageTiles = 0;
+		output->damageFrames = 0;
+		output->damageLogged = now;
 	}
 }
 
 static void mutter_on_process(void* data)
 {
-	mutterShadowSubsystem* mutter = (mutterShadowSubsystem*)data;
+	mutterOutput* output = (mutterOutput*)data;
+	WINPR_ASSERT(output);
+	mutterShadowSubsystem* mutter = output->mutter;
 	WINPR_ASSERT(mutter);
 
 	rdpShadowServer* server = mutter->common.server;
@@ -1292,12 +1344,12 @@ static void mutter_on_process(void* data)
 	struct pw_buffer* pb = nullptr;
 
 	/* every queued buffer: no damage is lost when frames come faster */
-	while ((pb = pw_stream_dequeue_buffer(mutter->stream)) != nullptr)
+	while ((pb = pw_stream_dequeue_buffer(output->stream)) != nullptr)
 	{
 		struct spa_buffer* buf = pb->buffer;
 		struct spa_data* d = &buf->datas[0]; // codespell:ignore datas
 
-		mutter_cursor_update(mutter, buf);
+		mutter_cursor_update(mutter, output, buf);
 
 		const struct spa_meta_header* h =
 		    spa_buffer_find_meta_data(buf, SPA_META_Header, sizeof(struct spa_meta_header));
@@ -1305,20 +1357,20 @@ static void mutter_on_process(void* data)
 		    (d->chunk->size == 0))
 		{
 			/* no picture in this buffer (only the cursor moved) */
-			(void)pw_stream_queue_buffer(mutter->stream, pb);
+			(void)pw_stream_queue_buffer(output->stream, pb);
 			continue;
 		}
 
 		const BYTE* src = (const BYTE*)d->data + d->chunk->offset;
-		const UINT32 stride = (d->chunk->stride > 0) ? (UINT32)d->chunk->stride : mutter->width * 4;
+		const UINT32 stride = (d->chunk->stride > 0) ? (UINT32)d->chunk->stride : output->width * 4;
 
 		EnterCriticalSection(&surface->lock);
 		struct spa_meta* dm = spa_buffer_find_meta(buf, SPA_META_VideoDamage);
-		if (!dm || mutter->fullPaint)
+		if (!dm || output->fullPaint)
 		{
-			mutter_copy_rect(mutter, surface, src, stride, 0, 0, (INT32)mutter->width,
-			                 (INT32)mutter->height);
-			mutter->fullPaint = FALSE;
+			mutter_copy_rect(output, surface, src, stride, 0, 0, (INT32)output->width,
+			                 (INT32)output->height);
+			output->fullPaint = FALSE;
 		}
 		else
 		{
@@ -1327,17 +1379,17 @@ static void mutter_on_process(void* data)
 			{
 				if (!spa_meta_region_is_valid(r))
 					break;
-				mutter_copy_rect(mutter, surface, src, stride, r->region.position.x,
+				mutter_copy_rect(output, surface, src, stride, r->region.position.x,
 				                 r->region.position.y, (INT32)r->region.size.width,
 				                 (INT32)r->region.size.height);
 			}
 			if (mutter->damageCheck)
-				mutter_damage_stats(mutter,
-				                    mutter_repair_missed_damage(mutter, surface, src, stride));
+				mutter_damage_stats(output,
+				                    mutter_repair_missed_damage(output, surface, src, stride));
 		}
 		LeaveCriticalSection(&surface->lock);
 		painted = TRUE;
-		(void)pw_stream_queue_buffer(mutter->stream, pb);
+		(void)pw_stream_queue_buffer(output->stream, pb);
 	}
 
 	if (!painted)
@@ -1390,11 +1442,15 @@ static void mutter_on_global_remove(void* data, uint32_t id)
 	mutterShadowSubsystem* mutter = (mutterShadowSubsystem*)data;
 	WINPR_ASSERT(mutter);
 
-	if (mutter->haveNode && (id == mutter->nodeId))
+	for (UINT32 i = 0; i < mutter->outputCount; i++)
 	{
-		mutter->haveNode = FALSE;
-		mutter->streamGone = TRUE;
-		mutter->streamGoneAt = GetTickCount64();
+		mutterOutput* output = &mutter->outputs[i];
+		if (output->used && output->haveNode && (id == output->nodeId))
+		{
+			output->haveNode = FALSE;
+			output->streamGone = TRUE;
+			output->streamGoneAt = GetTickCount64();
+		}
 	}
 }
 
@@ -1404,7 +1460,7 @@ static const struct pw_registry_events mutter_registry_events = {
 };
 
 WINPR_ATTR_NODISCARD
-static BOOL mutter_stream_connect_node(mutterShadowSubsystem* mutter);
+static BOOL mutter_stream_connect_node(mutterShadowSubsystem* mutter, mutterOutput* output);
 
 WINPR_ATTR_NODISCARD
 static BOOL mutter_connect_stream(mutterShadowSubsystem* mutter)
@@ -1435,12 +1491,13 @@ static BOOL mutter_connect_stream(mutterShadowSubsystem* mutter)
 	pw_registry_add_listener(mutter->registry, &mutter->registryListener, &mutter_registry_events,
 	                         mutter);
 
-	if (!mutter_stream_connect_node(mutter))
+	mutterOutput* output = &mutter->outputs[0];
+	if (!mutter_stream_connect_node(mutter, output))
 		return FALSE;
 
 	/* the surface needs the stream's size before the server starts */
 	const UINT64 start = GetTickCount64();
-	while (!mutter->haveFormat)
+	while (!output->haveFormat)
 	{
 		if (GetTickCount64() - start > MUTTER_FORMAT_TIMEOUT_MS)
 		{
@@ -1477,33 +1534,34 @@ static const struct spa_pod* mutter_stream_format(struct spa_pod_builder* b,
 	    SPA_POD_CHOICE_RANGE_Fraction(&maxRate, &minRate, &maxRate));
 }
 
-/* A new stream, connected to Mutter's node mutter->nodeId. Each node gets a
+/* A new stream, connected to Mutter's node output->nodeId. Each node gets a
  * stream of its own: a stream connected again keeps its first target. */
 WINPR_ATTR_NODISCARD
-static BOOL mutter_stream_connect_node(mutterShadowSubsystem* mutter)
+static BOOL mutter_stream_connect_node(mutterShadowSubsystem* mutter, mutterOutput* output)
 {
 	WINPR_ASSERT(mutter);
+	WINPR_ASSERT(output);
 	WINPR_ASSERT(mutter->core);
 
-	if (mutter->stream)
-		pw_stream_destroy(mutter->stream);
-	mutter->stream =
+	if (output->stream)
+		pw_stream_destroy(output->stream);
+	output->stream =
 	    pw_stream_new(mutter->core, "FreeRDP shadow server",
 	                  pw_properties_new(PW_KEY_MEDIA_TYPE, "Video", PW_KEY_MEDIA_CATEGORY,
 	                                    "Capture", PW_KEY_MEDIA_ROLE, "Screen", nullptr));
-	if (!mutter->stream)
+	if (!output->stream)
 		return FALSE;
-	pw_stream_add_listener(mutter->stream, &mutter->streamListener, &mutter_stream_events, mutter);
+	pw_stream_add_listener(output->stream, &output->streamListener, &mutter_stream_events, output);
 
 	uint8_t podBuffer[1024] = WINPR_C_ARRAY_INIT;
 	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(podBuffer, sizeof(podBuffer));
 	/* a virtual monitor takes the size the stream asks for */
-	const struct spa_rectangle size =
-	    mutter->virtualMonitor ? SPA_RECTANGLE(mutter->virtualWidth, mutter->virtualHeight)
-	                           : SPA_RECTANGLE(1920, 1080);
+	const struct spa_rectangle size = mutter->virtualMonitor
+	                                      ? SPA_RECTANGLE(output->wantWidth, output->wantHeight)
+	                                      : SPA_RECTANGLE(1920, 1080);
 	const struct spa_pod* params[] = { mutter_stream_format(&b, &size) };
 
-	if (pw_stream_connect(mutter->stream, PW_DIRECTION_INPUT, mutter->nodeId,
+	if (pw_stream_connect(output->stream, PW_DIRECTION_INPUT, output->nodeId,
 	                      PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS, params,
 	                      ARRAYSIZE(params)) < 0)
 	{
@@ -1519,17 +1577,20 @@ static void mutter_virtual_resize(mutterShadowSubsystem* mutter, UINT32 width, U
 {
 	WINPR_ASSERT(mutter);
 
-	if (!mutter->stream)
+	mutterOutput* output = &mutter->outputs[0];
+	if (!output->stream)
 		return;
 
 	mutter->virtualWidth = width;
 	mutter->virtualHeight = height;
+	output->wantWidth = width;
+	output->wantHeight = height;
 
 	uint8_t podBuffer[1024] = WINPR_C_ARRAY_INIT;
 	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(podBuffer, sizeof(podBuffer));
 	const struct spa_rectangle size = SPA_RECTANGLE(width, height);
 	const struct spa_pod* params[] = { mutter_stream_format(&b, &size) };
-	if (pw_stream_update_params(mutter->stream, params, ARRAYSIZE(params)) < 0)
+	if (pw_stream_update_params(output->stream, params, ARRAYSIZE(params)) < 0)
 		WLog_WARN(TAG, "cannot ask for %" PRIu32 "x%" PRIu32, width, height);
 }
 
@@ -1713,12 +1774,46 @@ static BOOL mutter_shadow_input_unicode_keyboard_event(rdpShadowSubsystem* subsy
 
 /* under eiLock: the client's surface position into Mutter's layout, in the
  * libei region of the shared monitor */
+/* The output under a desktop position, or the nearest one; under eiLock */
+static const mutterOutput* mutter_output_at(const mutterShadowSubsystem* mutter, INT32 x, INT32 y)
+{
+	WINPR_ASSERT(mutter);
+
+	const mutterOutput* best = nullptr;
+	INT64 bestDistance = INT64_MAX;
+	for (UINT32 i = 0; i < mutter->outputCount; i++)
+	{
+		const mutterOutput* output = &mutter->outputs[i];
+		if (!output->used || !output->haveFormat)
+			continue;
+		const INT64 dx = (x < output->x) ? output->x - x
+		                 : (x >= output->x + (INT32)output->width)
+		                     ? x - (output->x + (INT32)output->width - 1)
+		                     : 0;
+		const INT64 dy = (y < output->y) ? output->y - y
+		                 : (y >= output->y + (INT32)output->height)
+		                     ? y - (output->y + (INT32)output->height - 1)
+		                     : 0;
+		const INT64 distance = dx * dx + dy * dy;
+		if (distance < bestDistance)
+		{
+			bestDistance = distance;
+			best = output;
+		}
+	}
+	return best ? best : &mutter->outputs[0];
+}
+
+/* under eiLock */
 static void mutter_pointer_move(mutterShadowSubsystem* mutter, UINT16 x, UINT16 y)
 {
 	WINPR_ASSERT(mutter);
 
 	struct ei_region* region = nullptr;
 	struct ei_region* first = nullptr;
+	const mutterOutput* output = mutter_output_at(mutter, x, y);
+	const INT32 lx = MIN(MAX((INT32)x - output->x, 0), (INT32)MAX(output->width, 1u) - 1);
+	const INT32 ly = MIN(MAX((INT32)y - output->y, 0), (INT32)MAX(output->height, 1u) - 1);
 
 	for (size_t index = 0;; index++)
 	{
@@ -1728,7 +1823,7 @@ static void mutter_pointer_move(mutterShadowSubsystem* mutter, UINT16 x, UINT16 
 		if (!first)
 			first = r;
 		const char* id = ei_region_get_mapping_id(r);
-		if (mutter->mappingId && id && (strcmp(id, mutter->mappingId) == 0))
+		if (output->mappingId && id && (strcmp(id, output->mappingId) == 0))
 		{
 			region = r;
 			break;
@@ -1740,10 +1835,10 @@ static void mutter_pointer_move(mutterShadowSubsystem* mutter, UINT16 x, UINT16 
 	mutter->pointerInput = GetTickCount64();
 	double px = x;
 	double py = y;
-	if (region && (mutter->width > 0) && (mutter->height > 0))
+	if (region && (output->width > 0) && (output->height > 0))
 	{
-		px = ei_region_get_x(region) + (double)x * ei_region_get_width(region) / mutter->width;
-		py = ei_region_get_y(region) + (double)y * ei_region_get_height(region) / mutter->height;
+		px = ei_region_get_x(region) + (double)lx * ei_region_get_width(region) / output->width;
+		py = ei_region_get_y(region) + (double)ly * ei_region_get_height(region) / output->height;
 	}
 	WLog_VRB(TAG,
 	         "pointer %" PRIu16 ",%" PRIu16 " -> %.1f,%.1f (region %s %" PRIu32 ",%" PRIu32
@@ -1977,7 +2072,8 @@ static void mutter_shadow_refresh(mutterShadowSubsystem* mutter)
 
 	/* the next frame goes out whole; Mutter sends one when asked for nothing
 	 * else only once something changes, so ask the clients' surface again */
-	mutter->fullPaint = TRUE;
+	for (UINT32 i = 0; i < mutter->outputCount; i++)
+		mutter->outputs[i].fullPaint = TRUE;
 	mutter->cursorResend = TRUE;
 
 	/* the picture carries the cursor: the clients hide their own pointer */
@@ -2700,25 +2796,30 @@ static void mutter_shadow_process_message(mutterShadowSubsystem* mutter, wMessag
 
 /* Mutter ended the stream: record the same monitor again in the running
  * session. Its node comes with PipeWireStreamAdded (see mutter_reconnect). */
-static void mutter_record_again(mutterShadowSubsystem* mutter)
+static void mutter_record_again(mutterShadowSubsystem* mutter, mutterOutput* output)
 {
 	WINPR_ASSERT(mutter);
+	WINPR_ASSERT(output);
 
-	mutter->streamGone = FALSE;
+	output->streamGone = FALSE;
 	const char* connector = mutter->connectors[mutter->common.selectedMonitor];
-	WLog_INFO(TAG, "Mutter ended the stream of %s (its layout changed): recording it again",
-	          connector[0] ? connector : "the primary monitor");
+	if (mutter->virtualMonitor)
+		WLog_INFO(TAG, "Mutter ended the stream of output %" PRIu32 ": recording it again",
+		          output->index);
+	else
+		WLog_INFO(TAG, "Mutter ended the stream of %s (its layout changed): recording it again",
+		          connector[0] ? connector : "the primary monitor");
 
-	mutter->streamAddedSlot = sd_bus_slot_unref(mutter->streamAddedSlot);
-	free(mutter->streamPath);
-	mutter->streamPath = nullptr;
+	output->streamAddedSlot = sd_bus_slot_unref(output->streamAddedSlot);
+	free(output->streamPath);
+	output->streamPath = nullptr;
 
 	sd_bus_error err = SD_BUS_ERROR_NULL;
 	int started = -1;
-	if (mutter_record_monitor(mutter, connector))
+	if (mutter_record_monitor(mutter, output, connector))
 	{
-		mutter->awaitNode = TRUE;
-		started = sd_bus_call_method(mutter->bus, SC_NAME, mutter->streamPath, SC_STREAM_IFACE,
+		output->awaitNode = TRUE;
+		started = sd_bus_call_method(mutter->bus, SC_NAME, output->streamPath, SC_STREAM_IFACE,
 		                             "Start", &err, nullptr, "");
 		if (started < 0)
 		{
@@ -2733,7 +2834,7 @@ static void mutter_record_again(mutterShadowSubsystem* mutter)
 	{
 		/* the session closed meanwhile, or the monitor is gone (unplugged, or
 		 * disabled): nothing left to share either way */
-		mutter->awaitNode = FALSE;
+		output->awaitNode = FALSE;
 		while (sd_bus_process(mutter->bus, nullptr) > 0)
 		{
 		}
@@ -2744,20 +2845,22 @@ static void mutter_record_again(mutterShadowSubsystem* mutter)
 }
 
 /* The new node is there: the same PipeWire stream connects to it */
-static void mutter_reconnect(mutterShadowSubsystem* mutter)
+static void mutter_reconnect(mutterShadowSubsystem* mutter, mutterOutput* output)
 {
 	WINPR_ASSERT(mutter);
+	WINPR_ASSERT(output);
 
-	mutter->reconnect = FALSE;
-	if (!mutter_stream_connect_node(mutter))
+	output->reconnect = FALSE;
+	if (!mutter_stream_connect_node(mutter, output))
 	{
 		mutter->monitorGone = TRUE;
 		mutter->closed = TRUE;
 		return;
 	}
-	mutter_read_stream_parameters(mutter);
-	mutter->fullPaint = TRUE;
-	WLog_INFO(TAG, "sharing again from PipeWire node %" PRIu32, mutter->nodeId);
+	mutter_read_stream_parameters(mutter, output);
+	output->fullPaint = TRUE;
+	WLog_INFO(TAG, "output %" PRIu32 ": sharing again from PipeWire node %" PRIu32, output->index,
+	          output->nodeId);
 }
 
 WINPR_ATTR_NODISCARD
@@ -2804,8 +2907,11 @@ static DWORD WINAPI mutter_shadow_subsystem_thread(LPVOID arg)
 			const uint64_t waitMs = (usec > now) ? (usec - now + 999) / 1000 : 0;
 			timeout = (DWORD)MIN(waitMs, 1000);
 		}
-		if (mutter->streamGone)
-			timeout = MIN(timeout, 50);
+		for (UINT32 i = 0; i < mutter->outputCount; i++)
+		{
+			if (mutter->outputs[i].used && mutter->outputs[i].streamGone)
+				timeout = MIN(timeout, 50);
+		}
 
 		const DWORD status = WaitForMultipleObjects(count, events, FALSE, timeout);
 		if ((status == WAIT_FAILED) || (WaitForSingleObject(mutter->stopEvent, 0) == WAIT_OBJECT_0))
@@ -2839,11 +2945,17 @@ static DWORD WINAPI mutter_shadow_subsystem_thread(LPVOID arg)
 
 		/* a Closed that follows the node's end (the user stopped the sharing)
 		 * wins over recording the monitor again */
-		if (mutter->streamGone && !mutter->closed &&
-		    (GetTickCount64() - mutter->streamGoneAt >= MUTTER_STREAM_GONE_GRACE_MS))
-			mutter_record_again(mutter);
-		if (mutter->reconnect && !mutter->closed)
-			mutter_reconnect(mutter);
+		for (UINT32 i = 0; i < mutter->outputCount; i++)
+		{
+			mutterOutput* output = &mutter->outputs[i];
+			if (!output->used)
+				continue;
+			if (output->streamGone && !mutter->closed &&
+			    (GetTickCount64() - output->streamGoneAt >= MUTTER_STREAM_GONE_GRACE_MS))
+				mutter_record_again(mutter, output);
+			if (output->reconnect && !mutter->closed)
+				mutter_reconnect(mutter, output);
+		}
 
 		if (mutter->ei)
 		{
@@ -2901,6 +3013,8 @@ static int mutter_shadow_subsystem_init(rdpShadowSubsystem* subsystem)
 
 	UINT32 count = 0;
 	mutter->virtualMonitor = mutter_virtual_size(&mutter->virtualWidth, &mutter->virtualHeight);
+	mutter->outputs[0].wantWidth = mutter->virtualWidth;
+	mutter->outputs[0].wantHeight = mutter->virtualHeight;
 	{
 		/* on unless "0" */
 		// NOLINTNEXTLINE(concurrency-mt-unsafe)
@@ -2974,9 +3088,15 @@ static int mutter_shadow_subsystem_uninit(rdpShadowSubsystem* subsystem)
 
 	shadow_pipewire_audio_free(mutter->audio);
 	mutter->audio = nullptr;
-	if (mutter->stream)
-		pw_stream_destroy(mutter->stream);
-	mutter->stream = nullptr;
+	for (UINT32 i = 0; i < mutter->outputCount; i++)
+	{
+		mutterOutput* output = &mutter->outputs[i];
+		if (output->stream)
+			pw_stream_destroy(output->stream);
+		output->stream = nullptr;
+		output->haveFormat = FALSE;
+		output->haveNode = FALSE;
+	}
 	if (mutter->registry)
 	{
 		spa_hook_remove(&mutter->registryListener);
@@ -3006,7 +3126,9 @@ static int mutter_shadow_subsystem_uninit(rdpShadowSubsystem* subsystem)
 		if (mutter->started && !mutter->closed && mutter->rdSessionPath)
 			(void)sd_bus_call_method(mutter->bus, RD_NAME, mutter->rdSessionPath, RD_SESSION_IFACE,
 			                         "Stop", nullptr, nullptr, "");
-		mutter->streamAddedSlot = sd_bus_slot_unref(mutter->streamAddedSlot);
+		for (UINT32 i = 0; i < mutter->outputCount; i++)
+			mutter->outputs[i].streamAddedSlot =
+			    sd_bus_slot_unref(mutter->outputs[i].streamAddedSlot);
 		mutter->closedSlot = sd_bus_slot_unref(mutter->closedSlot);
 		mutter->ownerSlot = sd_bus_slot_unref(mutter->ownerSlot);
 		mutter->selectionOwnerSlot = sd_bus_slot_unref(mutter->selectionOwnerSlot);
@@ -3019,10 +3141,16 @@ static int mutter_shadow_subsystem_uninit(rdpShadowSubsystem* subsystem)
 	mutter->rdSessionPath = nullptr;
 	free(mutter->scSessionPath);
 	mutter->scSessionPath = nullptr;
-	free(mutter->streamPath);
-	mutter->streamPath = nullptr;
-	free(mutter->mappingId);
-	mutter->mappingId = nullptr;
+	for (UINT32 i = 0; i < mutter->outputCount; i++)
+	{
+		mutterOutput* output = &mutter->outputs[i];
+		free(output->streamPath);
+		output->streamPath = nullptr;
+		EnterCriticalSection(&mutter->eiLock);
+		free(output->mappingId);
+		output->mappingId = nullptr;
+		LeaveCriticalSection(&mutter->eiLock);
+	}
 	return 1;
 }
 
@@ -3240,6 +3368,14 @@ static rdpShadowSubsystem* mutter_shadow_subsystem_new(void)
 	mutterShadowSubsystem* mutter = calloc(1, sizeof(mutterShadowSubsystem));
 	if (!mutter)
 		return nullptr;
+
+	for (UINT32 i = 0; i < MUTTER_SHADOW_MAX_MONITORS; i++)
+	{
+		mutter->outputs[i].mutter = mutter;
+		mutter->outputs[i].index = i;
+	}
+	mutter->outputs[0].used = TRUE;
+	mutter->outputCount = 1;
 
 	if (!InitializeCriticalSectionAndSpinCount(&mutter->eiLock, 4000))
 	{
