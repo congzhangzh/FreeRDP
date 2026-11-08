@@ -74,6 +74,9 @@ struct mutter_output
 	BOOL primary;
 	UINT32 wantWidth;
 	UINT32 wantHeight;
+	/* its monitor in GNOME (Meta-<n>), and when it was made, to tell which one that is */
+	char connector[MUTTER_SHADOW_CONNECTOR_SIZE];
+	UINT64 createdSeq;
 
 	/* the check for changes Mutter left out of its damage (mutter_repair_missed_damage) */
 	BOOL damageMissSeen;
@@ -120,6 +123,15 @@ struct mutter_shadow_subsystem
 	struct spa_hook registryListener;
 	mutterOutput outputs[MUTTER_SHADOW_MAX_MONITORS];
 	UINT32 outputCount;
+	UINT64 outputSeq;
+	/* GNOME gets the client's layout (DisplayConfig.ApplyMonitorsConfig) once every output
+	 * has its stream; not when GNOME has monitors of its own, which a layout without them
+	 * would turn off */
+	BOOL layoutPending;
+	UINT64 layoutAt;
+	BOOL foreignKnown;
+	UINT32 foreignCount;
+	char foreign[MUTTER_SHADOW_MAX_MONITORS][MUTTER_SHADOW_CONNECTOR_SIZE];
 	UINT32 width;
 	UINT32 height;
 	BOOL started; /* the remote desktop session */
