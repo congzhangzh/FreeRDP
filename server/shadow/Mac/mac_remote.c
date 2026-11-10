@@ -55,6 +55,8 @@ struct mac_remote
 	CGDirectDisplayID ids[MAC_REMOTE_MAX_DISPLAYS];
 	CGRect bounds[MAC_REMOTE_MAX_DISPLAYS];
 	CGDirectDisplayID mainDisplay;
+	BOOL displaysKnown;
+	HANDLE displaysEvent; /* the server's, not owned */
 
 	/* the capture the server asked for, sent again to an agent that comes later */
 	BOOL capturing;
@@ -108,19 +110,31 @@ static void mac_remote_on_hello(macRemote* remote, xpc_connection_t peer, xpc_ob
 	if (!displays || (xpc_get_type(displays) != XPC_TYPE_ARRAY))
 		return;
 
-	EnterCriticalSection(&remote->lock);
-	remote->displayCount = 0;
 	const size_t count = MIN(xpc_array_get_count(displays), MAC_REMOTE_MAX_DISPLAYS);
+	CGDirectDisplayID ids[MAC_REMOTE_MAX_DISPLAYS] = WINPR_C_ARRAY_INIT;
+	CGRect bounds[MAC_REMOTE_MAX_DISPLAYS] = WINPR_C_ARRAY_INIT;
 	for (size_t x = 0; x < count; x++)
 	{
 		xpc_object_t d = xpc_array_get_value(displays, x);
-		remote->ids[x] = (CGDirectDisplayID)xpc_dictionary_get_uint64(d, "id");
-		remote->bounds[x] =
+		ids[x] = (CGDirectDisplayID)xpc_dictionary_get_uint64(d, "id");
+		bounds[x] =
 		    CGRectMake(xpc_dictionary_get_double(d, "x"), xpc_dictionary_get_double(d, "y"),
 		               xpc_dictionary_get_double(d, "w"), xpc_dictionary_get_double(d, "h"));
-		remote->displayCount++;
 	}
+
+	EnterCriticalSection(&remote->lock);
+	/* the same displays as before (the usual handover: login window and session on the same
+	 * display mode) or not (another mode, another display: the server resizes first) */
+	BOOL displaysChanged = remote->displaysKnown && (remote->displayCount != count);
+	for (size_t x = 0; remote->displaysKnown && !displaysChanged && (x < count); x++)
+		displaysChanged =
+		    (remote->ids[x] != ids[x]) || !CGRectEqualToRect(remote->bounds[x], bounds[x]);
+	remote->displayCount = (UINT32)count;
+	memcpy(remote->ids, ids, sizeof(ids));
+	memcpy(remote->bounds, bounds, sizeof(bounds));
+	remote->displaysKnown = TRUE;
 	remote->mainDisplay = (CGDirectDisplayID)xpc_dictionary_get_uint64(msg, "main");
+	HANDLE displaysEvent = remote->displaysEvent;
 
 	const BOOL changed = remote->agent != peer;
 	if (changed)
@@ -134,14 +148,17 @@ static void mac_remote_on_hello(macRemote* remote, xpc_connection_t peer, xpc_ob
 	const BOOL capturing = remote->capturing;
 	LeaveCriticalSection(&remote->lock);
 
-	WLog_INFO(TAG, "agent: uid %" PRIu64 ", %s session, %" PRIuz " display(s)%s",
+	WLog_INFO(TAG, "agent: uid %" PRIu64 ", %s session, %" PRIuz " display(s)%s%s",
 	          (UINT64)xpc_dictionary_get_uint64(msg, "uid"), session ? session : "?", count,
-	          changed ? ", now the agent on the console" : "");
+	          changed ? ", now the agent on the console" : "",
+	          displaysChanged ? ", the displays changed" : "");
 	(void)SetEvent(remote->helloEvent);
 
-	/* an agent that comes while the server captures (the user logged in, the login window's
-	 * agent ended): it captures from now on */
-	if (capturing)
+	if (displaysChanged && displaysEvent)
+		(void)SetEvent(displaysEvent); /* the server resizes, then asks for the capture */
+	else if (capturing)
+		/* an agent that comes while the server captures (the user logged in, the login
+		 * window's agent ended): it captures from now on */
 		mac_remote_send_start(remote, peer);
 }
 
@@ -452,6 +469,14 @@ UINT32 mac_remote_list_displays(macRemote* remote, DWORD timeout, MONITOR_DEF* m
 	}
 	LeaveCriticalSection(&remote->lock);
 	return count;
+}
+
+void mac_remote_set_displays_event(macRemote* remote, HANDLE event)
+{
+	WINPR_ASSERT(remote);
+	EnterCriticalSection(&remote->lock);
+	remote->displaysEvent = event;
+	LeaveCriticalSection(&remote->lock);
 }
 
 BOOL mac_remote_capture_start(macRemote* remote, const macCaptureConfig* config)

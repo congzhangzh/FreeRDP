@@ -1079,20 +1079,54 @@ static void mac_shadow_set_virtual_screen(rdpShadowSubsystem* subsystem, UINT32 
 	virtualScreen->flags = 1;
 }
 
-/* The displays changed: the surface takes the new size of the display shared,
- * the clients get a desktop resize from the server, and the capture starts
- * again at the new size. */
-static void mac_shadow_displays_changed(macShadowSubsystem* mac, BOOL* lost)
+/* In a user's session the server looks at its display once a second (a display
+ * reconfiguration callback only reaches a process with an application's window server
+ * connection); as a daemon the agent does that and says hello again. */
+static void mac_shadow_check_displays(macShadowSubsystem* mac, UINT64 now)
 {
 	WINPR_ASSERT(mac);
-	WINPR_ASSERT(lost);
+
+	if (mac->remote || (now < mac->displaysChecked + MAC_SHADOW_DISPLAYS_MS))
+		return;
+	mac->displaysChecked = now;
+	const CGRect bounds = CGDisplayBounds(mac->display);
+	uint32_t count = 0;
+	if ((CGGetActiveDisplayList(0, nullptr, &count) != kCGErrorSuccess) ||
+	    (count != mac->common.numMonitors) || !CGRectEqualToRect(bounds, mac->bounds))
+		(void)SetEvent(mac->displaysEvent);
+}
+
+static void mac_shadow_capture_stop_now(macShadowSubsystem* mac)
+{
+	WINPR_ASSERT(mac);
+
+	if (mac->remote)
+		mac_remote_capture_stop(mac->remote);
+	else if (mac->capture)
+	{
+		mac_capture_stop(mac->capture);
+		mac_capture_free(mac->capture);
+		mac->capture = nullptr;
+	}
+}
+
+/* The displays changed: the surface takes the new size of the display shared, the clients
+ * get a desktop resize from the server, and the capture starts again at the new size. As a
+ * daemon this is also the handover to a session whose displays differ from the last one. */
+static void mac_shadow_displays_changed(macShadowSubsystem* mac)
+{
+	WINPR_ASSERT(mac);
 
 	rdpShadowSubsystem* subsystem = &mac->common;
 	MONITOR_DEF monitors[MAC_SHADOW_MAX_DISPLAYS] = WINPR_C_ARRAY_INIT;
 	CGDirectDisplayID ids[MAC_SHADOW_MAX_DISPLAYS] = WINPR_C_ARRAY_INIT;
 	CGRect bounds[MAC_SHADOW_MAX_DISPLAYS] = WINPR_C_ARRAY_INIT;
 
-	const UINT32 count = mac_shadow_list_displays(monitors, ids, bounds, MAC_SHADOW_MAX_DISPLAYS);
+	/* no waiting here: the agent that said hello is there */
+	const UINT32 count =
+	    mac->remote ? mac_remote_list_displays(mac->remote, 0, monitors, ids, bounds,
+	                                           MAC_SHADOW_MAX_DISPLAYS)
+	                : mac_shadow_list_displays(monitors, ids, bounds, MAC_SHADOW_MAX_DISPLAYS);
 	if (count == 0)
 		return;
 
@@ -1106,14 +1140,21 @@ static void mac_shadow_displays_changed(macShadowSubsystem* mac, BOOL* lost)
 	const UINT32 width = WINPR_ASSERTING_INT_CAST(UINT32, monitor->right - monitor->left + 1);
 	const UINT32 height = WINPR_ASSERTING_INT_CAST(UINT32, monitor->bottom - monitor->top + 1);
 
+	if ((ids[selected] == mac->display) && CGRectEqualToRect(bounds[selected], mac->bounds) &&
+	    (width == mac->width) && (height == mac->height) && (count == subsystem->numMonitors))
+	{
+		/* nothing the surface has to follow (a display mode with the same size in points) */
+		if (mac->remote && !mac_remote_capture_start(mac->remote, &mac->config))
+			(void)SetEvent(mac->lostEvent);
+		return;
+	}
+
 	WLog_INFO(TAG,
 	          "the displays changed: sharing display %" PRIu32 " (%" PRIu32 " of %" PRIu32
 	          "), %" PRIu32 "x%" PRIu32 " (was %" PRIu32 "x%" PRIu32 ")",
 	          ids[selected], selected, count, width, height, mac->width, mac->height);
 
-	mac_capture_stop(mac->capture);
-	mac_capture_free(mac->capture);
-	mac->capture = nullptr;
+	mac_shadow_capture_stop_now(mac);
 
 	memcpy(subsystem->monitors, monitors, sizeof(MONITOR_DEF) * count);
 	subsystem->numMonitors = count;
@@ -1139,26 +1180,17 @@ static void mac_shadow_displays_changed(macShadowSubsystem* mac, BOOL* lost)
 	if (!shadow_screen_resize(subsystem->server->screen))
 		WLog_ERR(TAG, "the surface could not take the new size");
 
-	/* tried again every second if this fails */
-	*lost = !mac_shadow_capture_restart(mac);
-}
-
-static void mac_shadow_check_displays(macShadowSubsystem* mac, UINT64 now, BOOL* lost)
-{
-	WINPR_ASSERT(mac);
-	WINPR_ASSERT(lost);
-
-	if (now < mac->displaysChecked + MAC_SHADOW_DISPLAYS_MS)
-		return;
-	mac->displaysChecked = now;
-
-	uint32_t count = 0;
-	const CGRect bounds = CGDisplayBounds(mac->display);
-	if ((CGGetActiveDisplayList(0, nullptr, &count) != kCGErrorSuccess) ||
-	    ((count == mac->common.numMonitors) && CGRectEqualToRect(bounds, mac->bounds)))
-		return;
-
-	mac_shadow_displays_changed(mac, lost);
+	BOOL started = FALSE;
+	if (mac->remote)
+		started = mac_remote_capture_start(mac->remote, &mac->config);
+	else
+	{
+		mac->capture = mac_capture_new(&mac->config);
+		started = mac->capture && mac_capture_start(mac->capture);
+	}
+	if (!started)
+		(void)SetEvent(mac->lostEvent); /* tried again every second */
+	mac_shadow_refresh(mac);
 }
 
 static DWORD WINAPI mac_shadow_subsystem_thread(LPVOID arg)
@@ -1166,7 +1198,7 @@ static DWORD WINAPI mac_shadow_subsystem_thread(LPVOID arg)
 	macShadowSubsystem* mac = (macShadowSubsystem*)arg;
 	wMessagePipe* MsgPipe = mac->common.MsgPipe;
 	HANDLE events[] = { mac->stopEvent, MessageQueue_Event(MsgPipe->In), mac->frameEvent,
-		                mac->lostEvent };
+		                mac->lostEvent, mac->displaysEvent };
 	BOOL lost = FALSE;
 	UINT64 restart = 0;
 
@@ -1175,13 +1207,20 @@ static DWORD WINAPI mac_shadow_subsystem_thread(LPVOID arg)
 		/* with clients, look at the cursor; without a stream, try to make one
 		 * again every second; in any case look at the displays every second */
 		const BOOL clients = mac_shadow_has_clients(mac);
-		DWORD timeout = clients ? MAC_SHADOW_CURSOR_MS : MAC_SHADOW_DISPLAYS_MS;
+		DWORD timeout =
+		    clients ? MAC_SHADOW_CURSOR_MS : (mac->remote ? INFINITE : MAC_SHADOW_DISPLAYS_MS);
 		if (lost)
 			timeout = MIN(timeout, MAC_SHADOW_RESTART_MS);
 
 		const DWORD status = WaitForMultipleObjects(ARRAYSIZE(events), events, FALSE, timeout);
 		if ((status == WAIT_FAILED) || (WaitForSingleObject(mac->stopEvent, 0) == WAIT_OBJECT_0))
 			break;
+
+		if (WaitForSingleObject(mac->displaysEvent, 0) == WAIT_OBJECT_0)
+		{
+			(void)ResetEvent(mac->displaysEvent);
+			mac_shadow_displays_changed(mac);
+		}
 
 		const UINT64 now = GetTickCount64();
 		if (WaitForSingleObject(mac->lostEvent, 0) == WAIT_OBJECT_0)
@@ -1203,7 +1242,7 @@ static DWORD WINAPI mac_shadow_subsystem_thread(LPVOID arg)
 			}
 		}
 
-		mac_shadow_check_displays(mac, now, &lost);
+		mac_shadow_check_displays(mac, now);
 		if (clients)
 			mac_shadow_cursor_update(mac, now);
 
@@ -1333,7 +1372,10 @@ static int mac_shadow_subsystem_init(rdpShadowSubsystem* subsystem)
 	mac->config = config;
 
 	if (mac->remote)
+	{
+		mac_remote_set_displays_event(mac->remote, mac->displaysEvent);
 		return 1; /* the agent captures, from Start on */
+	}
 
 	mac->capture = mac_capture_new(&mac->config);
 	if (!mac->capture)
@@ -1475,6 +1517,7 @@ static void mac_shadow_subsystem_free(rdpShadowSubsystem* subsystem)
 	mac_input_close(&mac->input);
 	if (mac->remote)
 	{
+		mac_remote_set_displays_event(mac->remote, nullptr);
 		mac_remote_free(mac->remote);
 		mac->remote = nullptr;
 		s_remote = nullptr;
@@ -1490,6 +1533,8 @@ static void mac_shadow_subsystem_free(rdpShadowSubsystem* subsystem)
 		(void)CloseHandle(mac->stopEvent);
 	if (mac->lostEvent)
 		(void)CloseHandle(mac->lostEvent);
+	if (mac->displaysEvent)
+		(void)CloseHandle(mac->displaysEvent);
 	free(mac);
 }
 
@@ -1518,7 +1563,8 @@ static rdpShadowSubsystem* mac_shadow_subsystem_new(void)
 	mac->frameEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
 	mac->stopEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
 	mac->lostEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
-	if (!mac->frameEvent || !mac->stopEvent || !mac->lostEvent)
+	mac->displaysEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+	if (!mac->frameEvent || !mac->stopEvent || !mac->lostEvent || !mac->displaysEvent)
 	{
 		mac_shadow_subsystem_free(&mac->common);
 		return nullptr;

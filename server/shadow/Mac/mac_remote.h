@@ -58,6 +58,10 @@ extern "C"
 	BOOL mac_remote_cursor_get(macRemote *remote, macCursorImage *image, UINT32 maxSize);
 	BOOL mac_remote_location(macRemote *remote, CGPoint *where);
 
+	/* set when an agent's displays differ from the ones before (another session, another
+	 * display mode): the server resizes its surface and asks for the capture again itself */
+	void mac_remote_set_displays_event(macRemote *remote, HANDLE event);
+
 	/* the user on the console (root at the login window), from /dev/console */
 	uid_t mac_remote_console_uid(void);
 
