@@ -49,6 +49,9 @@
 
 #define RDPGFX_NUMBER_CAPSETS 0x100
 
+/* AV2's codec ID before the merged wire form, see rdpgfx_recv_wire_to_surface_1_pdu() */
+#define RDPGFX_CODECID_AV2_PRE_MERGE 0x0002
+
 /* What a codec's decoder reported, for each codec ID */
 enum
 {
@@ -1794,6 +1797,16 @@ static UINT rdpgfx_recv_wire_to_surface_1_pdu(GENERIC_CHANNEL_CALLBACK* callback
 	cmd.surfaceId = pdu.surfaceId;
 	cmd.codecId = pdu.codecId;
 	cmd.contextId = 0;
+
+#if defined(WITH_GFX_AV2)
+	/* Compatibility for xrdp and FreeRDP hosts on the AV2 wire form from before #13925 was
+	 * merged: they send AV2 with codec ID 0x0002, the merged form carries it in
+	 * RDPGFX_CODECID_AV1 under RDPGFX_CAPVERSION_FRDP_2. Read 0x0002 as that, and only when
+	 * FRDP_2 was confirmed; anywhere else 0x0002 stays an unknown codec. */
+	if ((cmd.codecId == RDPGFX_CODECID_AV2_PRE_MERGE) &&
+	    (gfx->ConnectionCaps.version == RDPGFX_CAPVERSION_FRDP_2))
+		cmd.codecId = RDPGFX_CODECID_AV1;
+#endif
 
 	switch (pdu.pixelFormat)
 	{
