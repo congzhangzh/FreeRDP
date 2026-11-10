@@ -62,8 +62,8 @@
 #include <time.h>
 #include <unistd.h>
 
-#define CR_MAX 1024         /* a Connection Request is far smaller */
-#define CR_TIMEOUT_S 10     /* to send it */
+#define CR_MAX 1024          /* a Connection Request is far smaller */
+#define CR_TIMEOUT_S 10      /* to send it */
 #define SHADOW_TIMEOUT_S 120 /* for the shadow server to listen (GNOME may be starting) */
 /* FREERDP_SHADOW_AV1_* and _AV2_* passed on to the shadow servers */
 #define SHADOW_ENV_MAX 16
