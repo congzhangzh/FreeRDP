@@ -398,7 +398,7 @@ static BOOL open_channel(test_channel_manager* mgr, IWTSVirtualChannel* channel,
 	return TRUE;
 }
 
-#if defined(WITH_GFX_AV1) || defined(WITH_GFX_H264)
+#if defined(WITH_GFX_AV1) || defined(WITH_GFX_AV2) || defined(WITH_GFX_H264)
 #define TEST_SIZE 64
 #define TEST_SURFACE 1
 #define TEST_METABLOCK_SIZE (4ull + 8ull + 2ull)
@@ -414,14 +414,15 @@ static void write_metablock(wStream* s)
 	Stream_Write_UINT8(s, 100); /* qualityVal */
 }
 
-#if defined(WITH_GFX_AV1)
-/* AV1 is only accepted on a connection that agreed on the capability version with it */
-static UINT send_caps_confirm(IWTSVirtualChannelCallback* callback)
+#if defined(WITH_GFX_AV1) || defined(WITH_GFX_AV2)
+/* AV1 and AV2 are only accepted on a connection that agreed on the capability version with
+ * them */
+static UINT send_caps_confirm(IWTSVirtualChannelCallback* callback, UINT32 version)
 {
 	wStream* s = new_pdu(RDPGFX_CMDID_CAPSCONFIRM, 12);
 	if (!s)
 		return CHANNEL_RC_NO_MEMORY;
-	Stream_Write_UINT32(s, RDPGFX_CAPVERSION_FRDP_1);
+	Stream_Write_UINT32(s, version);
 	Stream_Write_UINT32(s, 4); /* capsDataLength */
 	Stream_Write_UINT32(s, 0); /* capsData */
 	return send_pdu(callback, s);
@@ -464,13 +465,35 @@ static UINT send_bitstream(IWTSVirtualChannelCallback* callback, UINT16 codecId,
 	return send_pdu(callback, s);
 }
 
+#if defined(WITH_GFX_AV2)
+/* xrdp and FreeRDP hosts from before the AV2 merge send AV2 with codec ID 0x0002: with
+ * RDPGFX_CAPVERSION_FRDP_2 the channel reads it as RDPGFX_CODECID_AV1 (AV2) and goes on;
+ * with any other caps version it stays an unknown codec */
+static BOOL check_av2_pre_merge_codec_id(RdpgfxClientContext* gfx,
+                                         IWTSVirtualChannelCallback* callback)
+{
+	static const BYTE cut[] = { 0x12 };
+	const UINT16 preMerge = 0x0002;
+
+	TEST_CHECK(send_caps_confirm(callback, RDPGFX_CAPVERSION_FRDP_2) == CHANNEL_RC_OK);
+	const uint64_t av1 = stat_value(gfx, "RDPGFX_CODECID_AV1");
+	TEST_CHECK(send_bitstream(callback, preMerge, cut, sizeof(cut), FALSE) == CHANNEL_RC_OK);
+	TEST_CHECK(stat_value(gfx, "RDPGFX_CODECID_AV1") == av1 + 1);
+
+	TEST_CHECK(send_caps_confirm(callback, RDPGFX_CAPVERSION_107) == CHANNEL_RC_OK);
+	TEST_CHECK(send_bitstream(callback, preMerge, cut, sizeof(cut), FALSE) != CHANNEL_RC_OK);
+	TEST_CHECK(stat_value(gfx, "RDPGFX_CODECID_AV1") == av1 + 1);
+	return TRUE;
+}
+#endif
+
 /* What the decoders behind the renderer report reaches the stats of their codec */
 static BOOL check_decoders(RdpgfxClientContext* gfx, IWTSVirtualChannelCallback* callback)
 {
 	TEST_CHECK(send_create_surface(callback) == CHANNEL_RC_OK);
 
 #if defined(WITH_GFX_AV1)
-	TEST_CHECK(send_caps_confirm(callback) == CHANNEL_RC_OK);
+	TEST_CHECK(send_caps_confirm(callback, RDPGFX_CAPVERSION_FRDP_1) == CHANNEL_RC_OK);
 
 	/* A temporal delimiter alone: dav1d takes it, libaom refuses a temporal unit without a
 	 * frame. Then an OBU cut off inside of its header, which no decoder takes. */
@@ -520,6 +543,11 @@ static BOOL check_decoders(RdpgfxClientContext* gfx, IWTSVirtualChannelCallback*
 	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AVC444_PICTURES") == 1);
 	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AVC444v2_PICTURES") == 1);
 	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AVC420_PICTURES") == 1);
+#endif
+
+#if defined(WITH_GFX_AV2)
+	/* last: the refused command of this check is an error of the channel */
+	TEST_CHECK(check_av2_pre_merge_codec_id(gfx, callback));
 #endif
 	return TRUE;
 }
@@ -583,7 +611,7 @@ static BOOL check_channel(rdpContext* context, IWTSPlugin* plugin, test_channel_
 	(void)callback->OnClose(callback);
 	TEST_CHECK(zero);
 
-#if defined(WITH_GFX_AV1) || defined(WITH_GFX_H264)
+#if defined(WITH_GFX_AV1) || defined(WITH_GFX_AV2) || defined(WITH_GFX_H264)
 	TEST_CHECK(check_renderer(context, plugin, mgr, &channel));
 #else
 	WINPR_UNUSED(context);
