@@ -32,6 +32,9 @@
 #include <freerdp/client/channels.h>
 #include <freerdp/client/rdpgfx.h>
 #include <freerdp/channels/rdpgfx.h>
+#include <freerdp/codec/av2.h>
+#include <freerdp/codec/color.h>
+#include <freerdp/codec/h264.h>
 #include <freerdp/codec/zgfx.h>
 #include <freerdp/dvc.h>
 #include <freerdp/gdi/gdi.h>
@@ -182,13 +185,15 @@ static BOOL check_names(void)
 		                                    "RDPGFX_DECODER_AV1_PICTURES",
 		                                    "RDPGFX_DECODER_AVC420_FAILED",
 		                                    "RDPGFX_DECODER_AVC444_NO_PICTURE",
-		                                    "RDPGFX_DECODER_AVC444v2_FALLBACKS" };
+		                                    "RDPGFX_DECODER_AVC444v2_FALLBACKS",
+		                                    "RDPGFX_DECODER_AV2_PICTURES",
+		                                    "RDPGFX_DECODER_AV2_FALLBACKS" };
 
 	const size_t max = rdpgfx_stats_max_index();
 
 	/* codec IDs, command IDs and the invalid command, bytes per codec ID, the two frame stats */
-	/* and nine stats for each of the four decoders */
-	TEST_CHECK(max == 2ull * RDPGFX_CODECID_MAX + RDPGFX_CMDID_MAX + 1ull + 2ull + 4ull * 9ull);
+	/* and nine stats for each of the five decoders */
+	TEST_CHECK(max == 2ull * RDPGFX_CODECID_MAX + RDPGFX_CMDID_MAX + 1ull + 2ull + 5ull * 9ull);
 
 	for (size_t x = 0; x < max; x++)
 	{
@@ -288,6 +293,34 @@ static BOOL check_decode_results(RdpgfxClientContext* gfx)
 		TEST_CHECK(stat_value(gfx, others[x].pictures) == 1);
 	}
 	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AVC420_PICTURES") == 2);
+
+	/* RDPGFX_CODECID_AV1 counts for the codec the caps version makes it carry, for none
+	 * before the caps confirm */
+	const UINT32 caps = gfx->CapsVersion;
+	WINPR_ATTR_UNUSED uint64_t av2Pictures = 0;
+	gfx->CapsVersion = 0;
+	gfx->DecodeResult(gfx, RDPGFX_CODECID_AV1, &result, 1);
+	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AV1_PICTURES") == 0);
+	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AV2_PICTURES") == 0);
+	TEST_CHECK(rdpgfx_stats_decoder_backend(gfx, RDPGFX_CODECID_AV1) == nullptr);
+#if defined(WITH_GFX_AV2)
+	gfx->CapsVersion = RDPGFX_CAPVERSION_FRDP_2;
+	result.backend = "av2";
+	gfx->DecodeResult(gfx, RDPGFX_CODECID_AV1, &result, 1);
+	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AV2_PICTURES") == 1);
+	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AV1_PICTURES") == 0);
+	backend = rdpgfx_stats_decoder_backend(gfx, RDPGFX_CODECID_AV1);
+	TEST_CHECK(backend && (strcmp(backend, "av2") == 0));
+	av2Pictures = 1;
+#endif
+#if defined(WITH_GFX_AV1)
+	gfx->CapsVersion = RDPGFX_CAPVERSION_FRDP_1;
+	TEST_CHECK(rdpgfx_stats_decoder_backend(gfx, RDPGFX_CODECID_AV1) == nullptr);
+	gfx->DecodeResult(gfx, RDPGFX_CODECID_AV1, &result, 1);
+	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AV1_PICTURES") == 1);
+	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AV2_PICTURES") == av2Pictures);
+#endif
+	gfx->CapsVersion = caps;
 	return TRUE;
 }
 
@@ -477,7 +510,7 @@ static void write_metablock(wStream* s)
 
 #if defined(WITH_GFX_AV1) || defined(WITH_GFX_AV2)
 /* AV1 and AV2 are only accepted on a connection that agreed on the capability version with
- * them */
+ * them, RDPGFX_CODECID_AV1 carries the one it names */
 static UINT send_caps_confirm(IWTSVirtualChannelCallback* callback, UINT32 version)
 {
 	wStream* s = new_pdu(RDPGFX_CMDID_CAPSCONFIRM, 12);
@@ -547,6 +580,88 @@ static BOOL check_av2_pre_merge_codec_id(RdpgfxClientContext* gfx,
 	TEST_CHECK(stat_value(gfx, "RDPGFX_CODECID_AV1") == av1 + 1);
 	return TRUE;
 }
+
+/* A key frame of our own encoder, 64x64 of one colour; nullptr without an encoder */
+static BYTE* encode_av2_key_frame(UINT32* size)
+{
+	const UINT32 format = PIXEL_FORMAT_BGRX32;
+	const UINT32 stride = TEST_SIZE * 4;
+	BYTE* frame = nullptr;
+	BYTE* src = calloc(stride, TEST_SIZE);
+	FREERDP_AV2_CONTEXT* enc = freerdp_av2_context_new(TRUE);
+	if (!src || !enc || !freerdp_av2_context_reset(enc, TEST_SIZE, TEST_SIZE))
+		goto fail;
+	for (size_t x = 0; x < 1ull * stride * TEST_SIZE; x += 4)
+	{
+		if (!FreeRDPWriteColor(&src[x], format, FreeRDPGetColor(format, 0xA0, 0x60, 0x60, 0xFF)))
+			goto fail;
+	}
+
+	RDPGFX_H264_METABLOCK meta = WINPR_C_ARRAY_INIT;
+	const RECTANGLE_16 rect = { .left = 0, .top = 0, .right = TEST_SIZE, .bottom = TEST_SIZE };
+	BYTE* dst = nullptr;
+	UINT32 dstSize = 0;
+	const INT32 rc = freerdp_av2_compress(enc, src, format, stride, TEST_SIZE, TEST_SIZE, &rect,
+	                                      &dst, &dstSize, &meta);
+	free_h264_metablock(&meta);
+	if ((rc > 0) && dst && (dstSize > 0))
+	{
+		/* dst belongs to the encoder */
+		frame = malloc(dstSize);
+		if (frame)
+		{
+			memcpy(frame, dst, dstSize);
+			*size = dstSize;
+		}
+	}
+
+fail:
+	freerdp_av2_context_free(enc);
+	free(src);
+	return frame;
+}
+
+/* RDPGFX_CODECID_AV1 under RDPGFX_CAPVERSION_FRDP_2 is AV2: it counts for AV2, not for AV1 */
+static BOOL check_av2(RdpgfxClientContext* gfx, IWTSVirtualChannelCallback* callback)
+{
+	const uint64_t av1Pictures = stat_value(gfx, "RDPGFX_DECODER_AV1_PICTURES");
+	const uint64_t av1Failed = stat_value(gfx, "RDPGFX_DECODER_AV1_FAILED");
+	TEST_CHECK(send_caps_confirm(callback, RDPGFX_CAPVERSION_FRDP_2) == CHANNEL_RC_OK);
+
+	UINT32 size = 0;
+	BYTE* frame = encode_av2_key_frame(&size);
+	if (!frame)
+	{
+		(void)fprintf(stderr, "[%s] no AV2 encoder, the AV2 decoder stats are not checked\n",
+		              __func__);
+		return TRUE;
+	}
+	const UINT rc = send_bitstream(callback, RDPGFX_CODECID_AV1, frame, size, FALSE);
+	free(frame);
+	TEST_CHECK(rc == CHANNEL_RC_OK);
+
+	const char* backend = rdpgfx_stats_decoder_backend(gfx, RDPGFX_CODECID_AV1);
+	TEST_CHECK(backend);
+	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AV2_PICTURES") == 1);
+	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AV2_KEY_FRAMES") == 1);
+	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AV2_FAILED") == 0);
+	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AV2_LAST_PICTURE_AGE_NS") > 0);
+	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AV2_DECODE_NS_SUM") > 0);
+	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AV2_HARDWARE") == FREERDP_DECODE_HARDWARE_NO);
+
+	/* an OBU cut off inside of its header */
+	static const BYTE cut[] = { 0x12 };
+	TEST_CHECK(send_bitstream(callback, RDPGFX_CODECID_AV1, cut, sizeof(cut), FALSE) ==
+	           CHANNEL_RC_OK);
+	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AV2_FAILED") +
+	               stat_value(gfx, "RDPGFX_DECODER_AV2_NO_PICTURE") ==
+	           1);
+	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AV2_PICTURES") == 1);
+
+	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AV1_PICTURES") == av1Pictures);
+	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AV1_FAILED") == av1Failed);
+	return TRUE;
+}
 #endif
 
 /* What the decoders behind the renderer report reaches the stats of their codec */
@@ -578,6 +693,10 @@ static BOOL check_decoders(RdpgfxClientContext* gfx, IWTSVirtualChannelCallback*
 	           CHANNEL_RC_OK);
 	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AV1_FAILED") == 2 - taken);
 	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AV1_PICTURES") == 0);
+#endif
+
+#if defined(WITH_GFX_AV2)
+	TEST_CHECK(check_av2(gfx, callback));
 #endif
 
 #if defined(WITH_GFX_H264)
