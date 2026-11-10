@@ -104,7 +104,14 @@ struct S_FREERDP_AV2_CONTEXT
 	UINT32 yuvWidth;
 	UINT32 yuvStride[3];
 	UINT32 yuvHeight;
+	FREERDP_DECODE_RESULT lastDecode;
 };
+
+#if defined(AV2_DECODER_DAV2D)
+#define AV2_DECODER_NAME "dav2d"
+#else
+#define AV2_DECODER_NAME "libavm"
+#endif
 
 #if defined(WITH_LIBAVM)
 static void av2_avm_destroy(FREERDP_AV2_CONTEXT* av2)
@@ -624,6 +631,9 @@ static INT32 av2_dav2d_drain_one(FREERDP_AV2_CONTEXT* av2, BYTE* pDstData, DWORD
 		return -1;
 	}
 
+	if (pic.frame_hdr && (pic.frame_hdr->frame_type == DAV2D_FRAME_TYPE_KEY))
+		av2->lastDecode.keyFrame = TRUE;
+
 	INT32 rc = -1;
 	switch (pic.p.layout)
 	{
@@ -657,6 +667,15 @@ INT32 freerdp_av2_decompress(FREERDP_AV2_CONTEXT* av2, const BYTE* pSrcData, UIN
                              UINT32 numRegionRect)
 {
 	WINPR_ASSERT(av2);
+
+	/* A failure is what remains unless the decode gets to its end */
+	const FREERDP_DECODE_RESULT start = { .status = FREERDP_DECODE_FAILED,
+		                                  .keyFrame = FALSE,
+		                                  .fellBack = FALSE,
+		                                  .hardware = FREERDP_DECODE_HARDWARE_NO,
+		                                  .backend = AV2_DECODER_NAME };
+	av2->lastDecode = start;
+
 	if (av2->encoder)
 	{
 		WLog_Print(av2->log, WLOG_ERROR, "av2->encoder: %d", av2->encoder);
@@ -667,6 +686,7 @@ INT32 freerdp_av2_decompress(FREERDP_AV2_CONTEXT* av2, const BYTE* pSrcData, UIN
 		return -2;
 
 #if defined(AV2_DECODER_DAV2D)
+	BOOL picture = FALSE;
 	Dav2dData data = WINPR_C_ARRAY_INIT;
 	const int wrc = dav2d_data_wrap(&data, pSrcData, SrcSize, av2_dav2d_data_free, nullptr);
 	if (wrc < 0)
@@ -692,6 +712,8 @@ INT32 freerdp_av2_decompress(FREERDP_AV2_CONTEXT* av2, const BYTE* pSrcData, UIN
 			dav2d_data_unref(&data);
 			return rc;
 		}
+		if (rc == TRUE)
+			picture = TRUE;
 	}
 
 	/* Drain any picture the decoder buffered internally before it consumed the last input. */
@@ -703,8 +725,10 @@ INT32 freerdp_av2_decompress(FREERDP_AV2_CONTEXT* av2, const BYTE* pSrcData, UIN
 			break;
 		if (rc != TRUE)
 			return rc;
+		picture = TRUE;
 	}
 
+	av2->lastDecode.status = picture ? FREERDP_DECODE_PICTURE : FREERDP_DECODE_NO_PICTURE;
 	return TRUE;
 #elif defined(WITH_LIBAVM)
 	const avm_codec_err_t rc = avm_codec_decode(&av2->ctx, pSrcData, SrcSize, nullptr);
@@ -714,6 +738,7 @@ INT32 freerdp_av2_decompress(FREERDP_AV2_CONTEXT* av2, const BYTE* pSrcData, UIN
 		return -1;
 	}
 
+	BOOL picture = FALSE;
 	avm_image_t* img = nullptr;
 	avm_codec_iter_t iter = nullptr;
 	while ((img = avm_codec_get_frame(&av2->ctx, &iter)) != nullptr)
@@ -739,10 +764,26 @@ INT32 freerdp_av2_decompress(FREERDP_AV2_CONTEXT* av2, const BYTE* pSrcData, UIN
 		                              nDstHeight, regionRects, numRegionRect);
 		if (crc != TRUE)
 			return crc;
+		picture = TRUE;
 	}
 
+	/* the flags of the frame shown last, or of the one just decoded if none was shown */
+	int frameFlags = 0;
+	if (avm_codec_control(&av2->ctx, AVMD_GET_FRAME_FLAGS, &frameFlags) == AVM_CODEC_OK)
+		av2->lastDecode.keyFrame = (frameFlags & AVM_FRAME_IS_KEY) != 0;
+
+	av2->lastDecode.status = picture ? FREERDP_DECODE_PICTURE : FREERDP_DECODE_NO_PICTURE;
 	return TRUE;
 #endif
+}
+
+BOOL freerdp_av2_context_get_last_decode(const FREERDP_AV2_CONTEXT* av2,
+                                         FREERDP_DECODE_RESULT* result)
+{
+	if (!av2 || !result)
+		return FALSE;
+	*result = av2->lastDecode;
+	return TRUE;
 }
 
 BOOL freerdp_av2_context_reset(FREERDP_AV2_CONTEXT* av2, UINT32 width, UINT32 height)
@@ -1040,6 +1081,16 @@ BOOL freerdp_av2_context_reset(WINPR_ATTR_UNUSED FREERDP_AV2_CONTEXT* av2,
 	           "This build does not support AV2 codec. Recompile with '-DWITH_AVM=ON' or "
 	           "'-DWITH_DAV2D=ON'");
 	return FALSE;
+}
+
+BOOL freerdp_av2_context_get_last_decode(const FREERDP_AV2_CONTEXT* av2,
+                                         FREERDP_DECODE_RESULT* result)
+{
+	if (!av2 || !result)
+		return FALSE;
+	const FREERDP_DECODE_RESULT none = { .status = FREERDP_DECODE_NONE };
+	*result = none;
+	return TRUE;
 }
 
 void freerdp_av2_context_free(WINPR_ATTR_UNUSED FREERDP_AV2_CONTEXT* av2)
