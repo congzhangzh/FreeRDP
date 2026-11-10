@@ -40,7 +40,7 @@
  * bounding box. */
 #define GDI_GFX_MAX_INVALID_RECTS 256
 
-#if defined(WITH_GFX_AV1) || defined(WITH_GFX_H264)
+#if defined(WITH_GFX_AV1) || defined(WITH_GFX_AV2) || defined(WITH_GFX_H264)
 /* A decoder's verdict for the channel's statistics, the time includes the colour conversion */
 static void gdi_report_decode(RdpgfxClientContext* context, UINT32 codecId, UINT64 startNS,
                               const gdiGfxSurface* surface)
@@ -49,8 +49,12 @@ static void gdi_report_decode(RdpgfxClientContext* context, UINT32 codecId, UINT
 	FREERDP_DECODE_RESULT result = WINPR_C_ARRAY_INIT;
 	BOOL valid = FALSE;
 #if defined(WITH_GFX_AV1)
-	if (codecId == RDPGFX_CODECID_AV1)
+	if ((codecId == RDPGFX_CODECID_AV1) && (context->CapsVersion == RDPGFX_CAPVERSION_FRDP_1))
 		valid = freerdp_av1_context_get_last_decode(surface->av1, &result);
+#endif
+#if defined(WITH_GFX_AV2)
+	if ((codecId == RDPGFX_CODECID_AV1) && (context->CapsVersion == RDPGFX_CAPVERSION_FRDP_2))
+		valid = freerdp_av2_context_get_last_decode(surface->av2, &result);
 #endif
 #if defined(WITH_GFX_H264)
 	if ((codecId == RDPGFX_CODECID_AVC420) || (codecId == RDPGFX_CODECID_AVC444) ||
@@ -646,9 +650,12 @@ static UINT gdi_SurfaceCommand_AV2(rdpGdi* gdi, RdpgfxClientContext* context,
 		return ERROR_INTERNAL_ERROR;
 
 	meta = &(bs->meta);
+	const UINT64 startNS = winpr_GetTickCount64NS();
 	rc = freerdp_av2_decompress(surface->av2, bs->data, bs->length, surface->data, surface->format,
 	                            surface->scanline, surface->width, surface->height,
 	                            meta->regionRects, meta->numRegionRects);
+
+	gdi_report_decode(context, cmd->codecId, startNS, surface);
 
 	if (rc < 0)
 	{

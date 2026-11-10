@@ -22,6 +22,7 @@
 #include <freerdp/api.h>
 #include <freerdp/types.h>
 #include <freerdp/channels/rdpgfx.h>
+#include <freerdp/codec/decode_result.h>
 
 #ifdef __cplusplus
 extern "C"
@@ -134,6 +135,20 @@ extern "C"
 	WINPR_ATTR_NODISCARD
 	FREERDP_API BOOL freerdp_av2_context_reset(FREERDP_AV2_CONTEXT* av2, UINT32 width,
 	                                           UINT32 height);
+
+	/** @brief Get the result of the last freerdp_av2_decompress()
+	 *
+	 *  The decoder tells if a frame was a key frame, so a decode that failed reports none.
+	 *
+	 *  @param av2 The decoder context
+	 *  @param result Where to store the result
+	 *
+	 *  @return \b TRUE if the result was stored, \b FALSE for invalid arguments
+	 *  @since version 3.34.0
+	 */
+	WINPR_ATTR_NODISCARD
+	FREERDP_API BOOL freerdp_av2_context_get_last_decode(const FREERDP_AV2_CONTEXT* av2,
+	                                                     FREERDP_DECODE_RESULT* result);
 
 	/** @brief free a AV2 codec context
 	 *

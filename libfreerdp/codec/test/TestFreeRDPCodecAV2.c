@@ -1,5 +1,6 @@
 
 #include <stdlib.h>
+#include <string.h>
 
 #include <freerdp/freerdp.h>
 #include <freerdp/codec/color.h>
@@ -167,6 +168,27 @@ fail:
 /* Encodes a few frames of a moving picture into one stream, so that all but the first are inter
  * frames, and checks the colours of each decoded frame. */
 WINPR_ATTR_NODISCARD
+static BOOL checkLastDecode(const FREERDP_AV2_CONTEXT* dec, FREERDP_DECODE_STATUS status,
+                            BOOL keyFrame)
+{
+	FREERDP_DECODE_RESULT result = WINPR_C_ARRAY_INIT;
+	if (!freerdp_av2_context_get_last_decode(dec, &result))
+		return FALSE;
+	if ((result.status != status) || (result.keyFrame != keyFrame) || result.fellBack ||
+	    (result.hardware != FREERDP_DECODE_HARDWARE_NO) || !result.backend ||
+	    (strcmp(result.backend, "libavm") != 0))
+	{
+		(void)fprintf(stderr,
+		              "[%s] got status %d keyFrame %d fellBack %d hardware %d backend %s, "
+		              "expected status %d keyFrame %d\n",
+		              __func__, result.status, result.keyFrame, result.fellBack, result.hardware,
+		              result.backend ? result.backend : "(none)", status, keyFrame);
+		return FALSE;
+	}
+	return TRUE;
+}
+
+WINPR_ATTR_NODISCARD
 static BOOL testSequence(uint32_t width, uint32_t height, uint32_t frames)
 {
 	const uint32_t format = PIXEL_FORMAT_BGRX32;
@@ -183,6 +205,14 @@ static BOOL testSequence(uint32_t width, uint32_t height, uint32_t frames)
 	if (!freerdp_av2_context_reset(enc, width, height) ||
 	    !freerdp_av2_context_reset(dec, width, height))
 		goto fail;
+
+	FREERDP_DECODE_RESULT none = WINPR_C_ARRAY_INIT;
+	if (!freerdp_av2_context_get_last_decode(dec, &none) || (none.status != FREERDP_DECODE_NONE))
+		goto fail;
+	if (freerdp_av2_context_get_last_decode(dec, nullptr) ||
+	    freerdp_av2_context_get_last_decode(nullptr, &none))
+		goto fail;
+
 	if (!freerdp_av2_context_set_option(enc, FREERDP_AV2_CONTEXT_OPTION_PROFILE, 0) ||
 	    !freerdp_av2_context_set_option(enc, FREERDP_AV2_CONTEXT_OPTION_RATECONTROL,
 	                                    FREERDP_AV2_VBR) ||
@@ -216,6 +246,9 @@ static BOOL testSequence(uint32_t width, uint32_t height, uint32_t frames)
 		if (freerdp_av2_decompress(dec, dst, dstsize, out, format, stride, width, height, &rect,
 		                           1) < 0)
 			goto fail;
+		/* the encoder starts with a key frame, the frames after it refer to it */
+		if (!checkLastDecode(dec, FREERDP_DECODE_PICTURE, f == 0))
+			goto fail;
 
 		int maxDiff = 0;
 		for (uint32_t y = 0; y < height; y++)
@@ -243,6 +276,17 @@ static BOOL testSequence(uint32_t width, uint32_t height, uint32_t frames)
 		              " bytes): maximum colour difference %d\n",
 		              __func__, f, width, height, dstsize, maxDiff);
 		if (maxDiff > 32)
+			goto fail;
+	}
+
+	/* an OBU cut off inside of its header: refused, and no key frame */
+	{
+		static const BYTE cut[] = { 0x12 };
+		const RECTANGLE_16 rect = { .left = 0, .top = 0, .right = width, .bottom = height };
+		if (freerdp_av2_decompress(dec, cut, sizeof(cut), out, format, stride, width, height, &rect,
+		                           1) >= 0)
+			goto fail;
+		if (!checkLastDecode(dec, FREERDP_DECODE_FAILED, FALSE))
 			goto fail;
 	}
 	rc = TRUE;
