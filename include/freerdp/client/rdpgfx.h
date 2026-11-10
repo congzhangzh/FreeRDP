@@ -213,7 +213,8 @@ extern "C"
 	 *  New stats are added at the end, an index never changes its meaning. Use the name to find
 	 *  one.
 	 *
-	 *  Then, for each of AV1, AVC420, AVC444 and AVC444v2 and named RDPGFX_DECODER_<codec>_*:
+	 *  Then, for each of AV1, AVC420, AVC444, AVC444v2 and AV2 (RDPGFX_CODECID_AV1 when the
+	 *  confirmed caps version is RDPGFX_CAPVERSION_FRDP_2) and named RDPGFX_DECODER_<codec>_*:
 	 *  surface commands that gave a picture (_PICTURES), that the decoder refused (_FAILED), that
 	 *  it took without a picture to show (_NO_PICTURE), that carried a key frame whatever became
 	 *  of them (_KEY_FRAMES), the nanoseconds all decodes took (_DECODE_NS_SUM), the longest one
@@ -250,7 +251,9 @@ extern "C"
 	/** @brief Get the name of the decoder backend that decoded a codec last.
 	 *
 	 *  @param context The channel context
-	 *  @param codecId One of RDPGFX_CODECID_AV1, _AVC420, _AVC444 or _AVC444v2
+	 *  @param codecId One of RDPGFX_CODECID_AV1, _AVC420, _AVC444 or _AVC444v2. For
+	 *  RDPGFX_CODECID_AV1 it is the decoder of what the confirmed caps version makes it carry,
+	 *  AV1 or AV2.
 	 *
 	 *  @return The name, valid for the lifetime of the process, or \b nullptr if there is none
 	 *  @since version 3.34.0

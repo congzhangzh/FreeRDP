@@ -59,6 +59,7 @@ enum
 	RDPGFX_DECODER_AVC420,
 	RDPGFX_DECODER_AVC444,
 	RDPGFX_DECODER_AVC444v2,
+	RDPGFX_DECODER_AV2, /* RDPGFX_CODECID_AV1 with RDPGFX_CAPVERSION_FRDP_2 */
 	RDPGFX_DECODER_MAX
 };
 
@@ -118,7 +119,8 @@ static BOOL CALLBACK rdpgfx_stats_init_names(WINPR_ATTR_UNUSED PINIT_ONCE once,
 static const char* const decoderNames[] = { RDPGFX_STATS_DECODER_NAMES(AV1)
 	                                            RDPGFX_STATS_DECODER_NAMES(AVC420)
 	                                                RDPGFX_STATS_DECODER_NAMES(AVC444)
-	                                                    RDPGFX_STATS_DECODER_NAMES(AVC444v2) };
+	                                                    RDPGFX_STATS_DECODER_NAMES(AVC444v2)
+	                                                        RDPGFX_STATS_DECODER_NAMES(AV2) };
 
 static const UINT32 MAX_SURFACE_SIZE = 32766;
 static const UINT32 MAX_MONITOR_COUNT = 16;
@@ -200,13 +202,28 @@ uint64_t rdpgfx_stats_value_for_index(RdpgfxClientContext* context, size_t index
 }
 
 WINPR_ATTR_NODISCARD
-static int rdpgfx_stats_decoder_index(UINT16 codecId)
+static int rdpgfx_stats_decoder_index(const RdpgfxClientContext* context, UINT16 codecId)
 {
+	WINPR_ASSERT(context);
+
 	switch (codecId)
 	{
-#if defined(WITH_GFX_AV1)
+#if defined(WITH_GFX_AV1) || defined(WITH_GFX_AV2)
 		case RDPGFX_CODECID_AV1:
-			return RDPGFX_DECODER_AV1;
+			/* the codec ID is shared, the confirmed caps version tells AV1 from AV2 */
+			switch (context->CapsVersion)
+			{
+#if defined(WITH_GFX_AV1)
+				case RDPGFX_CAPVERSION_FRDP_1:
+					return RDPGFX_DECODER_AV1;
+#endif
+#if defined(WITH_GFX_AV2)
+				case RDPGFX_CAPVERSION_FRDP_2:
+					return RDPGFX_DECODER_AV2;
+#endif
+				default:
+					return -1;
+			}
 #endif
 		case RDPGFX_CODECID_AVC420:
 			return RDPGFX_DECODER_AVC420;
@@ -221,8 +238,10 @@ static int rdpgfx_stats_decoder_index(UINT16 codecId)
 
 const char* rdpgfx_stats_decoder_backend(RdpgfxClientContext* context, UINT16 codecId)
 {
-	const int decoder = rdpgfx_stats_decoder_index(codecId);
-	if (!context || (decoder < 0))
+	if (!context)
+		return nullptr;
+	const int decoder = rdpgfx_stats_decoder_index(context, codecId);
+	if (decoder < 0)
 		return nullptr;
 	const RdpgfxClientContextInt* intCtx = (const RdpgfxClientContextInt*)context;
 	return intCtx->decoderBackend[decoder];
@@ -231,8 +250,10 @@ const char* rdpgfx_stats_decoder_backend(RdpgfxClientContext* context, UINT16 co
 static void rdpgfx_stats_decode_result(RdpgfxClientContext* context, UINT16 codecId,
                                        const FREERDP_DECODE_RESULT* result, UINT64 decodeNS)
 {
-	const int decoder = rdpgfx_stats_decoder_index(codecId);
-	if (!context || !result || (decoder < 0))
+	if (!context || !result)
+		return;
+	const int decoder = rdpgfx_stats_decoder_index(context, codecId);
+	if (decoder < 0)
 		return;
 
 	RdpgfxClientContextInt* intCtx = (RdpgfxClientContextInt*)context;
