@@ -204,7 +204,7 @@ static void sound_on_process(void* data)
 
 	while ((pb = pw_stream_dequeue_buffer(audio->capture)) != nullptr)
 	{
-		const struct spa_data* d = &pb->buffer->datas[0];
+		const struct spa_data* d = &pb->buffer->datas[0]; // codespell:ignore datas
 		if (d->data && d->chunk && (d->chunk->size > 0) &&
 		    ((size_t)d->chunk->offset + d->chunk->size <= d->maxsize))
 		{
@@ -296,7 +296,7 @@ static void mic_on_process(void* data)
 	if (!pb)
 		return;
 
-	struct spa_data* d = &pb->buffer->datas[0];
+	struct spa_data* d = &pb->buffer->datas[0]; // codespell:ignore datas
 	if (d->data && d->chunk)
 	{
 		size_t frames = d->maxsize / MIC_FRAME_BYTES;
