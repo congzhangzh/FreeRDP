@@ -1810,20 +1810,25 @@ static int mutter_shadow_pam_authenticate(WINPR_ATTR_UNUSED rdpShadowSubsystem* 
 	struct passwd pbuffer = WINPR_C_ARRAY_INIT;
 	struct passwd* owner = nullptr;
 
-	const long buflen = sysconf(_SC_GETPW_R_SIZE_MAX);
+	/* -1 means no fixed limit: the usual size */
+	long buflen = sysconf(_SC_GETPW_R_SIZE_MAX);
 	if (buflen <= 0)
-	{
-		WLog_ERR(TAG, "login as '%s' refused: _SC_GETPW_R_SIZE_MAX = %ld", buflen);
-		return -1;
-	}
+		buflen = 16384;
 	char* buf = calloc((size_t)buflen, sizeof(char));
 	if (!buf)
 	{
-		WLog_ERR(TAG, "login as '%s' refused: _SC_GETPW_R_SIZE_MAX = %ld allocation failed",
-		         buflen);
+		WLog_ERR(TAG, "login as '%s' refused: no memory for the session's account", user);
 		return -1;
 	}
-	const int rc = getpwuid_r(getuid(), &pbuffer, buf, sizeof(buf), &owner);
+	const int rc = getpwuid_r(getuid(), &pbuffer, buf, (size_t)buflen, &owner);
+	if (rc != 0)
+	{
+		char msg[128] = WINPR_C_ARRAY_INIT;
+		WLog_ERR(TAG, "login as '%s' refused: the session's account: %s", user,
+		         winpr_strerror(rc, msg, sizeof(msg)));
+		free(buf);
+		return -1;
+	}
 	if (!owner || !owner->pw_name || (strcmp(owner->pw_name, user) != 0))
 	{
 		WLog_ERR(TAG, "login as '%s' refused: this session belongs to '%s'", user,
