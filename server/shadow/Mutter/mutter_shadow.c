@@ -2148,8 +2148,14 @@ static void mutter_process_ei_events(mutterShadowSubsystem* mutter)
 			case EI_EVENT_DEVICE_RESUMED:
 			case EI_EVENT_DEVICE_PAUSED:
 			case EI_EVENT_DEVICE_REMOVED:
-				if (dev && ei_device_has_capability(dev, EI_DEVICE_CAP_POINTER_ABSOLUTE))
+				if (dev && (ei_device_has_capability(dev, EI_DEVICE_CAP_POINTER_ABSOLUTE) ||
+				            ei_device_has_capability(dev, EI_DEVICE_CAP_KEYBOARD)))
+				{
 					mutter_log_ei_device(ei_event_type_to_string(ei_event_get_type(e)), dev);
+					WLog_DBG(TAG, "debug: %p keyboard cap %d, ours %p", (void*)dev,
+					         ei_device_has_capability(dev, EI_DEVICE_CAP_KEYBOARD) ? 1 : 0,
+					         (void*)mutter->keyboard);
+				}
 				break;
 			default:
 				break;
@@ -2227,7 +2233,13 @@ static void mutter_key(mutterShadowSubsystem* mutter, uint32_t code, BOOL down)
 	WINPR_ASSERT(mutter);
 
 	if (!mutter->keyboard || !mutter->keyboardReady)
+	{
+		WLog_DBG(TAG, "debug: key %" PRIu32 " %s dropped: keyboard %p ready %d", code,
+		         down ? "down" : "up", (void*)mutter->keyboard, mutter->keyboardReady ? 1 : 0);
 		return;
+	}
+	WLog_DBG(TAG, "debug: key %" PRIu32 " %s sent to %p", code, down ? "down" : "up",
+	         (void*)mutter->keyboard);
 	/* Mutter keeps the modifier state itself, as for a real keyboard */
 	ei_device_keyboard_key(mutter->keyboard, code, down ? true : false);
 	ei_device_frame(mutter->keyboard, ei_now(mutter->ei));
