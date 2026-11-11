@@ -39,6 +39,7 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <getopt.h>
 #include <grp.h>
 #include <limits.h>
@@ -598,27 +599,124 @@ static int shadow_connect(const Config* cfg, const struct passwd* pw)
 /* a connection                                                            */
 /* ---------------------------------------------------------------------- */
 
+/* Copies the bytes both ways and never blocks on one side. A blocking write could wait for
+ * the shadow server while the shadow server's client thread waited to write to us (it reads its
+ * socket only between its writes): neither went on again, the client's leaving went unseen, and
+ * the shadow server kept that client with its encoders and sound buffers, and waited for it in
+ * every capture round. A side that takes nothing for RELAY_STALL_MS ends the connection. */
+#define RELAY_BUF (256u * 1024u)
+#define RELAY_STALL_MS 30000u
+
+typedef struct
+{
+	uint8_t data[RELAY_BUF];
+	size_t start;
+	size_t end;
+	uint64_t since; /* when the oldest waiting bytes came or last moved, 0 when none wait */
+} RelayBuffer;
+
+static uint64_t now_ms(void)
+{
+	struct timespec ts = { 0 };
+	(void)clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ((uint64_t)ts.tv_sec * 1000u) + ((uint64_t)ts.tv_nsec / 1000000u);
+}
+
+static bool set_nonblocking(int fd)
+{
+	const int flags = fcntl(fd, F_GETFL);
+	return (flags >= 0) && (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0);
+}
+
+static bool again(void)
+{
+	return (errno == EAGAIN) || (errno == EWOULDBLOCK) || (errno == EINTR);
+}
+
+/* a: the client, b: the shadow server */
 static void relay(int a, int b)
 {
-	uint8_t buf[65536];
-	struct pollfd fds[2] = { { .fd = a, .events = POLLIN }, { .fd = b, .events = POLLIN } };
+	/* in[x] holds what fds[x] sent, for fds[1 - x]; one connection per process */
+	static RelayBuffer in[2];
+	static const char* const names[2] = { "client", "shadow server" };
+	const int fds[2] = { a, b };
+
+	if (!set_nonblocking(a) || !set_nonblocking(b))
+		return;
+
 	for (;;)
 	{
-		if (poll(fds, 2, -1) < 0)
-		{
-			if (errno == EINTR)
-				continue;
-			return;
-		}
+		struct pollfd p[2] = { { .fd = a }, { .fd = b } };
 		for (int x = 0; x < 2; x++)
 		{
-			if (!(fds[x].revents & (POLLIN | POLLHUP | POLLERR)))
-				continue;
-			const ssize_t n = read(fds[x].fd, buf, sizeof(buf));
-			if (n <= 0)
+			if (in[x].end < RELAY_BUF)
+				p[x].events |= POLLIN;
+			if (in[1 - x].end > in[1 - x].start)
+				p[x].events |= POLLOUT;
+		}
+
+		const int rc = poll(p, 2, 1000);
+		if ((rc < 0) && (errno != EINTR))
+			return;
+
+		const uint64_t now = now_ms();
+		for (int x = 0; (rc > 0) && (x < 2); x++)
+		{
+			if (p[x].revents & POLLNVAL)
 				return;
-			if (!write_full(fds[1 - x].fd, buf, (size_t)n))
+			/* RDP has no half-close: a side that is gone ends both, once nothing is left to
+			 * read from it */
+			if ((p[x].revents & (POLLHUP | POLLERR)) && !(p[x].revents & POLLIN))
 				return;
+
+			if (p[x].revents & POLLIN)
+			{
+				RelayBuffer* buf = &in[x];
+				const ssize_t n = read(fds[x], buf->data + buf->end, RELAY_BUF - buf->end);
+				if ((n == 0) || ((n < 0) && !again()))
+					return;
+				if (n > 0)
+				{
+					if (buf->end == buf->start)
+						buf->since = now;
+					buf->end += (size_t)n;
+				}
+			}
+
+			if (p[x].revents & POLLOUT)
+			{
+				RelayBuffer* buf = &in[1 - x];
+				const ssize_t n = write(fds[x], buf->data + buf->start, buf->end - buf->start);
+				if ((n < 0) && !again())
+					return;
+				if (n > 0)
+				{
+					buf->start += (size_t)n;
+					buf->since = now;
+					if (buf->start == buf->end)
+					{
+						buf->start = 0;
+						buf->end = 0;
+						buf->since = 0;
+					}
+					else if (buf->end == RELAY_BUF)
+					{
+						memmove(buf->data, buf->data + buf->start, buf->end - buf->start);
+						buf->end -= buf->start;
+						buf->start = 0;
+					}
+				}
+			}
+		}
+
+		for (int x = 0; x < 2; x++)
+		{
+			if ((in[x].since != 0) && (now - in[x].since >= RELAY_STALL_MS))
+			{
+				logmsg("the %s took nothing for %u s: closed", names[1 - x],
+				       RELAY_STALL_MS / 1000u);
+				return;
+			}
 		}
 	}
 }
