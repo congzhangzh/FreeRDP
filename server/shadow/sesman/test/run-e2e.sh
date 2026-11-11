@@ -27,6 +27,10 @@ for _ in $(seq 30); do
     systemctl is-system-running 2>/dev/null | grep -q -E 'running|degraded' && break
     sleep 1
 done
+# A rootless container cannot start polkitd ("Failed at step USER"): each D-Bus activation of it
+# then waits 25 s (accounts-daemon, upowerd, GNOME Shell), and a headless GNOME may miss
+# sesman's wait. Masked, the activations fail at once.
+systemctl mask --runtime polkit.service > /dev/null 2>&1
 loginctl enable-linger tester
 for _ in $(seq 30); do
     [ -S $RUN/bus ] && break
