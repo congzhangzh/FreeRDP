@@ -5,6 +5,7 @@
 #include <freerdp/freerdp.h>
 #include <freerdp/codec/color.h>
 #include <freerdp/codec/av2.h>
+#include <freerdp/codecs.h>
 
 WINPR_ATTR_MALLOC(free, 1)
 static void* allocRGB(uint32_t format, uint32_t width, uint32_t height, uint32_t* pstride)
@@ -385,6 +386,30 @@ fail:
 	return rc;
 }
 
+/* what the GFX channel advertises: this build has the AV2 encoder and decoder */
+static BOOL testSupported(void)
+{
+	const FreeRDP_CodecFlags codecs[] = { FREERDP_CODEC_AV2_I420, FREERDP_CODEC_AV2_I444 };
+	for (size_t x = 0; x < ARRAYSIZE(codecs); x++)
+	{
+		if (!freerdp_codec_supported(codecs[x], FALSE))
+		{
+			(void)fprintf(stderr, "[%s] no AV2 decoder reported for 0x%08x\n", __func__,
+			              (unsigned)codecs[x]);
+			return FALSE;
+		}
+#if defined(WITH_LIBAVM_ENCODER)
+		if (!freerdp_codec_supported(codecs[x], TRUE))
+		{
+			(void)fprintf(stderr, "[%s] no AV2 encoder reported for 0x%08x\n", __func__,
+			              (unsigned)codecs[x]);
+			return FALSE;
+		}
+#endif
+	}
+	return TRUE;
+}
+
 int TestFreeRDPCodecAV2(int argc, char* argv[])
 {
 	WINPR_UNUSED(argc);
@@ -394,6 +419,9 @@ int TestFreeRDPCodecAV2(int argc, char* argv[])
 	(void)fprintf(stderr, "[%s] skipping, no AV2 encoder support compiled in\n", __func__);
 	return 0;
 #else
+	if (!testSupported())
+		return -1;
+
 	const UINT32 width = 124;
 	const UINT32 height = 54;
 	const UINT32 formats[] = { PIXEL_FORMAT_BGRA32, PIXEL_FORMAT_RGB16 };

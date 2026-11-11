@@ -21,6 +21,7 @@
 #include <winpr/sysinfo.h>
 
 #include <freerdp/codec/av1.h>
+#include "av_support.h"
 #include <freerdp/primitives.h>
 #include <freerdp/log.h>
 #include <freerdp/codec/region.h>
@@ -1275,3 +1276,21 @@ FREERDP_AV1_CONTEXT* freerdp_av1_context_new(BOOL Compressor)
 	return ctx;
 }
 #endif
+
+BOOL freerdp_av1_supported(WINPR_ATTR_UNUSED BOOL i444, BOOL encoder)
+{
+	/* libaom and dav1d do both profiles; WebCodecs decodes in the browser */
+	if (encoder)
+	{
+#if defined(WITH_LIBAOM)
+		return TRUE;
+#else
+		return FALSE;
+#endif
+	}
+#if defined(WITH_LIBAOM) || defined(WITH_DAV1D) || defined(WITH_AV1_WEBCODECS)
+	return TRUE;
+#else
+	return FALSE;
+#endif
+}
