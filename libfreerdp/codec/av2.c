@@ -18,6 +18,7 @@
 #include <winpr/sysinfo.h>
 
 #include <freerdp/codec/av2.h>
+#include "av_support.h"
 #include <freerdp/primitives.h>
 #include <freerdp/log.h>
 #include <freerdp/codec/region.h>
@@ -1193,3 +1194,24 @@ FREERDP_AV2_CONTEXT* freerdp_av2_context_new(BOOL Compressor)
 	return ctx;
 }
 #endif
+
+BOOL freerdp_av2_supported(BOOL i444, BOOL encoder)
+{
+	if (encoder)
+	{
+#if defined(AV2_ENCODER_LIBAVM)
+		return TRUE;
+#else
+		return FALSE;
+#endif
+	}
+	/* libavm decodes both profiles, dav2d 4:2:0 only */
+#if defined(WITH_LIBAVM)
+	return TRUE;
+#elif defined(AV2_DECODER_DAV2D)
+	return !i444;
+#else
+	WINPR_UNUSED(i444);
+	return FALSE;
+#endif
+}

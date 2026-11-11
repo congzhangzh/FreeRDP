@@ -25,6 +25,8 @@
 
 #include <freerdp/codecs.h>
 
+#include "../codec/av_support.h"
+
 #define TAG FREERDP_TAG("core.codecs")
 
 static void codecs_free_int(rdpCodecs* codecs, UINT32 flags)
@@ -317,33 +319,15 @@ BOOL freerdp_codec_supported(FreeRDP_CodecFlags codec, WINPR_ATTR_UNUSED BOOL en
 #endif
 #if defined(WITH_GFX_AV1)
 		case FREERDP_CODEC_AV1_I420:
+			return freerdp_av1_supported(FALSE, encoder);
 		case FREERDP_CODEC_AV1_I444:
-#if defined(WITH_AOM)
-			return TRUE;
-#endif
-#if defined(WITH_DAV1D) || defined(WITH_DAV1D)
-			if (!encoder)
-				return TRUE;
-			return FALSE;
-#endif
-			return FALSE;
+			return freerdp_av1_supported(TRUE, encoder);
 #endif
 #if defined(WITH_GFX_AV2)
 		case FREERDP_CODEC_AV2_I420:
+			return freerdp_av2_supported(FALSE, encoder);
 		case FREERDP_CODEC_AV2_I444:
-#if defined(WITH_LIBAVM)
-#if defined(WITH_LIBAVM)
-			return TRUE;
-#else
-			if (!encoder)
-				return TRUE;
-#endif
-#endif
-#if defined(WITH_DAV2D)
-			if (!encoder)
-				return TRUE;
-#endif
-			return FALSE;
+			return freerdp_av2_supported(TRUE, encoder);
 #endif
 		default:
 			return FALSE;
