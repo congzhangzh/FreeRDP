@@ -557,6 +557,12 @@ bool SdlContext::updateWindowList()
 	if (freerdp_settings_get_bool(context()->settings, FreeRDP_UseMultimon))
 		return true;
 
+	/* No window (not created yet, or already gone): nothing to measure. An empty list would
+	 * clear the monitor array, and the display channel's timer would then send a layout
+	 * without any monitor. Keep the layout there is. */
+	if (_windows.empty())
+		return true;
+
 	std::vector<rdpMonitor> list;
 	list.reserve(_windows.size());
 	for (const auto& win : _windows)
