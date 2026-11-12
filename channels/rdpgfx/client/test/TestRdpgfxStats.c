@@ -294,6 +294,7 @@ static BOOL check_decode_results(RdpgfxClientContext* gfx)
 	}
 	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AVC420_PICTURES") == 2);
 
+#if defined(WITH_GFX_AV1) || defined(WITH_GFX_AV2)
 	/* RDPGFX_CODECID_AV1 counts for the codec the caps version makes it carry, for none
 	 * before the caps confirm */
 	const UINT32 caps = gfx->CapsVersion;
@@ -321,6 +322,7 @@ static BOOL check_decode_results(RdpgfxClientContext* gfx)
 	TEST_CHECK(stat_value(gfx, "RDPGFX_DECODER_AV2_PICTURES") == av2Pictures);
 #endif
 	gfx->CapsVersion = caps;
+#endif
 	return TRUE;
 }
 
