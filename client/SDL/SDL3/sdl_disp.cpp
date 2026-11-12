@@ -84,6 +84,13 @@ bool sdlDispContext::sendResize()
 	const UINT32 mcount = freerdp_settings_get_uint32(settings, FreeRDP_MonitorCount);
 	auto monitors = static_cast<const rdpMonitor*>(
 	    freerdp_settings_get_pointer(settings, FreeRDP_MonitorDefArray));
+	/* The timer runs on its own thread and may fire while there is no layout (no window
+	 * yet): there is nothing to send, which is no reason to abort the client. */
+	if (!monitors || (mcount == 0))
+	{
+		WLog_Print(_sdl->getWLog(), WLOG_DEBUG, "no monitor layout yet, nothing to send");
+		return true;
+	}
 	return sendLayout(monitors, mcount);
 }
 
