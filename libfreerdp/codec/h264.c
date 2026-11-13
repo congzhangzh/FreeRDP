@@ -1290,7 +1290,7 @@ static BOOL test_av1(BOOL Compressor, UINT32 flags)
 	if (Compressor)
 		decoder = freerdp_av1_context_set_option(av1, FREERDP_AV1_CONTEXT_OPTION_PROFILE, profile);
 	freerdp_av1_context_free(av1);
-	return decoder;
+	return rc;
 }
 #endif
 
@@ -1308,7 +1308,7 @@ static BOOL test_av2(BOOL Compressor, UINT32 flags)
 	if (Compressor)
 		decoder = freerdp_av2_context_set_option(av2, FREERDP_AV2_CONTEXT_OPTION_PROFILE, profile);
 	freerdp_av2_context_free(av2);
-	return decoder;
+	return rc;
 }
 #endif
 
