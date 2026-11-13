@@ -5,6 +5,7 @@
 #include <freerdp/freerdp.h>
 #include <freerdp/codec/color.h>
 #include <freerdp/codec/av1.h>
+#include <freerdp/codecs.h>
 
 static void* allocRGB(uint32_t format, uint32_t width, uint32_t height, uint32_t* pstride)
 {
@@ -370,6 +371,25 @@ fail:
 	return rc;
 }
 
+/* A build that decodes in these tests must say so, the client offers AV1 only then */
+static BOOL testSupported(void)
+{
+	const FreeRDP_CodecFlags codecs[] = { FREERDP_CODEC_AV1_I420, FREERDP_CODEC_AV1_I444 };
+	for (size_t x = 0; x < ARRAYSIZE(codecs); x++)
+	{
+		for (BOOL encoder = FALSE; encoder <= TRUE; encoder++)
+		{
+			if (!freerdp_codec_supported(nullptr, codecs[x], encoder))
+			{
+				(void)fprintf(stderr, "[%s] codec 0x%08x %s reported as not supported\n", __func__,
+				              codecs[x], encoder ? "encoder" : "decoder");
+				return FALSE;
+			}
+		}
+	}
+	return TRUE;
+}
+
 int TestFreeRDPCodecAV1(int argc, char* argv[])
 {
 	WINPR_UNUSED(argc);
@@ -379,6 +399,9 @@ int TestFreeRDPCodecAV1(int argc, char* argv[])
 	(void)fprintf(stderr, "[%s] skipping, no AV1 encoder support compiled in\n", __func__);
 	return 0;
 #else
+	if (!testSupported())
+		return -1;
+
 	const UINT32 width = 124;
 	const UINT32 height = 54;
 	const UINT32 formats[] = { PIXEL_FORMAT_BGRA32, PIXEL_FORMAT_RGB16 };

@@ -1328,13 +1328,15 @@ static BOOL test_av1(BOOL Compressor, UINT32 flags)
 	FREERDP_AV1_CONTEXT* av1 = freerdp_av1_context_new(Compressor);
 	if (!av1)
 		return FALSE;
-	UINT32 profile = 0;
-	if (flags == FREERDP_CODEC_AV1_I444)
-		profile = 1;
-	const BOOL decoder =
-	    freerdp_av1_context_set_option(av1, FREERDP_AV1_CONTEXT_OPTION_PROFILE, profile);
+	/* the profile is an encoder option, a decoder takes the one in the stream */
+	BOOL rc = TRUE;
+	if (Compressor)
+	{
+		const UINT32 profile = (flags == FREERDP_CODEC_AV1_I444) ? 1 : 0;
+		rc = freerdp_av1_context_set_option(av1, FREERDP_AV1_CONTEXT_OPTION_PROFILE, profile);
+	}
 	freerdp_av1_context_free(av1);
-	return decoder;
+	return rc;
 }
 #endif
 
@@ -1345,13 +1347,15 @@ static BOOL test_av2(BOOL Compressor, UINT32 flags)
 	FREERDP_AV2_CONTEXT* av2 = freerdp_av2_context_new(Compressor);
 	if (!av2)
 		return FALSE;
-	UINT32 profile = 0;
-	if (flags == FREERDP_CODEC_AV2_I444)
-		profile = 1;
-	const BOOL decoder =
-	    freerdp_av2_context_set_option(av2, FREERDP_AV2_CONTEXT_OPTION_PROFILE, profile);
+	/* the profile is an encoder option, a decoder takes the one in the stream */
+	BOOL rc = TRUE;
+	if (Compressor)
+	{
+		const UINT32 profile = (flags == FREERDP_CODEC_AV2_I444) ? 1 : 0;
+		rc = freerdp_av2_context_set_option(av2, FREERDP_AV2_CONTEXT_OPTION_PROFILE, profile);
+	}
 	freerdp_av2_context_free(av2);
-	return decoder;
+	return rc;
 }
 #endif
 
