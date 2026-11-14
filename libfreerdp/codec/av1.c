@@ -136,6 +136,20 @@ static unsigned int av1_aom_threads(void)
 	return sysInfo.dwNumberOfProcessors;
 }
 
+/* libaom 3.15.0 turned intra block copy on for real-time screen content. At cpu-used 10 on frames
+ * wider than about 2300 pixels (2560x1080, 2880x1440, 3840x2160; not 2304x1080, not 1920x1440),
+ * libaom 3.15.2 writes key frames with invalid block copy vectors: its own decoder reports
+ * "Invalid intrabc dv", dav1d and the browsers' decoders reject them, and every frame after the
+ * key frame refers to it, so nothing of the stream can be shown. cpu-used 9 and libaom 3.14 are
+ * not affected. */
+WINPR_ATTR_NODISCARD
+static bool av1_aom_intrabc_broken(const FREERDP_AV1_CONTEXT* av1)
+{
+	const int version = aom_codec_version(); /* the library loaded, not the headers built with */
+	return (av1->ecfg.g_usage == AOM_USAGE_REALTIME) && (av1->speed >= 10) &&
+	       (version >= ((3 << 16) | (15 << 8)));
+}
+
 /* aom_codec_enc_init() starts from the defaults again, so apply these after every init. */
 WINPR_ATTR_NODISCARD
 static BOOL av1_aom_apply_controls(FREERDP_AV1_CONTEXT* av1)
@@ -166,6 +180,20 @@ static BOOL av1_aom_apply_controls(FREERDP_AV1_CONTEXT* av1)
 			           controls[x].value, aom_codec_err_to_string(rc));
 			return FALSE;
 		}
+	}
+
+	if (av1_aom_intrabc_broken(av1))
+	{
+		const aom_codec_err_t rc = aom_codec_control(&av1->ctx, AV1E_SET_ENABLE_INTRABC, 0);
+		if (rc != AOM_CODEC_OK)
+		{
+			WLog_Print(av1->log, WLOG_WARN, "aom_codec_control(AV1E_SET_ENABLE_INTRABC, 0): %s",
+			           aom_codec_err_to_string(rc));
+			return FALSE;
+		}
+		WLog_Print(av1->log, WLOG_INFO,
+		           "libaom %s at cpu-used %" PRIu32 ": intra block copy off (invalid vectors)",
+		           aom_codec_version_str(), av1->speed);
 	}
 	return TRUE;
 }

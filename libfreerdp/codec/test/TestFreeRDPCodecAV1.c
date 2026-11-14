@@ -371,6 +371,90 @@ fail:
 	return rc;
 }
 
+/* A screen of text, 2880x1440, as wide desktops send it with the default settings: libaom 3.15
+ * wrote its key frame with invalid intra block copy vectors, which no decoder accepts. */
+WINPR_ATTR_NODISCARD
+static BOOL testWideText(void)
+{
+	const uint32_t width = 2880;
+	const uint32_t height = 1440;
+	const uint32_t format = PIXEL_FORMAT_BGRX32;
+	const size_t stride = 4ull * width;
+	BOOL rc = FALSE;
+	RDPGFX_H264_METABLOCK meta = WINPR_C_ARRAY_INIT;
+	FREERDP_AV1_CONTEXT* enc = freerdp_av1_context_new(TRUE);
+	FREERDP_AV1_CONTEXT* dec = freerdp_av1_context_new(FALSE);
+	uint8_t* src = calloc(stride, height);
+	uint8_t* out = calloc(stride, height);
+	uint8_t* text = calloc(((height - 200) / 17) * ((width - 320) / 8), 1);
+	if (!enc || !dec || !src || !out || !text)
+		goto fail;
+	if (!freerdp_av1_context_reset(enc, width, height) ||
+	    !freerdp_av1_context_reset(dec, width, height))
+		goto fail;
+
+	/* a label of 8x17 glyph cells (13 px monospace) from 260,100 on, a font of 36 random glyphs
+	 * with a one pixel margin, light grey on dark grey; the rest is background */
+	uint8_t glyphs[36][17][8] = WINPR_C_ARRAY_INIT;
+	if (winpr_RAND(glyphs, sizeof(glyphs)) < 0)
+		goto fail;
+	for (size_t y = 0; y < height; y++)
+	{
+		for (size_t x = 0; x < width; x++)
+		{
+			uint8_t* px = &src[y * stride + 4 * x];
+			px[0] = px[1] = px[2] = 0x20;
+			px[3] = 0xff;
+		}
+	}
+	const size_t cols = (width - 320) / 8;
+	const size_t rows = (height - 200) / 17;
+	if (winpr_RAND(text, cols * rows) < 0)
+		goto fail;
+	for (size_t r = 0; r < rows; r++)
+	{
+		for (size_t c = 0; c < cols; c++)
+		{
+			const size_t glyph = text[r * cols + c] % ARRAYSIZE(glyphs);
+			for (size_t y = 3; y < 14; y++)
+			{
+				for (size_t x = 1; x < 7; x++)
+				{
+					if ((glyphs[glyph][y][x] % 3) != 0)
+						continue;
+					uint8_t* px = &src[(100 + r * 17 + y) * stride + 4 * (260 + c * 8 + x)];
+					px[0] = px[1] = px[2] = 0xdd;
+				}
+			}
+		}
+	}
+
+	const RECTANGLE_16 rect = { .left = 0, .top = 0, .right = width, .bottom = height };
+	uint8_t* dst = nullptr;
+	uint32_t dstsize = 0;
+	if (freerdp_av1_compress(enc, src, format, (uint32_t)stride, width, height, &rect, &dst,
+	                         &dstsize, &meta) < 0)
+		goto fail;
+	if (freerdp_av1_decompress(dec, dst, dstsize, out, format, (uint32_t)stride, width, height,
+	                           &rect, 1) < 0)
+	{
+		(void)fprintf(
+		    stderr, "[%s] the key frame of a %" PRIu32 "x%" PRIu32 " text screen does not decode\n",
+		    __func__, width, height);
+		goto fail;
+	}
+	rc = checkLastDecode(dec, FREERDP_DECODE_PICTURE, TRUE);
+
+fail:
+	freerdp_av1_context_free(enc);
+	freerdp_av1_context_free(dec);
+	free_h264_metablock(&meta);
+	free(src);
+	free(out);
+	free(text);
+	return rc;
+}
+
 /* A build that decodes in these tests must say so, the client offers AV1 only then */
 static BOOL testSupported(void)
 {
@@ -419,6 +503,9 @@ int TestFreeRDPCodecAV1(int argc, char* argv[])
 		return -1;
 
 	if (!testLastDecode())
+		return -1;
+
+	if (!testWideText())
 		return -1;
 
 	return 0;
