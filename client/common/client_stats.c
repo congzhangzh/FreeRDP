@@ -49,6 +49,7 @@ enum
 	STATS_AUDIO_DEVICE_OPENS,
 	STATS_AUDIO_FORMAT_TAG,
 	STATS_AUDIO_DELAY_MS,
+	STATS_GFX_CAPS_VERSION,
 	STATS_SESSION_MAX
 };
 
@@ -58,7 +59,8 @@ static const char* const sessionNames[] = { "NETWORK_BYTES_RECEIVED",   "NETWORK
 	                                        "NETWORK_RTT_AVERAGE_MS",   "AUDIO_WAVES",
 	                                        "AUDIO_WAVE_BYTES",         "AUDIO_WAVES_OVERRUN",
 	                                        "AUDIO_WAVES_UNDECODABLE",  "AUDIO_DEVICE_OPENS",
-	                                        "AUDIO_FORMAT_TAG",         "AUDIO_DELAY_MS" };
+	                                        "AUDIO_FORMAT_TAG",         "AUDIO_DELAY_MS",
+	                                        "GFX_CAPS_VERSION" };
 
 static uint64_t network_value(const rdpContext* context, size_t index)
 {
@@ -147,7 +149,7 @@ uint64_t freerdp_client_stats_value_for_index(const rdpContext* context, size_t 
 
 	if (index <= STATS_RTT_AVERAGE_MS)
 		return network_value(context, index);
-	if (index < STATS_SESSION_MAX)
+	if (index < STATS_GFX_CAPS_VERSION)
 		return audio_value(context, index);
 
 #if defined(CHANNEL_RDPGFX_CLIENT)
@@ -155,7 +157,11 @@ uint64_t freerdp_client_stats_value_for_index(const rdpContext* context, size_t 
 	{
 		/* once: another thread can clear it at any time */
 		RdpgfxClientContext* gfx = context->gdi->gfx;
-		if (gfx)
+		if (!gfx)
+			return 0;
+		if (index == STATS_GFX_CAPS_VERSION)
+			return gfx->CapsVersion;
+		if (index > STATS_GFX_CAPS_VERSION)
 			return rdpgfx_stats_value_for_index(gfx, index - STATS_SESSION_MAX);
 	}
 #endif

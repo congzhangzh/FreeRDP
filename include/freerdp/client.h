@@ -527,6 +527,10 @@ extern "C"
 	 *  - _DELAY_MS: the last delay told to the server, from the arrival of a wave to the end of
 	 *    the play call, plus what the backend returned, which can be nothing
 	 *
+	 *  GFX_CAPS_VERSION: the RDPGFX_CAPVERSION_* the server confirmed, 0 before the caps confirm
+	 *  and without a graphics channel. It tells what the RDPGFX_CODECID_AV1 counters count: AV2
+	 *  with RDPGFX_CAPVERSION_FRDP_2, AV1 with any other version.
+	 *
 	 *  @return The number of statistics
 	 *  @since version 3.34.0
 	 */

@@ -57,7 +57,7 @@
 #include <unistd.h>
 #endif
 
-#define SESSION_STATS 14
+#define SESSION_STATS 15
 
 /* The default settings need rdpdr, which brings rdpsnd along: without it no connection starts */
 #if !defined(_WIN32) && defined(CHANNEL_RDPSND_CLIENT)
@@ -105,7 +105,8 @@ static BOOL check_names(void)
 		"NETWORK_RTT_AVERAGE_MS",   "AUDIO_WAVES",
 		"AUDIO_WAVE_BYTES",         "AUDIO_WAVES_OVERRUN",
 		"AUDIO_WAVES_UNDECODABLE",  "AUDIO_DEVICE_OPENS",
-		"AUDIO_FORMAT_TAG",         "AUDIO_DELAY_MS"
+		"AUDIO_FORMAT_TAG",         "AUDIO_DELAY_MS",
+		"GFX_CAPS_VERSION"
 	};
 
 	const size_t max = freerdp_client_stats_max_index();
@@ -430,17 +431,22 @@ static BOOL check_gfx_channel(rdpContext* context, IWTSPlugin* plugin, test_chan
 	context->gdi = &gdi;
 
 	/* no gfx yet, as on a session whose graphics channel closed */
-	BOOL rc = stat_value(context, "RDPGFX_CMDID_STARTFRAME") == 0;
+	RdpgfxClientContext* gfx = (RdpgfxClientContext*)plugin->pInterface;
+	gfx->CapsVersion = RDPGFX_CAPVERSION_107;
+	BOOL rc = (stat_value(context, "RDPGFX_CMDID_STARTFRAME") == 0) &&
+	          (stat_value(context, "GFX_CAPS_VERSION") == 0);
 
 	if (rc)
 	{
-		gdi.gfx = (RdpgfxClientContext*)plugin->pInterface;
-		rc = (stat_value(context, "RDPGFX_CMDID_STARTFRAME") == 0) &&
+		gdi.gfx = gfx;
+		rc = (stat_value(context, "GFX_CAPS_VERSION") == RDPGFX_CAPVERSION_107) &&
+		     (stat_value(context, "RDPGFX_CMDID_STARTFRAME") == 0) &&
 		     (send_start_frame(callback) == CHANNEL_RC_OK) &&
 		     (stat_value(context, "RDPGFX_CMDID_STARTFRAME") == 1) &&
 		     (stat_value(context, "RDPGFX_CMDID_ENDFRAME") == 0);
 		gdi.gfx = nullptr;
-		rc = rc && (stat_value(context, "RDPGFX_CMDID_STARTFRAME") == 0);
+		rc = rc && (stat_value(context, "RDPGFX_CMDID_STARTFRAME") == 0) &&
+		     (stat_value(context, "GFX_CAPS_VERSION") == 0);
 	}
 
 	context->gdi = nullptr;
