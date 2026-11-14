@@ -141,13 +141,21 @@ static unsigned int av1_aom_threads(void)
  * libaom 3.15.2 writes key frames with invalid block copy vectors: its own decoder reports
  * "Invalid intrabc dv", dav1d and the browsers' decoders reject them, and every frame after the
  * key frame refers to it, so nothing of the stream can be shown. cpu-used 9 and libaom 3.14 are
- * not affected. */
+ * not affected. libaom fixed it in b57fd4438b ("rtc: Fix nonrd IntraBC DV range regression"),
+ * which no release has yet; a build linked with a libaom that carries it says so with
+ * -DWITH_AOM_INTRABC_DV_FIX=ON and keeps intra block copy, which makes such key frames less
+ * than half the size. */
 WINPR_ATTR_NODISCARD
 static bool av1_aom_intrabc_broken(const FREERDP_AV1_CONTEXT* av1)
 {
+#if defined(WITH_AOM_INTRABC_DV_FIX)
+	WINPR_UNUSED(av1);
+	return false;
+#else
 	const int version = aom_codec_version(); /* the library loaded, not the headers built with */
 	return (av1->ecfg.g_usage == AOM_USAGE_REALTIME) && (av1->speed >= 10) &&
 	       (version >= ((3 << 16) | (15 << 8)));
+#endif
 }
 
 /* aom_codec_enc_init() starts from the defaults again, so apply these after every init. */
