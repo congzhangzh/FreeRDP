@@ -19,12 +19,16 @@
  */
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include <SDL3/SDL.h>
 
 #include <freerdp/settings_types.h>
+
+class SdlOverlay;
+class SdlOverlayPainter;
 
 class SdlWindow
 {
@@ -94,7 +98,9 @@ class SdlWindow
 	bool paintResizeFrame(SDL_Surface* surface, SDL_Point off, bool contentChanged,
 	                      const SDL_Rect& inset = { 0, 0, 0, 0 }, bool fillRevealed = true,
 	                      bool dashedBorder = true);
-	void updateSurface();
+	/** Present the picture, with the overlay over it when one is given and shown. */
+	void updateSurface(const SdlOverlay* overlay = nullptr);
+	[[nodiscard]] const char* rendererName() const;
 
   protected:
 	SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect& rect, Uint32 flags);
@@ -121,12 +127,14 @@ class SdlWindow
 
   private:
 	void ensureRenderTarget();
+	void drawOverlay(const SdlOverlay& overlay);
 	bool ensureGdiTexture(SDL_Surface* surface);
 
 	SDL_Window* _window = nullptr;
 	SDL_Renderer* _renderer = nullptr;
 	SDL_Texture* _renderTarget = nullptr;
 	SDL_Texture* _gdiTexture = nullptr;
+	std::unique_ptr<SdlOverlayPainter> _overlayPainter;
 	int _gdiTextureW = 0;
 	int _gdiTextureH = 0;
 	int _initialW = 0;

@@ -23,6 +23,7 @@
 
 #include "sdl_window.hpp"
 #include "sdl_utils.hpp"
+#include "sdl_overlay.hpp"
 
 #include <freerdp/utils/string.h>
 
@@ -77,7 +78,7 @@ SdlWindow::SdlWindow(SdlWindow&& other) noexcept
       _gdiTexture(other._gdiTexture), _gdiTextureW(other._gdiTextureW),
       _gdiTextureH(other._gdiTextureH), _initialW(other._initialW), _initialH(other._initialH),
       _displayID(other._displayID), _offset_x(other._offset_x), _offset_y(other._offset_y),
-      _monitor(other._monitor)
+      _monitor(other._monitor), _overlayPainter(std::move(other._overlayPainter))
 {
 	other._window = nullptr;
 	other._renderer = nullptr;
@@ -87,6 +88,8 @@ SdlWindow::SdlWindow(SdlWindow&& other) noexcept
 
 SdlWindow::~SdlWindow()
 {
+	/* its text lives in the renderer */
+	_overlayPainter.reset();
 	if (_gdiTexture)
 		SDL_DestroyTexture(_gdiTexture);
 	if (_renderTarget)
@@ -647,7 +650,7 @@ bool SdlWindow::render(const SDL_Rect& srcRect, const SDL_Rect& dstRect)
 	return true;
 }
 
-void SdlWindow::updateSurface()
+void SdlWindow::updateSurface(const SdlOverlay* overlay)
 {
 	if (!_renderer)
 		return;
@@ -659,8 +662,28 @@ void SdlWindow::updateSurface()
 		return;
 	if (!SDL_RenderTexture(_renderer, _renderTarget, nullptr, nullptr))
 		return;
+	/* over the picture, never into it */
+	if (overlay && overlay->visible())
+		drawOverlay(*overlay);
 	if (!SDL_RenderPresent(_renderer))
 		return;
+}
+
+const char* SdlWindow::rendererName() const
+{
+	return _renderer ? SDL_GetRendererName(_renderer) : nullptr;
+}
+
+void SdlWindow::drawOverlay(const SdlOverlay& overlay)
+{
+	if (!_overlayPainter)
+		_overlayPainter = std::make_unique<SdlOverlayPainter>(_renderer);
+
+	int w = 0;
+	int h = 0;
+	if (!SDL_GetCurrentRenderOutputSize(_renderer, &w, &h))
+		return;
+	_overlayPainter->draw(overlay, w, h, SDL_GetWindowDisplayScale(_window));
 }
 
 bool SdlWindow::paintResizeFrame(SDL_Surface* surface, SDL_Point off, bool contentChanged,
