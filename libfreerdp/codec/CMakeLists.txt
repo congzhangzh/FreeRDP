@@ -152,8 +152,15 @@ endif()
 
 cmake_dependent_option(WITH_AOM "[AV1] compile with AOM" OFF "WITH_GFX_AV1" OFF)
 cmake_dependent_option(WITH_DAV1D "[AV1] compile with DAV1D" OFF "WITH_GFX_AV1" OFF)
+cmake_dependent_option(
+  WITH_AOM_INTRABC_DV_FIX "[AV1] libaom carries b57fd4438b (real-time intra block copy vectors), keep intra block copy"
+  OFF "WITH_AOM" OFF
+)
 if(WITH_AOM AND AOM_FOUND)
   add_compile_definitions(WITH_LIBAOM)
+  if(WITH_AOM_INTRABC_DV_FIX)
+    add_compile_definitions(WITH_AOM_INTRABC_DV_FIX)
+  endif()
   list(APPEND CODEC_LIBS aom)
   freerdp_pc_add_requires_private("aom")
 endif()
