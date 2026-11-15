@@ -64,6 +64,10 @@ extern "C"
 #else
 	    void* reservedHEVC;
 #endif
+		/** The RDPGFX_CODECID_* of the last surface command for this surface, UINT32_MAX
+		 * before the first. AV1 and AV2 share RDPGFX_CODECID_AV1: read it with
+		 * RdpgfxClientContext::CapsVersion. @since version 3.34.0 */
+		UINT32 codecId;
 	};
 	typedef struct gdi_gfx_surface gdiGfxSurface;
 

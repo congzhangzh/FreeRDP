@@ -1480,6 +1480,13 @@ static UINT gdi_SurfaceCommand(RdpgfxClientContext* context, const RDPGFX_SURFAC
 	dump_cmd(cmd, gdi->frameId);
 #endif
 
+	{
+		gdiGfxSurface* surface = (gdiGfxSurface*)context->GetSurfaceData(
+		    context, (UINT16)MIN(UINT16_MAX, cmd->surfaceId));
+		if (surface)
+			surface->codecId = codecId;
+	}
+
 	switch (codecId)
 	{
 		case RDPGFX_CODECID_UNCOMPRESSED:
@@ -1615,6 +1622,7 @@ static UINT gdi_CreateSurface(RdpgfxClientContext* context,
 	}
 
 	surface->surfaceId = createSurface->surfaceId;
+	surface->codecId = UINT32_MAX; /* no command yet: 0 is RDPGFX_CODECID_UNCOMPRESSED */
 	surface->width = gfx_align_scanline(createSurface->width, 16);
 	surface->height = gfx_align_scanline(createSurface->height, 16);
 	surface->mappedWidth = createSurface->width;

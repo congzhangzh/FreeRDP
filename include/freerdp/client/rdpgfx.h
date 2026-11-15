@@ -195,6 +195,10 @@ extern "C"
 		UINT32 CapsVersion;
 		/* Set by the channel, the renderer calls it. @since version 3.34.0 */
 		pcRdpgfxDecodeResult DecodeResult;
+		/** The RDPGFX_CAPS_FLAG_* of the capability set the server confirmed (with
+		 * CapsVersion), 0 before the caps confirm PDU.
+		 * @since version 3.34.0 */
+		UINT32 CapsFlags;
 	};
 
 	FREERDP_API void rdpgfx_client_context_free(RdpgfxClientContext* context);
