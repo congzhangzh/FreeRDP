@@ -42,6 +42,8 @@
 #include <freerdp/codec/zgfx.h>
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/gdi/gfx.h>
+
+#include "../client_stats.h"
 #endif
 
 #if defined(CHANNEL_RDPSND_CLIENT)
@@ -565,6 +567,54 @@ static BOOL check_surfaces(const rdpContext* context, RdpgfxClientContext* gfx)
 	return rc;
 }
 
+#if !defined(_WIN32) && defined(EXPORT_ALL_SYMBOLS)
+/* The web client's reader (client_stats_web_*): the page reads on the browser's main thread,
+ * which must never wait for the graphics context's lock, so the surfaces come from a copy the
+ * graphics channel's thread makes after a frame. No timer: the web build has none. */
+static BOOL check_web_surfaces(rdpContext* context, RdpgfxClientContext* gfx)
+{
+	size_t surfaces = 0;
+	size_t width = 0;
+	size_t caps = 0;
+	TEST_CHECK(find_stat("RDPGFX_SURFACES", &surfaces));
+	TEST_CHECK(find_stat("RDPGFX_SURFACE1_WIDTH", &width));
+	TEST_CHECK(find_stat("GFX_CAPS_VERSION", &caps));
+
+	gdiGfxSurface a = WINPR_C_ARRAY_INIT;
+	a.codecId = RDPGFX_CODECID_PLANAR;
+	a.mappedWidth = 1280;
+	a.mappedHeight = 720;
+	gdiGfxSurface b = WINPR_C_ARRAY_INIT;
+	b.codecId = UINT32_MAX;
+	b.mappedWidth = 640;
+	b.mappedHeight = 480;
+	TEST_CHECK(gfx->SetSurfaceData(gfx, 7, &a) == CHANNEL_RC_OK);
+	TEST_CHECK(gfx->SetSurfaceData(gfx, 3, &b) == CHANNEL_RC_OK);
+
+	client_stats_web_attach(context);
+	client_stats_web_gfx_connected(gfx);
+
+	/* no frame yet: no copy, though the surfaces are there; other values read through */
+	BOOL rc = (client_stats_web_value(surfaces) == 0) &&
+	          (client_stats_web_value(caps) == RDPGFX_CAPVERSION_107);
+
+	/* a frame ends on the graphics channel's thread: the copy is made there */
+	const RDPGFX_END_FRAME_PDU end = WINPR_C_ARRAY_INIT;
+	rc = rc && (gfx->EndFrame(gfx, &end) == CHANNEL_RC_OK) &&
+	     (client_stats_web_value(surfaces) == 2) && (client_stats_web_value(width) == 640);
+
+	/* the channel closes: its surfaces go with it; then the session goes */
+	client_stats_web_barrier();
+	rc = rc && (client_stats_web_value(surfaces) == 0);
+	client_stats_web_detach(context);
+	rc = rc && (client_stats_web_value(caps) == 0);
+
+	TEST_CHECK(gfx->SetSurfaceData(gfx, 7, nullptr) == CHANNEL_RC_OK);
+	TEST_CHECK(gfx->SetSurfaceData(gfx, 3, nullptr) == CHANNEL_RC_OK);
+	return rc;
+}
+#endif
+
 /* a graphics channel, reached the way a session reaches it: context->gdi->gfx */
 static BOOL check_gfx_channel(rdpContext* context, IWTSPlugin* plugin, test_channel_manager* mgr)
 {
@@ -600,6 +650,9 @@ static BOOL check_gfx_channel(rdpContext* context, IWTSPlugin* plugin, test_chan
 		rc = (stat_value(context, "GFX_CAPS_VERSION") == RDPGFX_CAPVERSION_107) &&
 		     (stat_value(context, "GFX_CAPS_FLAGS") == RDPGFX_CAPS_FLAG_SMALL_CACHE) &&
 		     check_surfaces(context, gfx) &&
+#if !defined(_WIN32) && defined(EXPORT_ALL_SYMBOLS)
+		     check_web_surfaces(context, gfx) &&
+#endif
 		     (stat_value(context, "RDPGFX_CMDID_STARTFRAME") == 0) &&
 		     (send_start_frame(callback) == CHANNEL_RC_OK) &&
 		     (stat_value(context, "RDPGFX_CMDID_STARTFRAME") == 1) &&

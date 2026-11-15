@@ -217,7 +217,7 @@ static void freerdp_client_common_free(freerdp* instance, rdpContext* context)
 	WINPR_ASSERT(instance);
 	WINPR_ASSERT(context);
 
-	client_stats_web_detach(context);
+	CLIENT_STATS_WEB_DETACH(context);
 
 	RDP_CLIENT_ENTRY_POINTS* pEntryPoints = instance->pClientEntryPoints;
 	WINPR_ASSERT(pEntryPoints);
@@ -1785,7 +1785,7 @@ static BOOL commonPostConnect(freerdp* instance)
 #endif
 	}
 
-	client_stats_web_attach(instance->context);
+	CLIENT_STATS_WEB_ATTACH(instance->context);
 	return TRUE;
 }
 
@@ -1797,7 +1797,7 @@ static void commonPostDisconnect(freerdp* instance)
 	rdpClientContext* cctx = (rdpClientContext*)instance->context;
 
 	/* before the client frees gdi */
-	client_stats_web_detach(instance->context);
+	CLIENT_STATS_WEB_DETACH(instance->context);
 
 #if !defined(_WIN32)
 	if (cctx->pipethread)
@@ -2032,6 +2032,8 @@ void freerdp_client_OnChannelConnectedEventHandler(void* context,
 	else if (strcmp(e->name, RDPGFX_DVC_CHANNEL_NAME) == 0)
 	{
 		gdi_graphics_pipeline_init(cctx->context.gdi, (RdpgfxClientContext*)e->pInterface);
+		/* after gdi set EndFrame */
+		CLIENT_STATS_WEB_GFX_CONNECTED((RdpgfxClientContext*)e->pInterface);
 	}
 #endif
 #if defined(CHANNEL_GEOMETRY_CLIENT)
@@ -2097,7 +2099,7 @@ void freerdp_client_OnChannelDisconnectedEventHandler(void* context,
 	else if (strcmp(e->name, RDPGFX_DVC_CHANNEL_NAME) == 0)
 	{
 		gdi_graphics_pipeline_uninit(cctx->context.gdi, (RdpgfxClientContext*)e->pInterface);
-		client_stats_web_barrier();
+		CLIENT_STATS_WEB_BARRIER();
 	}
 #endif
 #if defined(CHANNEL_GEOMETRY_CLIENT)
