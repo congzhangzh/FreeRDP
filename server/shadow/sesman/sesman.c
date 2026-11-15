@@ -63,11 +63,11 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "sesman_env.h"
+
 #define CR_MAX 1024          /* a Connection Request is far smaller */
 #define CR_TIMEOUT_S 10      /* to send it */
 #define SHADOW_TIMEOUT_S 120 /* for the shadow server to listen (GNOME may be starting) */
-/* FREERDP_SHADOW_AV1_* and _AV2_* passed on to the shadow servers */
-#define SHADOW_ENV_MAX 16
 #define GNOME_SESSION "/usr/bin/gnome-session"
 #define AUTOSTART_ROOT "/run/freerdp-sesman"
 #define START_SESSION \
@@ -99,6 +99,14 @@ static void logmsg(const char* fmt, ...)
 	vfprintf(stderr, fmt, ap);
 	fputc('\n', stderr);
 	va_end(ap);
+}
+
+/* a FREERDP_SHADOW_* setting of ours that the shadow server does not get */
+static void env_dropped(const char* entry, const char* why)
+{
+	const char* end = strchr(entry, '=');
+	const int len = end ? (int)(end - entry) : (int)strlen(entry);
+	logmsg("%.*s is not passed on to the shadow server: %s", len, entry, why);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -545,19 +553,10 @@ static int shadow_connect(const Config* cfg, const struct passwd* pw)
 	/* The encoders' settings of the shadow servers (shadow_server_encoder_defaults()): a
 	 * systemd-run unit starts from the user manager's environment, not from ours, so an admin's
 	 * Environment= on this service reaches them only this way. */
-	char env[SHADOW_ENV_MAX][160];
-	size_t envCount = 0;
-	for (char** e = environ; e && *e && (envCount < SHADOW_ENV_MAX); e++)
-	{
-		if ((strncmp(*e, "FREERDP_SHADOW_AV1_", 19) != 0) &&
-		    (strncmp(*e, "FREERDP_SHADOW_AV2_", 19) != 0))
-			continue;
-		const int n = snprintf(env[envCount], sizeof(env[envCount]), "--setenv=%s", *e);
-		if ((n > 0) && ((size_t)n < sizeof(env[envCount])))
-			envCount++;
-	}
+	char env[SESMAN_ENV_MAX][SESMAN_ENV_LEN];
+	const size_t envCount = sesman_shadow_env(environ, env, SESMAN_ENV_MAX, env_dropped);
 
-	char* argv[32 + 16 + SHADOW_ENV_MAX] = { "systemd-run",
+	char* argv[32 + 16 + SESMAN_ENV_MAX] = { "systemd-run",
 		                                     machine,
 		                                     "--user",
 		                                     "--quiet",

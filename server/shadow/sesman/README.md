@@ -72,9 +72,10 @@ freerdp-shadow-sesman [--port 3389] [--bind <address>] [--shadow <freerdp-shadow
 
 `freerdp-shadow-sesman.service` (installed with the server component) runs it as a system service.
 
-The shadow servers it starts take the AV1 and AV2 encoder settings from these variables
-of its own environment (`Environment=` in a drop-in for the service), as `freerdp-shadow-cli`
-does from its environment:
+The shadow servers it starts get every `FREERDP_SHADOW_*` variable of its own environment
+(`Environment=` in a drop-in for the service), up to 32, but `FREERDP_SHADOW_MUTTER_VIRTUAL`,
+which it sets for each user itself. A variable it does not pass on is logged. The encoder
+settings among them, as `freerdp-shadow-cli` reads them from its environment:
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -90,8 +91,11 @@ does from its environment:
 | `FREERDP_SHADOW_AV2_CPU_USED` | 10 | 0 (slowest) to 10 |
 | `FREERDP_SHADOW_AV2_TILE_COLUMNS` | 1 | log2: 1 is two columns |
 | `FREERDP_SHADOW_AV2_DPB_SIZE` | 4 | reference frames, 1 to 16; libavm keeps 8, each a whole frame |
+| `FREERDP_SHADOW_H264_RATE_CONTROL` | `vbr` | `vbr` or `cqp` (H.264 has no other mode) |
+| `FREERDP_SHADOW_H264_BITRATE` | 10000 | kbit/s, for `vbr` |
+| `FREERDP_SHADOW_H264_QP` | 0 | 0 to 51, for `cqp` |
 
 ## Test
 
-`test/run-e2e.sh` runs it against GNOME Shell 50 in a systemd container (see its
-header): 14 checks.
+`TestSesmanEnv` (ctest) checks which settings are passed on. `test/run-e2e.sh` runs it
+against GNOME Shell 50 in a systemd container (see its header): 14 checks.

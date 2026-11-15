@@ -18,7 +18,7 @@
 
 set(MODULE_NAME "freerdp-shadow-sesman")
 
-add_executable(${MODULE_NAME} sesman.c)
+add_executable(${MODULE_NAME} sesman.c sesman_env.c sesman_env.h)
 # the shadow server it starts for each user, where it is installed
 target_compile_definitions(
   ${MODULE_NAME} PRIVATE SESMAN_SHADOW="${CMAKE_INSTALL_FULL_BINDIR}/$<TARGET_FILE_NAME:freerdp-shadow-cli>"
@@ -27,3 +27,7 @@ target_compile_definitions(
 install(TARGETS ${MODULE_NAME} DESTINATION ${CMAKE_INSTALL_SBINDIR} COMPONENT server)
 configure_file(freerdp-shadow-sesman.service.in ${CMAKE_CURRENT_BINARY_DIR}/freerdp-shadow-sesman.service @ONLY)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/freerdp-shadow-sesman.service DESTINATION lib/systemd/system COMPONENT server)
+
+if(BUILD_TESTING)
+  add_subdirectory(test)
+endif()
