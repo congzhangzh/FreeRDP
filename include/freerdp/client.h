@@ -527,9 +527,23 @@ extern "C"
 	 *  - _DELAY_MS: the last delay told to the server, from the arrival of a wave to the end of
 	 *    the play call, plus what the backend returned, which can be nothing
 	 *
+	 *  What the server announced (\ref freerdp_get_remote_settings), 0 until it has:
+	 *  - RDP_VERSION, SERVER_RDP_VERSION: the version both use, and the server's own (the
+	 *    RDP_VERSION_* of its core data); \ref freerdp_client_stats_rdp_version_name
+	 *  - SERVER_OS_MAJOR_TYPE, SERVER_OS_MINOR_TYPE: the OSMAJORTYPE_* and OSMINORTYPE_* of its
+	 *    General Capability Set; \ref freerdp_client_stats_os_name
+	 *  - SERVER_PORT: the port this client connected to (with the string SERVER_HOSTNAME), 0
+	 *    before the server's core data too
+	 *
 	 *  GFX_CAPS_VERSION: the RDPGFX_CAPVERSION_* the server confirmed, 0 before the caps confirm
 	 *  and without a graphics channel. It tells what the RDPGFX_CODECID_AV1 counters count: AV2
-	 *  with RDPGFX_CAPVERSION_FRDP_2, AV1 with any other version.
+	 *  with RDPGFX_CAPVERSION_FRDP_2, AV1 with any other version. GFX_CAPS_FLAGS: the
+	 *  RDPGFX_CAPS_FLAG_* of that set (\ref freerdp_client_stats_caps_flags_name).
+	 *
+	 *  RDPGFX_SURFACES: how many surfaces the graphics channel has. RDPGFX_SURFACE1_CODECID,
+	 *  _WIDTH, _HEIGHT up to RDPGFX_SURFACE4_*: the first four by surface ID, the codec of the
+	 *  surface's last command (UINT32_MAX before the first, \ref freerdp_client_stats_codec_name)
+	 *  and its size; all 0 for a slot without a surface.
 	 *
 	 *  @return The number of statistics
 	 *  @since version 3.34.0
@@ -561,6 +575,72 @@ extern "C"
 	WINPR_ATTR_NODISCARD
 	FREERDP_API uint64_t freerdp_client_stats_value_for_index(const rdpContext* context,
 	                                                          size_t index);
+
+	/** @brief Get the number of a client session's information strings.
+	 *
+	 *  As the statistics, by name: SERVER_HOSTNAME, the host this client connected to (on the
+	 *  web, the gateway); SERVER_CERT_CN, the common name of the server's trusted TLS
+	 *  certificate, nullptr until it is trusted.
+	 *
+	 *  @return The number of strings
+	 *  @since version 3.34.0
+	 */
+	WINPR_ATTR_NODISCARD
+	FREERDP_API size_t freerdp_client_stats_string_max_index(void);
+
+	/** @brief Get the name of an information string.
+	 *
+	 *  @param index The index, less than \ref freerdp_client_stats_string_max_index
+	 *
+	 *  @return The name, valid for the lifetime of the process
+	 *  @since version 3.34.0
+	 */
+	WINPR_ATTR_NODISCARD
+	FREERDP_API const char* freerdp_client_stats_string_name_for_index(size_t index);
+
+	/** @brief Get an information string of a client session.
+	 *
+	 *  On the thread that runs the session; copy it there, the session may replace it.
+	 *
+	 *  @param context The session, may be \b nullptr
+	 *  @param index The index, less than \ref freerdp_client_stats_string_max_index
+	 *
+	 *  @return The string, or \b nullptr for what the session does not have
+	 *  @since version 3.34.0
+	 */
+	WINPR_ATTR_NODISCARD
+	FREERDP_API const char* freerdp_client_stats_string_value_for_index(const rdpContext* context,
+	                                                                    size_t index);
+
+	/** @brief Name an RDP_VERSION_* for people: "10.12", "5+", "unknown".
+	 *  @since version 3.34.0 */
+	WINPR_ATTR_NODISCARD
+	FREERDP_API const char* freerdp_client_stats_rdp_version_name(uint64_t version);
+
+	/** @brief Name an OSMAJORTYPE_* with its OSMINORTYPE_*: "Unix / native X server", or the
+	 *  major type alone with OSMINORTYPE_UNSPECIFIED.
+	 *  @return buffer, or \b nullptr without one
+	 *  @since version 3.34.0 */
+	FREERDP_API const char* freerdp_client_stats_os_name(uint64_t major, uint64_t minor,
+	                                                     char* buffer, size_t size);
+
+	/** @brief Name an RDPGFX_CAPVERSION_*: "10.7", "FRDP_2 (AV2)", "unknown".
+	 *  @since version 3.34.0 */
+	WINPR_ATTR_NODISCARD
+	FREERDP_API const char* freerdp_client_stats_caps_version_name(uint64_t version);
+
+	/** @brief Name RDPGFX_CAPS_FLAG_* bits: "AVC disabled, small cache", "none" for 0.
+	 *  @return buffer, or \b nullptr without one
+	 *  @since version 3.34.0 */
+	FREERDP_API const char* freerdp_client_stats_caps_flags_name(uint64_t flags, char* buffer,
+	                                                             size_t size);
+
+	/** @brief Name an RDPGFX_CODECID_* as the statistics' readers show it: "AV1", or "AV2" for
+	 *  RDPGFX_CODECID_AV1 with RDPGFX_CAPVERSION_FRDP_2, "Planar", "H.264 4:2:0 (AVC420)" ...,
+	 *  "no picture yet" for UINT32_MAX.
+	 *  @since version 3.34.0 */
+	WINPR_ATTR_NODISCARD
+	FREERDP_API const char* freerdp_client_stats_codec_name(uint64_t codecId, uint64_t capsVersion);
 
 #ifdef __cplusplus
 }
