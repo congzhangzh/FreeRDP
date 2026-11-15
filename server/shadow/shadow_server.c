@@ -1083,6 +1083,8 @@ static BOOL shadow_server_create_certificate(rdpShadowServer* server, const char
 	}
 	rc = TRUE;
 out_fail:
+	if (!rc)
+		WLog_ERR(TAG, "cannot make the certificate and its key in %s", filepath);
 	makecert_context_free(makecert);
 	return rc;
 }
