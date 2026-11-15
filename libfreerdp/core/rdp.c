@@ -2392,6 +2392,13 @@ int rdp_check_fds(rdpRdp* rdp)
 	return status;
 }
 
+const rdpSettings* freerdp_get_remote_settings(const rdpContext* context)
+{
+	if (!context || !context->rdp)
+		return nullptr;
+	return context->rdp->remoteSettings;
+}
+
 BOOL freerdp_get_stats(const rdpRdp* rdp, UINT64* inBytes, UINT64* outBytes, UINT64* inPackets,
                        UINT64* outPackets)
 {
@@ -2883,7 +2890,13 @@ static BOOL rdp_reset_remote_settings(rdpRdp* rdp)
 	if (!freerdp_settings_get_bool(rdp->settings, FreeRDP_ServerMode))
 		flags |= FREERDP_SETTINGS_SERVER_MODE;
 	rdp->remoteSettings = freerdp_settings_new(flags);
-	return rdp->remoteSettings != nullptr;
+	if (!rdp->remoteSettings)
+		return FALSE;
+
+	/* not the local defaults: 0 until the peer announces them */
+	return freerdp_settings_set_uint32(rdp->remoteSettings, FreeRDP_RdpVersion, 0) &&
+	       freerdp_settings_set_uint32(rdp->remoteSettings, FreeRDP_OsMajorType, 0) &&
+	       freerdp_settings_set_uint32(rdp->remoteSettings, FreeRDP_OsMinorType, 0);
 }
 
 BOOL rdp_set_backup_settings(rdpRdp* rdp)
