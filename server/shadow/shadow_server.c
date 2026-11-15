@@ -1476,7 +1476,6 @@ int shadow_server_uninit(rdpShadowServer* server)
 	return 1;
 }
 
-#if defined(WITH_GFX_AV1) || defined(WITH_GFX_AV2)
 /* A setting from the environment, or its default when unset or out of range */
 WINPR_ATTR_NODISCARD
 static UINT32 shadow_server_env_u32(const char* name, UINT32 value, UINT32 min, UINT32 max)
@@ -1497,6 +1496,26 @@ static UINT32 shadow_server_env_u32(const char* name, UINT32 value, UINT32 min, 
 	return (UINT32)parsed;
 }
 
+/* vbr or cqp: the H.264 encoders have no other mode (H264_RATECONTROL_MODE) */
+WINPR_ATTR_NODISCARD
+static H264_RATECONTROL_MODE shadow_server_env_h264_rate_control(const char* name,
+                                                                 H264_RATECONTROL_MODE mode)
+{
+	const char* text = getenv(name);
+	if (!text || (*text == '\0'))
+		return mode;
+
+	if (_stricmp(text, "vbr") == 0)
+		return H264_RATECONTROL_VBR;
+	if (_stricmp(text, "cqp") == 0)
+		return H264_RATECONTROL_CQP;
+
+	WLog_WARN(TAG, "%s=%s is not vbr or cqp (H.264 has no other mode): %s instead", name, text,
+	          (mode == H264_RATECONTROL_CQP) ? "cqp" : "vbr");
+	return mode;
+}
+
+#if defined(WITH_GFX_AV1) || defined(WITH_GFX_AV2)
 /* q, cq, cbr or vbr: FREERDP_AV1_RATECONTROL and FREERDP_AV2_RATECONTROL have the same order
  * (VBR, CBR, CQ, Q). Unset: Q without a target bit rate, CQ with one: the quality as long as
  * the picture is cheap, the target as a ceiling when it is busy. Any mode but Q needs a target. */
@@ -1554,10 +1573,19 @@ static UINT32 shadow_server_cpus(void)
  * kbit/s still and 720 scrolling); the ceiling decides video. A busy second went 4 to 6 % over it.
  * Each has an environment variable, read when the server is made: FREERDP_SHADOW_AV1_* and
  * FREERDP_SHADOW_AV2_* RATE_CONTROL (q, cq, cbr, vbr), TARGET_BITRATE (0: q), CQ_LEVEL or QP,
- * THREADS, CPU_USED, and for AV2 TILE_COLUMNS and DPB_SIZE. */
+ * THREADS, CPU_USED, and for AV2 TILE_COLUMNS and DPB_SIZE.
+ * H.264 (AVC420 and AVC444): FREERDP_SHADOW_H264_RATE_CONTROL (vbr, cqp), BITRATE (kbit/s, for
+ * vbr) and QP (0 to 51, for cqp). */
 static void shadow_server_encoder_defaults(rdpShadowServer* server)
 {
 	WINPR_ASSERT(server);
+	/* VBR at 10 Mbit/s and 30 fps */
+	server->h264RateControlMode = shadow_server_env_h264_rate_control(
+	    "FREERDP_SHADOW_H264_RATE_CONTROL", H264_RATECONTROL_VBR);
+	server->h264BitRate =
+	    1000u * shadow_server_env_u32("FREERDP_SHADOW_H264_BITRATE", 10000, 1, 1000000);
+	server->h264FrameRate = 30;
+	server->h264QP = shadow_server_env_u32("FREERDP_SHADOW_H264_QP", 0, 0, 51);
 #if defined(WITH_GFX_AV1)
 	/* libaom: cq-level 16 under 12 Mbit/s, cpu-used 10, rows on up to 4 threads (0) */
 	server->AV1BitRate =
@@ -1597,10 +1625,6 @@ rdpShadowServer* shadow_server_new(void)
 	server->port = 3389;
 	server->mayView = TRUE;
 	server->mayInteract = TRUE;
-	server->h264RateControlMode = H264_RATECONTROL_VBR;
-	server->h264BitRate = 10000000;
-	server->h264FrameRate = 30;
-	server->h264QP = 0;
 	server->h264HwAccel = FALSE;
 	server->authentication = TRUE;
 	shadow_server_encoder_defaults(server);
