@@ -25,6 +25,7 @@
 #include <sstream>
 
 #include <freerdp/channels/rdpgfx.h>
+#include <freerdp/client.h>
 #include <freerdp/codec/audio.h>
 
 #include "sdl_overlay_model.hpp"
@@ -266,13 +267,15 @@ namespace sdl::overlay
 			if (const auto rtt = names.get(now, "NETWORK_RTT_AVERAGE_MS"))
 			{
 				const auto base = names.get(now, "NETWORK_RTT_BASE_MS").value_or(0);
-				rows.push_back({ "Round trip", (*rtt != 0) ? std::to_string(*rtt) + " ms (lowest " +
-				                                                 std::to_string(base) + ")"
-				                                           : "not measured" });
+				rows.push_back({ "Round trip (measured by the server)",
+				                 (*rtt != 0) ? std::to_string(*rtt) + " ms (lowest " +
+				                                   std::to_string(base) + ")"
+				                             : "not measured" });
 			}
 			if (const auto kbps = names.get(now, "NETWORK_BANDWIDTH_KBPS"))
-				rows.push_back({ "Bandwidth", (*kbps != 0) ? std::to_string(*kbps) + " kbit/s"
-				                                           : "not measured" });
+				rows.push_back(
+				    { "Bandwidth (measured by the server)",
+				      (*kbps != 0) ? std::to_string(*kbps) + " kbit/s" : "not measured" });
 		}
 	} // namespace
 
@@ -322,6 +325,73 @@ namespace sdl::overlay
 		return rows;
 	}
 
+	std::vector<Row> serverRows(const Names& names, const Reading& now)
+	{
+		std::vector<Row> rows;
+		const auto value = [&](const char* name) { return names.get(now, name).value_or(0); };
+		const auto text = [&](const char* name) -> std::string
+		{
+			for (const auto& [key, v] : now.strings)
+			{
+				if (key == name)
+					return v;
+			}
+			return "";
+		};
+
+		if (const auto rdp = value("RDP_VERSION"); rdp != 0)
+		{
+			std::string v = freerdp_client_stats_rdp_version_name(rdp);
+			const auto server = value("SERVER_RDP_VERSION");
+			if ((server != 0) && (server != rdp))
+				v += std::string(" (server ") + freerdp_client_stats_rdp_version_name(server) + ")";
+			rows.push_back({ "RDP version", v });
+		}
+
+		if (const auto major = value("SERVER_OS_MAJOR_TYPE"); major != 0)
+		{
+			std::array<char, 128> buffer{};
+			rows.push_back(
+			    { "Server OS", freerdp_client_stats_os_name(major, value("SERVER_OS_MINOR_TYPE"),
+			                                                buffer.data(), buffer.size()) });
+		}
+
+		const auto caps = value("GFX_CAPS_VERSION");
+		if (caps != 0)
+		{
+			std::array<char, 256> buffer{};
+			rows.push_back(
+			    { "Graphics caps",
+			      std::string(freerdp_client_stats_caps_version_name(caps)) + ", flags: " +
+			          freerdp_client_stats_caps_flags_name(value("GFX_CAPS_FLAGS"), buffer.data(),
+			                                               buffer.size()) });
+		}
+
+		constexpr uint64_t slots = 4;
+		for (uint64_t slot = 1; slot <= slots; slot++)
+		{
+			const std::string prefix = "RDPGFX_SURFACE" + std::to_string(slot) + "_";
+			const auto width = value((prefix + "WIDTH").c_str());
+			if (width == 0)
+				continue;
+			rows.push_back(
+			    { "Surface " + std::to_string(slot),
+			      std::to_string(width) + " × " +
+			          std::to_string(value((prefix + "HEIGHT").c_str())) + ", " +
+			          freerdp_client_stats_codec_name(value((prefix + "CODECID").c_str()), caps) });
+		}
+		if (const auto count = value("RDPGFX_SURFACES"); count > slots)
+			rows.push_back({ "Surfaces", "+" + std::to_string(count - slots) + " more" });
+
+		const auto host = text("SERVER_HOSTNAME");
+		const auto port = value("SERVER_PORT");
+		if (!host.empty() && (port != 0))
+			rows.push_back({ "Host", host + ":" + std::to_string(port) });
+		if (const auto cn = text("SERVER_CERT_CN"); !cn.empty())
+			rows.push_back({ "Certificate", cn });
+		return rows;
+	}
+
 	std::vector<Row> decoderRows(const Names& names, const Reading& now)
 	{
 		std::vector<Row> rows;
@@ -349,16 +419,23 @@ namespace sdl::overlay
 		return rows;
 	}
 
-	Layout layout(float leftWidth, float leftHeight, float rightWidth, float rightHeight,
-	              float width, float margin)
+	Layout layout(const Box& left, const Box& server, const Box& right, float width, float margin)
 	{
-		Layout l;
-		l.left = { margin, margin, leftWidth, leftHeight };
-		l.right = { std::max(0.0F, width - margin - rightWidth), margin, rightWidth, rightHeight };
+		const auto empty = [](const Box& b) { return (b.w <= 0) || (b.h <= 0); };
 
-		const bool hasLeft = (leftWidth > 0) && (leftHeight > 0);
-		if (hasLeft && (margin + leftWidth + margin + rightWidth + margin > width))
-			l.right.y = margin + leftHeight + margin;
+		Layout l;
+		l.left = { margin, margin, left.w, left.h };
+		const float serverY = empty(left) ? margin : margin + left.h + margin;
+		l.server = { margin, serverY, server.w, server.h };
+		l.right = { std::max(0.0F, width - margin - right.w), margin, right.w, right.h };
+
+		/* the left column: the client part and the server part under it */
+		const float columnWidth =
+		    std::max(empty(left) ? 0.0F : left.w, empty(server) ? 0.0F : server.w);
+		const float columnBottom =
+		    empty(server) ? (empty(left) ? 0.0F : margin + left.h) : serverY + server.h;
+		if ((columnWidth > 0) && (margin + columnWidth + margin + right.w + margin > width))
+			l.right.y = columnBottom + margin;
 		return l;
 	}
 

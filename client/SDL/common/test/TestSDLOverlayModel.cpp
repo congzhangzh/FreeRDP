@@ -4,6 +4,8 @@
 #include <vector>
 
 #include <freerdp/channels/rdpgfx.h>
+#include <freerdp/constants.h>
+#include <freerdp/settings_types.h>
 
 #include "../../SDL3/sdl_overlay_model.hpp"
 
@@ -240,8 +242,8 @@ namespace
 		const Names n(names);
 		auto now = reading(1);
 		auto rows = sdl::overlay::realtimeRows(n, now, nullptr, {});
-		EXPECT(find(rows, "Round trip"), "not measured");
-		EXPECT(find(rows, "Bandwidth"), "not measured");
+		EXPECT(find(rows, "Round trip (measured by the server)"), "not measured");
+		EXPECT(find(rows, "Bandwidth (measured by the server)"), "not measured");
 		EXPECT(find(rows, "Audio codec"), "no audio yet");
 		CHECK(!find(rows, "Audio received"));
 
@@ -256,8 +258,8 @@ namespace
 		auto prev = reading(0);
 		prev.values[WAVES] = 450;
 		rows = sdl::overlay::realtimeRows(n, now, &prev, {});
-		EXPECT(find(rows, "Round trip"), "23 ms (lowest 11)");
-		EXPECT(find(rows, "Bandwidth"), "54000 kbit/s");
+		EXPECT(find(rows, "Round trip (measured by the server)"), "23 ms (lowest 11)");
+		EXPECT(find(rows, "Bandwidth (measured by the server)"), "54000 kbit/s");
 		EXPECT(find(rows, "Audio codec"), "OPUS");
 		EXPECT(find(rows, "Audio received"), "50.0 /s, 500 total, 4 dropped, 42 ms delay");
 
@@ -265,7 +267,7 @@ namespace
 		const Names few({ "NETWORK_BYTES_RECEIVED" });
 		rows = sdl::overlay::realtimeRows(few, reading(1), nullptr, {});
 		CHECK(!find(rows, "Video codecs"));
-		CHECK(!find(rows, "Round trip"));
+		CHECK(!find(rows, "Round trip (measured by the server)"));
 		return 0;
 	}
 
@@ -301,34 +303,55 @@ namespace
 		return (a.x < b.x + b.w) && (b.x < a.x + a.w) && (a.y < b.y + b.h) && (b.y < a.y + a.h);
 	}
 
+	sdl::overlay::Box box(float w, float h)
+	{
+		return { 0, 0, w, h };
+	}
+
 	int checkLayout()
 	{
-		/* both fit side by side: the right part at the top right */
-		auto l = sdl::overlay::layout(400, 100, 300, 200, 1280, 12);
+		const sdl::overlay::Box none{};
+
+		/* all fit side by side: the server part under the client part, the right one at the top
+		 * right */
+		auto l = sdl::overlay::layout(box(400, 100), box(300, 80), box(300, 200), 1280, 12);
 		CHECK((l.left.x == 12) && (l.left.y == 12));
+		CHECK((l.server.x == 12) && (l.server.y == 12 + 100 + 12));
 		CHECK((l.right.x == 1280 - 12 - 300) && (l.right.y == 12));
 
-		/* the 1000 px window of the rig: the right part goes under the left one */
-		l = sdl::overlay::layout(590, 110, 480, 200, 1000, 12);
+		/* the 1000 px window of the rig: the right part goes under the left column */
+		l = sdl::overlay::layout(box(590, 110), none, box(480, 200), 1000, 12);
 		CHECK((l.right.y == 12 + 110 + 12) && (l.right.x == 1000 - 12 - 480));
+		l = sdl::overlay::layout(box(590, 110), box(300, 80), box(480, 200), 1000, 12);
+		CHECK((l.right.y == 12 + 110 + 12 + 80 + 12) && (l.right.x == 1000 - 12 - 480));
 
-		/* narrower than the right part: it starts at the left edge, still under the left one */
-		l = sdl::overlay::layout(590, 110, 480, 200, 400, 12);
+		/* a wide server part decides the column too: the client part alone would fit beside */
+		l = sdl::overlay::layout(box(300, 110), box(700, 80), box(480, 200), 1100, 12);
+		CHECK(l.right.y == 12 + 110 + 12 + 80 + 12);
+
+		/* narrower than the right part: it starts at the left edge, still under the column */
+		l = sdl::overlay::layout(box(590, 110), none, box(480, 200), 400, 12);
 		CHECK((l.right.x == 0) && (l.right.y == 134));
 
-		/* no client part: the right part stays at the top */
-		l = sdl::overlay::layout(0, 0, 480, 200, 400, 12);
+		/* no client part: the server part at the top, no part: the right one stays at the top */
+		l = sdl::overlay::layout(none, box(300, 80), box(480, 200), 1280, 12);
+		CHECK((l.server.y == 12) && (l.right.y == 12));
+		l = sdl::overlay::layout(none, none, box(480, 200), 400, 12);
 		CHECK(l.right.y == 12);
 
-		/* at any width the two never cover each other */
+		/* at any width no part covers another */
 		for (float width = 50; width <= 3000; width += 7)
 		{
-			for (const auto& sizes : { std::array<float, 4>{ 590, 110, 480, 200 },
-			                           std::array<float, 4>{ 100, 300, 900, 50 },
-			                           std::array<float, 4>{ 700, 90, 700, 400 } })
+			for (const auto& sizes : { std::array<float, 6>{ 590, 110, 300, 80, 480, 200 },
+			                           std::array<float, 6>{ 100, 300, 600, 120, 900, 50 },
+			                           std::array<float, 6>{ 700, 90, 0, 0, 700, 400 },
+			                           std::array<float, 6>{ 0, 0, 500, 160, 700, 400 } })
 			{
-				l = sdl::overlay::layout(sizes[0], sizes[1], sizes[2], sizes[3], width, 12);
-				if (overlap(l.left, l.right))
+				l = sdl::overlay::layout(box(sizes[0], sizes[1]), box(sizes[2], sizes[3]),
+				                         box(sizes[4], sizes[5]), width, 12);
+				const bool server = (sizes[2] > 0);
+				if (overlap(l.left, l.right) || (server && overlap(l.server, l.right)) ||
+				    (server && overlap(l.left, l.server)))
 				{
 					(void)fprintf(stderr, "overlap at width %.0f\n", static_cast<double>(width));
 					return __LINE__;
@@ -337,12 +360,73 @@ namespace
 		}
 		return 0;
 	}
+
+	int checkServer()
+	{
+		const std::vector<std::string> serverNames = {
+			"RDP_VERSION",
+			"SERVER_RDP_VERSION",
+			"SERVER_OS_MAJOR_TYPE",
+			"SERVER_OS_MINOR_TYPE",
+			"SERVER_PORT",
+			"GFX_CAPS_VERSION",
+			"GFX_CAPS_FLAGS",
+			"RDPGFX_SURFACES",
+			"RDPGFX_SURFACE1_CODECID",
+			"RDPGFX_SURFACE1_WIDTH",
+			"RDPGFX_SURFACE1_HEIGHT",
+			"RDPGFX_SURFACE2_CODECID",
+			"RDPGFX_SURFACE2_WIDTH",
+			"RDPGFX_SURFACE2_HEIGHT",
+		};
+		const Names n(serverNames);
+		Reading r;
+		r.values.resize(serverNames.size());
+
+		/* before the server announced anything: no row */
+		CHECK(sdl::overlay::serverRows(n, r).empty());
+
+		r.values = { RDP_VERSION_10_7,
+			         RDP_VERSION_10_12,
+			         OSMAJORTYPE_UNIX,
+			         OSMINORTYPE_NATIVE_XSERVER,
+			         3390,
+			         RDPGFX_CAPVERSION_107,
+			         RDPGFX_CAPS_FLAG_SMALL_CACHE,
+			         6,
+			         RDPGFX_CODECID_PLANAR,
+			         1280,
+			         720,
+			         UINT32_MAX,
+			         640,
+			         480 };
+		r.strings = { { "SERVER_HOSTNAME", "server.test" }, { "SERVER_CERT_CN", "cn.test" } };
+		const auto rows = sdl::overlay::serverRows(n, r);
+		CHECK(rows.size() == 8);
+		CHECK(rows.front().label == "RDP version");
+		EXPECT(find(rows, "RDP version"), "10.7 (server 10.12)");
+		EXPECT(find(rows, "Server OS"), "Unix / native X server");
+		EXPECT(find(rows, "Graphics caps"), "10.7, flags: small cache");
+		EXPECT(find(rows, "Surface 1"), "1280 × 720, Planar");
+		EXPECT(find(rows, "Surface 2"), "640 × 480, no picture yet");
+		EXPECT(find(rows, "Surfaces"), "+2 more");
+		EXPECT(find(rows, "Host"), "server.test:3390");
+		EXPECT(find(rows, "Certificate"), "cn.test");
+
+		/* the same version on both sides is named once; no certificate yet, no row */
+		r.values[1] = RDP_VERSION_10_7;
+		r.strings = { { "SERVER_HOSTNAME", "server.test" } };
+		const auto same = sdl::overlay::serverRows(n, r);
+		EXPECT(find(same, "RDP version"), "10.7");
+		CHECK(!find(same, "Certificate"));
+		return 0;
+	}
 } // namespace
 
 int TestSDLOverlayModel([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
 {
-	for (auto* check :
-	     { checkNames, checkRates, checkLabels, checkNetworkAndAudio, checkClient, checkLayout })
+	for (auto* check : { checkNames, checkRates, checkLabels, checkNetworkAndAudio, checkClient,
+	                     checkLayout, checkServer })
 	{
 		const int rc = check();
 		if (rc != 0)

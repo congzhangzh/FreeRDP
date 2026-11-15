@@ -64,6 +64,13 @@ namespace
 		for (size_t x = 0; x < count; x++)
 			reading.values[x] = freerdp_client_stats_value_for_index(context, x);
 
+		for (size_t x = 0; x < freerdp_client_stats_string_max_index(); x++)
+		{
+			const char* value = freerdp_client_stats_string_value_for_index(context, x);
+			if (value)
+				reading.strings.emplace_back(freerdp_client_stats_string_name_for_index(x), value);
+		}
+
 		RdpgfxClientContext* gfx = context->gdi ? context->gdi->gfx : nullptr;
 		if (!gfx)
 			return;
@@ -264,6 +271,7 @@ bool SdlOverlay::update(int windowWidth, int windowHeight, const char* rendererN
 	_left = _client;
 	const auto decoders = sdl::overlay::decoderRows(*_names, *reading);
 	_left.insert(_left.end(), decoders.begin(), decoders.end());
+	_server = sdl::overlay::serverRows(*_names, *reading);
 	_right = sdl::overlay::realtimeRows(*_names, *reading, _prev ? &*_prev : nullptr, view);
 	_prev = std::move(reading);
 	_generation++;
@@ -273,6 +281,11 @@ bool SdlOverlay::update(int windowWidth, int windowHeight, const char* rendererN
 const std::vector<sdl::overlay::Row>& SdlOverlay::left() const
 {
 	return _left;
+}
+
+const std::vector<sdl::overlay::Row>& SdlOverlay::server() const
+{
+	return _server;
 }
 
 const std::vector<sdl::overlay::Row>& SdlOverlay::right() const
@@ -303,7 +316,7 @@ SdlOverlayPainter::~SdlOverlayPainter()
 
 void SdlOverlayPainter::clear()
 {
-	for (auto* list : { &_left, &_right })
+	for (auto* list : { &_left, &_server, &_right })
 	{
 		for (auto& cell : *list)
 		{
@@ -364,6 +377,7 @@ bool SdlOverlayPainter::rebuild(const SdlOverlay& overlay, float scale)
 
 	clear();
 	_left = cells(overlay.left());
+	_server = cells(overlay.server());
 	_right = cells(overlay.right());
 	_scale = scale;
 	_generation = overlay.generation();
@@ -438,11 +452,15 @@ void SdlOverlayPainter::draw(const SdlOverlay& overlay, int width, int height, f
 	std::ignore = SDL_SetRenderDrawBlendMode(_renderer, SDL_BLENDMODE_BLEND);
 
 	float labelWidth = 0;
-	const auto left = _left.empty() ? SDL_FPoint{ 0, 0 } : panelSize(_left, labelWidth);
-	const auto right = _right.empty() ? SDL_FPoint{ 0, 0 } : panelSize(_right, labelWidth);
-	const auto where = sdl::overlay::layout(left.x, left.y, right.x, right.y,
+	const auto size = [&](const std::vector<Cell>& list)
+	{
+		const auto s = list.empty() ? SDL_FPoint{ 0, 0 } : panelSize(list, labelWidth);
+		return sdl::overlay::Box{ 0, 0, s.x, s.y };
+	};
+	const auto where = sdl::overlay::layout(size(_left), size(_server), size(_right),
 	                                        static_cast<float>(width), 12.0F * _scale);
 	drawPanel(_left, where.left);
+	drawPanel(_server, where.server);
 	drawPanel(_right, where.right);
 
 	std::ignore = SDL_SetRenderDrawBlendMode(_renderer, mode);
