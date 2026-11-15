@@ -806,6 +806,19 @@ static int add_entry(X509_NAME* name, const char* value, const char* txt)
 	return 0;
 }
 
+/* The common name as it is (the host name, or -n without CN=), not a list of records */
+WINPR_ATTR_NODISCARD
+static int add_common_name(X509_NAME* name, const char* value)
+{
+	WINPR_ASSERT(name);
+	WINPR_ASSERT(value);
+
+	if (X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_UTF8, (const unsigned char*)value, -1, -1,
+	                               0) != 1)
+		return -1;
+	return 1;
+}
+
 int makecert_context_process(MAKECERT_CONTEXT* context, int argc, char** argv)
 {
 	COMMAND_LINE_ARGUMENT_A args[] = {
@@ -1078,14 +1091,14 @@ int makecert_context_process(MAKECERT_CONTEXT* context, int argc, char** argv)
 
 		if (!haveCN)
 		{
-			const int rc = add_entry(name, context->common_name, "CN");
+			const int rc = add_common_name(name, context->common_name);
 			if (rc < 0)
 				return rc;
 		}
 	}
 	else
 	{
-		const int rc = add_entry(name, context->common_name, "CN");
+		const int rc = add_common_name(name, context->common_name);
 		if (rc < 0)
 			return rc;
 	}
