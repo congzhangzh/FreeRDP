@@ -122,10 +122,26 @@ int TestMakecertCommonName(int argc, char* argv[])
 		char* noName[] = { "makecert", "-rdp", "-live", "-silent", "-y", "1" };
 		char* plain[] = { "makecert", "-rdp", "-live", "-silent", "-n", "myhost" };
 		char* records[] = { "makecert", "-rdp", "-live", "-silent", "-n", "CN=abc,O=def" };
+		/* a common name holds 64 characters: a cloud machine's long name keeps its host name */
+		char* longName[] = {
+			"makecert", "-rdp",
+			"-live",    "-silent",
+			"-n",       "fv-az123-456.abcdefghijklmnopqrstuvwxyz0123.bx.internal.cloudapp.net"
+		};
+		char longLabel[71] = { 0 };
+		memset(longLabel, 'x', sizeof(longLabel) - 1);
+		char* oneLabel[] = { "makecert", "-rdp", "-live", "-silent", "-n", longLabel };
+		char cut[65] = { 0 };
+		memset(cut, 'x', sizeof(cut) - 1);
 
 		BOOL ok = check("no -n", dir, noName, (int)ARRAYSIZE(noName), host, "");
 		ok &= check("-n myhost", dir, plain, (int)ARRAYSIZE(plain), "myhost", "");
 		ok &= check("-n CN=abc,O=def", dir, records, (int)ARRAYSIZE(records), "abc", "def");
+		ok &= check("long name", dir, longName, (int)ARRAYSIZE(longName), "fv-az123-456", "");
+		ok &= check("long label", dir, oneLabel, (int)ARRAYSIZE(oneLabel), cut, "");
+		/* no name at all: a certificate without a common name, as before */
+		char* empty[] = { "makecert", "-rdp", "-live", "-silent", "-n", "" };
+		ok &= check("empty name", dir, empty, (int)ARRAYSIZE(empty), "", "");
 		if (ok)
 			rc = 0;
 	}

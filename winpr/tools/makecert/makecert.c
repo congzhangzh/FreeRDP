@@ -27,6 +27,9 @@
 #include <winpr/sysinfo.h>
 #include <winpr/crypto.h>
 #include <winpr/print.h>
+#include <winpr/wlog.h>
+
+#define TAG "com.winpr.tools.makecert"
 
 #ifdef WITH_OPENSSL
 #include <openssl/crypto.h>
@@ -806,15 +809,37 @@ static int add_entry(X509_NAME* name, const char* value, const char* txt)
 	return 0;
 }
 
-/* The common name as it is (the host name, or -n without CN=), not a list of records */
+/* A common name holds at most 64 characters (X.520 ub-common-name): OpenSSL refuses a longer one */
+#define MAKECERT_CN_MAX 64
+
+/* The common name as it is (the host name, or -n without CN=), not a list of records. A longer
+ * name, such as the fully qualified name of a cloud machine, keeps its first label (the host
+ * name), and that its first 64 characters. */
 WINPR_ATTR_NODISCARD
 static int add_common_name(X509_NAME* name, const char* value)
 {
 	WINPR_ASSERT(name);
 	WINPR_ASSERT(value);
 
-	if (X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_UTF8, (const unsigned char*)value, -1, -1,
-	                               0) != 1)
+	size_t length = strlen(value);
+	if (length == 0)
+	{
+		WLog_WARN(TAG, "no name for the certificate: it gets no common name");
+		return 0;
+	}
+	if (length > MAKECERT_CN_MAX)
+	{
+		const char* dot = strchr(value, '.');
+		if (dot && (dot > value))
+			length = WINPR_ASSERTING_INT_CAST(size_t, dot - value);
+		if (length > MAKECERT_CN_MAX)
+			length = MAKECERT_CN_MAX;
+		WLog_WARN(TAG, "the name %s is longer than a common name may be: %.*s instead", value,
+		          WINPR_ASSERTING_INT_CAST(int, length), value);
+	}
+
+	if (X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_UTF8, (const unsigned char*)value,
+	                               WINPR_ASSERTING_INT_CAST(int, length), -1, 0) != 1)
 		return -1;
 	return 1;
 }
