@@ -45,6 +45,7 @@
 #include "../crypto/tls.h"
 #include "../crypto/x509_utils.h"
 #include "../core/tcp.h"
+#include "../core/rdp.h"
 
 #include "opensslcompat.h"
 #include "certificate.h"
@@ -109,6 +110,24 @@ static BIO_METHOD* g_BioMethods = nullptr;
 
 static INIT_ONCE secrets_file_idx_once = INIT_ONCE_STATIC_INIT;
 static int secrets_file_idx = -1;
+
+/* The trusted server's certificate name, for whoever shows which server answered: kept in the
+ * remote settings (freerdp_get_remote_settings) as CertificateName. Not a gateway's. */
+WINPR_ATTR_NODISCARD
+static BOOL tls_keep_peer_name(rdpTls* tls, const rdpCertificate* cert)
+{
+	WINPR_ASSERT(tls);
+	if (tls->isGatewayTransport || !tls->context || !tls->context->rdp)
+		return TRUE;
+	rdpSettings* remoteSettings = tls->context->rdp->remoteSettings;
+	if (!remoteSettings)
+		return TRUE;
+
+	char* name = freerdp_certificate_get_common_name(cert, nullptr);
+	const BOOL rc = freerdp_settings_set_string(remoteSettings, FreeRDP_CertificateName, name);
+	free(name);
+	return rc;
+}
 
 WINPR_ATTR_NODISCARD
 static int tls_verify_certificate(rdpTls* tls, const rdpCertificate* cert, const char* hostname,
@@ -1118,6 +1137,8 @@ TlsHandshakeResult freerdp_tls_handshake(rdpTls* tls)
 				freerdp_tls_send_alert(tls);
 				ret = TLS_HANDSHAKE_VERIFY_ERROR;
 			}
+			else if (!tls_keep_peer_name(tls, cert))
+				ret = TLS_HANDSHAKE_ERROR;
 		}
 	} while (0);
 
