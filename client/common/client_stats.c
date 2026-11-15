@@ -18,6 +18,7 @@
 #include <freerdp/config.h>
 
 #include <winpr/assert.h>
+#include <winpr/cast.h>
 #include <winpr/crt.h>
 
 #include <freerdp/autodetect.h>
@@ -608,6 +609,8 @@ const char* freerdp_client_stats_codec_name(uint64_t codecId, uint64_t capsVersi
 
 #include <emscripten.h>
 
+#include <freerdp/timer.h>
+
 /* A page has one session and no pointer to it, and it reads on the browser's thread while the
  * session runs on its own, which frees what the reader looks at:
  *
@@ -621,18 +624,57 @@ const char* freerdp_client_stats_codec_name(uint64_t codecId, uint64_t capsVersi
 static pthread_mutex_t web_lock = PTHREAD_MUTEX_INITIALIZER;
 static const rdpContext* web_context = nullptr;
 
+/* The surfaces are read under the graphics context's lock, which a decoding thread holds while
+ * it hands a picture to the browser's main thread. The page reads on that main thread: waiting
+ * there for the lock would never end. So the session thread copies them once a second, and the
+ * page reads the copy. */
+#define WEB_SURFACE_VALUES (STATS_SESSION_MAX - STATS_GFX_SURFACES)
+static uint64_t web_surfaces[WEB_SURFACE_VALUES] = WINPR_C_ARRAY_INIT;
+static FreeRDP_TimerID web_timer = 0;
+
+static uint64_t web_surfaces_timer(rdpContext* context, WINPR_ATTR_UNUSED void* userdata,
+                                   WINPR_ATTR_UNUSED FreeRDP_TimerID timerID,
+                                   WINPR_ATTR_UNUSED uint64_t timestamp, uint64_t interval)
+{
+	uint64_t values[WEB_SURFACE_VALUES] = WINPR_C_ARRAY_INIT;
+#if defined(CHANNEL_RDPGFX_CLIENT)
+	RdpgfxClientContext* gfx = context->gdi ? context->gdi->gfx : nullptr;
+	for (size_t x = 0; gfx && (x < WEB_SURFACE_VALUES); x++)
+		values[x] = surface_value(gfx, STATS_GFX_SURFACES + x);
+#else
+	WINPR_UNUSED(context);
+#endif
+	/* the lock only to copy: never while waiting for the graphics context's */
+	(void)pthread_mutex_lock(&web_lock);
+	memcpy(web_surfaces, values, sizeof(web_surfaces));
+	(void)pthread_mutex_unlock(&web_lock);
+	return interval;
+}
+
 void client_stats_web_attach(const rdpContext* context)
 {
 	(void)pthread_mutex_lock(&web_lock);
 	web_context = context;
+	memset(web_surfaces, 0, sizeof(web_surfaces));
 	(void)pthread_mutex_unlock(&web_lock);
+
+	/* on the session thread (PostConnect), which runs the timer too */
+	web_timer = freerdp_timer_add(WINPR_CAST_CONST_PTR_AWAY(context, rdpContext*),
+	                              1000ull * 1000ull * 1000ull, web_surfaces_timer, nullptr, true);
 }
 
 void client_stats_web_detach(const rdpContext* context)
 {
+	if (web_timer && context)
+	{
+		(void)freerdp_timer_remove(WINPR_CAST_CONST_PTR_AWAY(context, rdpContext*), web_timer);
+		web_timer = 0;
+	}
+
 	(void)pthread_mutex_lock(&web_lock);
 	if (web_context == context)
 		web_context = nullptr;
+	memset(web_surfaces, 0, sizeof(web_surfaces));
 	(void)pthread_mutex_unlock(&web_lock);
 }
 
@@ -662,7 +704,9 @@ EMSCRIPTEN_KEEPALIVE double freerdp_web_stats_value(size_t index);
 EMSCRIPTEN_KEEPALIVE double freerdp_web_stats_value(size_t index)
 {
 	(void)pthread_mutex_lock(&web_lock);
-	const uint64_t value = freerdp_client_stats_value_for_index(web_context, index);
+	const uint64_t value = ((index >= STATS_GFX_SURFACES) && (index < STATS_SESSION_MAX))
+	                           ? (web_context ? web_surfaces[index - STATS_GFX_SURFACES] : 0)
+	                           : freerdp_client_stats_value_for_index(web_context, index);
 	(void)pthread_mutex_unlock(&web_lock);
 	return (double)value;
 }
