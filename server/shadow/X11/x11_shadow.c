@@ -41,6 +41,7 @@
 #include <winpr/interlocked.h>
 #include <winpr/sysinfo.h>
 
+#include <freerdp/constants.h>
 #include <freerdp/log.h>
 #include <freerdp/codec/color.h>
 #include <freerdp/codec/region.h>
@@ -1402,6 +1403,14 @@ static int x11_shadow_subsystem_init(rdpShadowSubsystem* sub)
 	x11ShadowSubsystem* subsystem = (x11ShadowSubsystem*)sub;
 
 	if (!subsystem)
+		return -1;
+
+	/* what the clients see of this host (General Capability Set) */
+	WINPR_ASSERT(sub->server);
+	if (!freerdp_settings_set_uint32(sub->server->settings, FreeRDP_OsMajorType,
+	                                 OSMAJORTYPE_UNIX) ||
+	    !freerdp_settings_set_uint32(sub->server->settings, FreeRDP_OsMinorType,
+	                                 OSMINORTYPE_NATIVE_XSERVER))
 		return -1;
 
 #if defined(WITH_SHADOW_PIPEWIRE)

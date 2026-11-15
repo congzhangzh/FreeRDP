@@ -22,6 +22,7 @@
 #include <winpr/synch.h>
 #include <winpr/sysinfo.h>
 
+#include <freerdp/constants.h>
 #include <freerdp/log.h>
 #include <freerdp/codec/color.h>
 #include <freerdp/codec/region.h>
@@ -871,6 +872,14 @@ static int win_shadow_subsystem_init(rdpShadowSubsystem* arg)
 	winShadowSubsystem* subsystem = (winShadowSubsystem*)arg;
 	int status;
 	MONITOR_DEF* virtualScreen;
+	/* what the clients see of this host (General Capability Set) */
+	WINPR_ASSERT(arg->server);
+	if (!freerdp_settings_set_uint32(arg->server->settings, FreeRDP_OsMajorType,
+	                                 OSMAJORTYPE_WINDOWS) ||
+	    !freerdp_settings_set_uint32(arg->server->settings, FreeRDP_OsMinorType,
+	                                 OSMINORTYPE_WINDOWS_NT))
+		return -1;
+
 	win_shadow_check_input_integrity();
 	subsystem->base.numMonitors = win_shadow_enum_monitors(subsystem->base.monitors, 16);
 	if (subsystem->base.numMonitors > 0)
