@@ -61,6 +61,7 @@
 #include <freerdp/server/server-common.h>
 #include <freerdp/codec/color.h>
 #include <freerdp/codec/region.h>
+#include <freerdp/constants.h>
 #include <freerdp/log.h>
 
 #ifdef WITH_PAM
@@ -3582,6 +3583,14 @@ static int mutter_shadow_subsystem_init(rdpShadowSubsystem* subsystem)
 {
 	mutterShadowSubsystem* mutter = (mutterShadowSubsystem*)subsystem;
 	WINPR_ASSERT(mutter);
+
+	/* what the clients see of this host (General Capability Set) */
+	WINPR_ASSERT(subsystem->server);
+	if (!freerdp_settings_set_uint32(subsystem->server->settings, FreeRDP_OsMajorType,
+	                                 OSMAJORTYPE_UNIX) ||
+	    !freerdp_settings_set_uint32(subsystem->server->settings, FreeRDP_OsMinorType,
+	                                 OSMINORTYPE_NATIVE_WAYLAND))
+		return -1;
 
 	const int opened = sd_bus_open_user(&mutter->bus);
 	if (opened < 0)

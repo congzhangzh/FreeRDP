@@ -33,6 +33,7 @@
 #include <freerdp/codec/color.h>
 #include <freerdp/codec/dsp.h>
 #include <freerdp/codec/region.h>
+#include <freerdp/constants.h>
 #include <freerdp/log.h>
 
 #include <ApplicationServices/ApplicationServices.h>
@@ -1292,6 +1293,14 @@ static int mac_shadow_subsystem_init(rdpShadowSubsystem* subsystem)
 	macShadowSubsystem* mac = (macShadowSubsystem*)subsystem;
 	CGDirectDisplayID ids[MAC_SHADOW_MAX_DISPLAYS] = WINPR_C_ARRAY_INIT;
 	CGRect bounds[MAC_SHADOW_MAX_DISPLAYS] = WINPR_C_ARRAY_INIT;
+
+	/* what the clients see of this host (General Capability Set) */
+	WINPR_ASSERT(subsystem->server);
+	if (!freerdp_settings_set_uint32(subsystem->server->settings, FreeRDP_OsMajorType,
+	                                 OSMAJORTYPE_OSX) ||
+	    !freerdp_settings_set_uint32(subsystem->server->settings, FreeRDP_OsMinorType,
+	                                 OSMINORTYPE_UNSPECIFIED))
+		return -1;
 
 	const UINT32 count = mac_shadow_list_displays(subsystem->monitors, ids, bounds, ARRAYSIZE(ids));
 	if (count == 0)
