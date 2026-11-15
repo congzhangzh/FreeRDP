@@ -27,7 +27,9 @@
 #include <freerdp/addin.h>
 #include <freerdp/autodetect.h>
 #include <freerdp/client.h>
+#include <freerdp/channels/rdpgfx.h>
 #include <freerdp/client/channels.h>
+#include <freerdp/constants.h>
 #include <freerdp/freerdp.h>
 
 #if defined(CHANNEL_RDPGFX_CLIENT) || defined(CHANNEL_RDPSND_CLIENT)
@@ -39,6 +41,7 @@
 #include <freerdp/client/rdpgfx.h>
 #include <freerdp/codec/zgfx.h>
 #include <freerdp/gdi/gdi.h>
+#include <freerdp/gdi/gfx.h>
 #endif
 
 #if defined(CHANNEL_RDPSND_CLIENT)
@@ -57,7 +60,7 @@
 #include <unistd.h>
 #endif
 
-#define SESSION_STATS 15
+#define SESSION_STATS 34
 
 /* The default settings need rdpdr, which brings rdpsnd along: without it no connection starts.
  * Emscripten has no plain TCP server sockets (setsockopt is not implemented, listen is a
@@ -108,7 +111,16 @@ static BOOL check_names(void)
 		"AUDIO_WAVE_BYTES",         "AUDIO_WAVES_OVERRUN",
 		"AUDIO_WAVES_UNDECODABLE",  "AUDIO_DEVICE_OPENS",
 		"AUDIO_FORMAT_TAG",         "AUDIO_DELAY_MS",
-		"GFX_CAPS_VERSION"
+		"GFX_CAPS_VERSION",         "RDP_VERSION",
+		"SERVER_RDP_VERSION",       "SERVER_OS_MAJOR_TYPE",
+		"SERVER_OS_MINOR_TYPE",     "SERVER_PORT",
+		"GFX_CAPS_FLAGS",           "RDPGFX_SURFACES",
+		"RDPGFX_SURFACE1_CODECID",  "RDPGFX_SURFACE1_WIDTH",
+		"RDPGFX_SURFACE1_HEIGHT",   "RDPGFX_SURFACE2_CODECID",
+		"RDPGFX_SURFACE2_WIDTH",    "RDPGFX_SURFACE2_HEIGHT",
+		"RDPGFX_SURFACE3_CODECID",  "RDPGFX_SURFACE3_WIDTH",
+		"RDPGFX_SURFACE3_HEIGHT",   "RDPGFX_SURFACE4_CODECID",
+		"RDPGFX_SURFACE4_WIDTH",    "RDPGFX_SURFACE4_HEIGHT"
 	};
 
 	const size_t max = freerdp_client_stats_max_index();
@@ -139,6 +151,114 @@ static BOOL check_names(void)
 		}
 		TEST_CHECK(found == 1);
 	}
+	return TRUE;
+}
+
+static BOOL check_all_zero(const rdpContext* context);
+
+static const char* string_value(const rdpContext* context, const char* name)
+{
+	for (size_t x = 0; x < freerdp_client_stats_string_max_index(); x++)
+	{
+		if (strcmp(freerdp_client_stats_string_name_for_index(x), name) == 0)
+			return freerdp_client_stats_string_value_for_index(context, x);
+	}
+	return "no such string";
+}
+
+static BOOL check_string_names(void)
+{
+	TEST_CHECK(freerdp_client_stats_string_max_index() == 2);
+	TEST_CHECK(strcmp(freerdp_client_stats_string_name_for_index(0), "SERVER_HOSTNAME") == 0);
+	TEST_CHECK(strcmp(freerdp_client_stats_string_name_for_index(1), "SERVER_CERT_CN") == 0);
+	TEST_CHECK(
+	    strcmp(freerdp_client_stats_string_name_for_index(2), "FREERDP_CLIENT_STATS_UNUSED") == 0);
+	TEST_CHECK(!freerdp_client_stats_string_value_for_index(nullptr, 0));
+	return TRUE;
+}
+
+static BOOL check_name_helpers(void)
+{
+	char buffer[128] = WINPR_C_ARRAY_INIT;
+
+	TEST_CHECK(strcmp(freerdp_client_stats_rdp_version_name(RDP_VERSION_10_12), "10.12") == 0);
+	TEST_CHECK(strcmp(freerdp_client_stats_rdp_version_name(RDP_VERSION_5_PLUS), "5+") == 0);
+	TEST_CHECK(strcmp(freerdp_client_stats_rdp_version_name(0), "unknown") == 0);
+
+	TEST_CHECK(strcmp(freerdp_client_stats_os_name(OSMAJORTYPE_UNIX, OSMINORTYPE_NATIVE_XSERVER,
+	                                               buffer, sizeof(buffer)),
+	                  "Unix / native X server") == 0);
+	TEST_CHECK(strcmp(freerdp_client_stats_os_name(OSMAJORTYPE_WINDOWS, OSMINORTYPE_UNSPECIFIED,
+	                                               buffer, sizeof(buffer)),
+	                  "Windows") == 0);
+	TEST_CHECK(!freerdp_client_stats_os_name(1, 1, nullptr, 0));
+
+	TEST_CHECK(strcmp(freerdp_client_stats_caps_version_name(RDPGFX_CAPVERSION_107), "10.7") == 0);
+	TEST_CHECK(strcmp(freerdp_client_stats_caps_version_name(0), "unknown") == 0);
+#if defined(WITH_GFX_AV2)
+	TEST_CHECK(strcmp(freerdp_client_stats_caps_version_name(RDPGFX_CAPVERSION_FRDP_2),
+	                  "FRDP_2 (AV2)") == 0);
+#endif
+
+	TEST_CHECK(strcmp(freerdp_client_stats_caps_flags_name(0, buffer, sizeof(buffer)), "none") ==
+	           0);
+	TEST_CHECK(strcmp(freerdp_client_stats_caps_flags_name(
+	                      RDPGFX_CAPS_FLAG_SMALL_CACHE | RDPGFX_CAPS_FLAG_AVC_DISABLED | 0x00004000,
+	                      buffer, sizeof(buffer)),
+	                  "small cache, AVC disabled, 0x00004000") == 0);
+	/* too small: cut, still a string */
+	char small[8] = WINPR_C_ARRAY_INIT;
+	(void)freerdp_client_stats_caps_flags_name(RDPGFX_CAPS_FLAG_SMALL_CACHE, small, sizeof(small));
+	TEST_CHECK(strlen(small) < sizeof(small));
+
+	TEST_CHECK(strcmp(freerdp_client_stats_codec_name(RDPGFX_CODECID_PLANAR, 0), "Planar") == 0);
+	TEST_CHECK(strcmp(freerdp_client_stats_codec_name(RDPGFX_CODECID_AVC420, 0),
+	                  "H.264 4:2:0 (AVC420)") == 0);
+	TEST_CHECK(strcmp(freerdp_client_stats_codec_name(UINT32_MAX, 0), "no picture yet") == 0);
+#if defined(WITH_GFX_AV1)
+	TEST_CHECK(strcmp(freerdp_client_stats_codec_name(RDPGFX_CODECID_AV1, RDPGFX_CAPVERSION_FRDP_1),
+	                  "AV1") == 0);
+#endif
+#if defined(WITH_GFX_AV2)
+	TEST_CHECK(strcmp(freerdp_client_stats_codec_name(RDPGFX_CODECID_AV1, RDPGFX_CAPVERSION_FRDP_2),
+	                  "AV2") == 0);
+#endif
+	return TRUE;
+}
+
+/* what the server announced, as the connection keeps it in the remote settings */
+static BOOL check_server(rdpContext* context)
+{
+	rdpSettings* remote = (rdpSettings*)freerdp_get_remote_settings(context);
+	TEST_CHECK(remote);
+	TEST_CHECK(
+	    freerdp_settings_set_string(context->settings, FreeRDP_ServerHostname, "server.test"));
+	TEST_CHECK(freerdp_settings_set_uint32(context->settings, FreeRDP_ServerPort, 3390));
+	TEST_CHECK(
+	    freerdp_settings_set_uint32(context->settings, FreeRDP_RdpVersion, RDP_VERSION_10_7));
+
+	/* before the server's core data: nothing, though the local settings have values */
+	TEST_CHECK(check_all_zero(context));
+	TEST_CHECK(strcmp(string_value(context, "SERVER_HOSTNAME"), "server.test") == 0);
+	TEST_CHECK(!string_value(context, "SERVER_CERT_CN"));
+
+	TEST_CHECK(freerdp_settings_set_uint32(remote, FreeRDP_RdpVersion, RDP_VERSION_10_12));
+	TEST_CHECK(freerdp_settings_set_uint32(remote, FreeRDP_OsMajorType, OSMAJORTYPE_UNIX));
+	TEST_CHECK(
+	    freerdp_settings_set_uint32(remote, FreeRDP_OsMinorType, OSMINORTYPE_NATIVE_XSERVER));
+	TEST_CHECK(freerdp_settings_set_string(remote, FreeRDP_CertificateName, "cn.test"));
+	TEST_CHECK(stat_value(context, "RDP_VERSION") == RDP_VERSION_10_7);
+	TEST_CHECK(stat_value(context, "SERVER_RDP_VERSION") == RDP_VERSION_10_12);
+	TEST_CHECK(stat_value(context, "SERVER_OS_MAJOR_TYPE") == OSMAJORTYPE_UNIX);
+	TEST_CHECK(stat_value(context, "SERVER_OS_MINOR_TYPE") == OSMINORTYPE_NATIVE_XSERVER);
+	TEST_CHECK(stat_value(context, "SERVER_PORT") == 3390);
+	TEST_CHECK(strcmp(string_value(context, "SERVER_CERT_CN"), "cn.test") == 0);
+
+	TEST_CHECK(freerdp_settings_set_uint32(remote, FreeRDP_RdpVersion, 0));
+	TEST_CHECK(freerdp_settings_set_uint32(remote, FreeRDP_OsMajorType, 0));
+	TEST_CHECK(freerdp_settings_set_uint32(remote, FreeRDP_OsMinorType, 0));
+	TEST_CHECK(freerdp_settings_set_string(remote, FreeRDP_CertificateName, nullptr));
+	TEST_CHECK(check_all_zero(context));
 	return TRUE;
 }
 
@@ -412,6 +532,39 @@ static UINT send_start_frame(IWTSVirtualChannelCallback* callback)
 	return rc;
 }
 
+/* surfaces by surface ID in the slots, whatever order they came in */
+static BOOL check_surfaces(const rdpContext* context, RdpgfxClientContext* gfx)
+{
+	gdiGfxSurface a = WINPR_C_ARRAY_INIT;
+	a.codecId = RDPGFX_CODECID_PLANAR;
+	a.mappedWidth = 1280;
+	a.mappedHeight = 720;
+	gdiGfxSurface b = WINPR_C_ARRAY_INIT;
+	b.codecId = UINT32_MAX;
+	b.mappedWidth = 640;
+	b.mappedHeight = 480;
+
+	TEST_CHECK(stat_value(context, "RDPGFX_SURFACES") == 0);
+	TEST_CHECK(stat_value(context, "RDPGFX_SURFACE1_WIDTH") == 0);
+	TEST_CHECK(gfx->SetSurfaceData(gfx, 7, &a) == CHANNEL_RC_OK);
+	TEST_CHECK(gfx->SetSurfaceData(gfx, 3, &b) == CHANNEL_RC_OK);
+
+	const BOOL rc = (stat_value(context, "RDPGFX_SURFACES") == 2) &&
+	                (stat_value(context, "RDPGFX_SURFACE1_CODECID") == UINT32_MAX) &&
+	                (stat_value(context, "RDPGFX_SURFACE1_WIDTH") == 640) &&
+	                (stat_value(context, "RDPGFX_SURFACE1_HEIGHT") == 480) &&
+	                (stat_value(context, "RDPGFX_SURFACE2_CODECID") == RDPGFX_CODECID_PLANAR) &&
+	                (stat_value(context, "RDPGFX_SURFACE2_WIDTH") == 1280) &&
+	                (stat_value(context, "RDPGFX_SURFACE2_HEIGHT") == 720) &&
+	                (stat_value(context, "RDPGFX_SURFACE3_CODECID") == 0) &&
+	                (stat_value(context, "RDPGFX_SURFACE3_WIDTH") == 0);
+
+	TEST_CHECK(gfx->SetSurfaceData(gfx, 7, nullptr) == CHANNEL_RC_OK);
+	TEST_CHECK(gfx->SetSurfaceData(gfx, 3, nullptr) == CHANNEL_RC_OK);
+	TEST_CHECK(stat_value(context, "RDPGFX_SURFACES") == 0);
+	return rc;
+}
+
 /* a graphics channel, reached the way a session reaches it: context->gdi->gfx */
 static BOOL check_gfx_channel(rdpContext* context, IWTSPlugin* plugin, test_channel_manager* mgr)
 {
@@ -434,14 +587,19 @@ static BOOL check_gfx_channel(rdpContext* context, IWTSPlugin* plugin, test_chan
 
 	/* no gfx yet, as on a session whose graphics channel closed */
 	RdpgfxClientContext* gfx = (RdpgfxClientContext*)plugin->pInterface;
+	InitializeCriticalSection(&gfx->mux); /* as gdi_graphics_pipeline_init does */
 	gfx->ConfirmedCaps.version = RDPGFX_CAPVERSION_107;
+	gfx->ConfirmedCaps.flags = RDPGFX_CAPS_FLAG_SMALL_CACHE;
 	BOOL rc = (stat_value(context, "RDPGFX_CMDID_STARTFRAME") == 0) &&
-	          (stat_value(context, "GFX_CAPS_VERSION") == 0);
+	          (stat_value(context, "GFX_CAPS_VERSION") == 0) &&
+	          (stat_value(context, "GFX_CAPS_FLAGS") == 0);
 
 	if (rc)
 	{
 		gdi.gfx = gfx;
 		rc = (stat_value(context, "GFX_CAPS_VERSION") == RDPGFX_CAPVERSION_107) &&
+		     (stat_value(context, "GFX_CAPS_FLAGS") == RDPGFX_CAPS_FLAG_SMALL_CACHE) &&
+		     check_surfaces(context, gfx) &&
 		     (stat_value(context, "RDPGFX_CMDID_STARTFRAME") == 0) &&
 		     (send_start_frame(callback) == CHANNEL_RC_OK) &&
 		     (stat_value(context, "RDPGFX_CMDID_STARTFRAME") == 1) &&
@@ -452,6 +610,7 @@ static BOOL check_gfx_channel(rdpContext* context, IWTSPlugin* plugin, test_chan
 	}
 
 	context->gdi = nullptr;
+	DeleteCriticalSection(&gfx->mux);
 	(void)callback->OnClose(callback);
 	TEST_CHECK(rc);
 	return TRUE;
@@ -764,7 +923,7 @@ static rdpContext* new_context(void)
 
 int TestClientStats(WINPR_ATTR_UNUSED int argc, WINPR_ATTR_UNUSED char* argv[])
 {
-	if (!check_names())
+	if (!check_names() || !check_string_names() || !check_name_helpers())
 		return -1;
 	if (!check_all_zero(nullptr))
 		return -1;
@@ -773,7 +932,7 @@ int TestClientStats(WINPR_ATTR_UNUSED int argc, WINPR_ATTR_UNUSED char* argv[])
 	if (!context)
 		return -1;
 
-	BOOL rc = check_autodetect(context);
+	BOOL rc = check_autodetect(context) && check_server(context);
 #if defined(CHANNEL_RDPGFX_CLIENT)
 	rc = rc && check_gfx(context);
 #endif
