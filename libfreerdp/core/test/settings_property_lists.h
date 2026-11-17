@@ -276,6 +276,7 @@ static const size_t uint32_list_indices[] = {
 	FreeRDP_GfxCapsFilter,
 	FreeRDP_GfxCodecAV1Profile,
 	FreeRDP_GfxCodecAV2Profile,
+	FreeRDP_GfxCodecOrder,
 	FreeRDP_GlyphSupportLevel,
 	FreeRDP_JpegCodecId,
 	FreeRDP_JpegQuality,

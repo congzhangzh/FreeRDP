@@ -1832,6 +1832,9 @@ UINT32 freerdp_settings_get_uint32(WINPR_ATTR_UNUSED const rdpSettings* settings
 		case FreeRDP_GfxCodecAV2Profile:
 			return settings->GfxCodecAV2Profile;
 
+		case FreeRDP_GfxCodecOrder:
+			return settings->GfxCodecOrder;
+
 		case FreeRDP_GlyphSupportLevel:
 			return settings->GlyphSupportLevel;
 
@@ -2307,6 +2310,10 @@ BOOL freerdp_settings_set_uint32(WINPR_ATTR_UNUSED rdpSettings* settings,
 
 		case FreeRDP_GfxCodecAV2Profile:
 			settings->GfxCodecAV2Profile = cnv.c;
+			break;
+
+		case FreeRDP_GfxCodecOrder:
+			settings->GfxCodecOrder = cnv.c;
 			break;
 
 		case FreeRDP_GlyphSupportLevel:
