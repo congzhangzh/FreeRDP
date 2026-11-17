@@ -60,6 +60,10 @@ extern "C"
 		BOOL fellBack; /**< this decode gave up on the backend used so far */
 		FREERDP_DECODE_HARDWARE hardware;
 		const char* backend; /**< valid for the lifetime of the process, \b nullptr if unknown */
+		/** The stream's chroma subsampling, 420, 422 or 444, as the decoder last learnt it (AV1
+		 * from the sequence header, AV2 from the decoded picture); 0 when unknown and for the
+		 * codecs whose ID tells it. @since version 3.34.0 */
+		UINT32 chroma;
 	} FREERDP_DECODE_RESULT;
 
 #ifdef __cplusplus

@@ -102,6 +102,7 @@ struct S_FREERDP_AV1_CONTEXT
 	UINT32 yuvStride[3];
 	UINT32 yuvHeight;
 	FREERDP_DECODE_RESULT lastDecode;
+	UINT32 chroma; /* of the last sequence header the decoder saw, 0 before one */
 };
 
 #if defined(WITH_DAV1D)
@@ -755,10 +756,26 @@ static INT32 av1_dav1d_drain_one(FREERDP_AV1_CONTEXT* av1, BYTE* pDstData, DWORD
 }
 #endif
 
+/* seq_profile, the first 3 bits of a sequence header: 0 is 4:2:0 (or monochrome), 1 is 4:4:4;
+ * 2 ("Professional") is 4:2:2 or 12 bit 4:2:0 / 4:4:4, which only deeper fields tell */
+static UINT32 av1_profile_chroma(BYTE first)
+{
+	switch (first >> 5)
+	{
+		case 0:
+			return 420;
+		case 1:
+			return 444;
+		default:
+			return 0;
+	}
+}
+
 /* Walks the OBUs of a temporal unit up to its first frame. A frame shown again from the reference
- * frames (show_existing_frame) decodes nothing, so it is no key frame here. */
+ * frames (show_existing_frame) decodes nothing, so it is no key frame here. A sequence header on
+ * the way sets *chroma. */
 WINPR_ATTR_NODISCARD
-static BOOL av1_is_key_frame(const BYTE* data, size_t size)
+static BOOL av1_is_key_frame(const BYTE* data, size_t size, UINT32* chroma)
 {
 	if (!data)
 		return FALSE;
@@ -793,7 +810,10 @@ static BOOL av1_is_key_frame(const BYTE* data, size_t size)
 
 		/* the first bytes tell, a frame cut short later on is still the frame it was sent as */
 		if ((type == AV1_OBU_SEQUENCE_HEADER) && (length > 0))
+		{
 			reducedStillPicture = (data[pos] & 0x08) != 0;
+			*chroma = av1_profile_chroma(data[pos]);
+		}
 		else if ((type == AV1_OBU_FRAME_HEADER) || (type == AV1_OBU_FRAME))
 		{
 			if (length == 0)
@@ -827,12 +847,18 @@ INT32 freerdp_av1_decompress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, UIN
 {
 	WINPR_ASSERT(av1);
 
+	/* the chroma of the stream: the last sequence header seen, as only key frames carry one */
+	UINT32 chroma = av1->chroma;
+	const BOOL keyFrame = av1_is_key_frame(pSrcData, SrcSize, &chroma);
+	av1->chroma = chroma;
+
 	/* A failure is what remains unless the decode gets to its end */
 	const FREERDP_DECODE_RESULT start = { .status = FREERDP_DECODE_FAILED,
-		                                  .keyFrame = av1_is_key_frame(pSrcData, SrcSize),
+		                                  .keyFrame = keyFrame,
 		                                  .fellBack = FALSE,
 		                                  .hardware = FREERDP_DECODE_HARDWARE_NO,
-		                                  .backend = AV1_SOFTWARE_DECODER };
+		                                  .backend = AV1_SOFTWARE_DECODER,
+		                                  .chroma = chroma };
 	av1->lastDecode = start;
 
 	if (av1->encoder)

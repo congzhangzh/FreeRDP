@@ -81,6 +81,22 @@ fail:
 	return rc;
 }
 
+/* The chroma subsampling the decoder learnt from its last picture: 420 or 444 */
+WINPR_ATTR_NODISCARD
+static BOOL checkChroma(const FREERDP_AV2_CONTEXT* dec, UINT32 chroma)
+{
+	FREERDP_DECODE_RESULT result = WINPR_C_ARRAY_INIT;
+	if (!freerdp_av2_context_get_last_decode(dec, &result))
+		return FALSE;
+	if (result.chroma != chroma)
+	{
+		(void)fprintf(stderr, "[%s] chroma %" PRIu32 ", expected %" PRIu32 "\n", __func__,
+		              result.chroma, chroma);
+		return FALSE;
+	}
+	return TRUE;
+}
+
 /* Encodes a picture and checks the colours of the decoded picture.
  * YUV444 (profile option 1): the chroma differs within each 2x2 block. A YUV444 conversion,
  * that treats the first chroma sample of a 2x2 block as the average of the block (as done for
@@ -130,6 +146,8 @@ static BOOL testColours(uint32_t profile, uint32_t width, uint32_t height)
 	                         &meta) < 0)
 		goto fail;
 	if (freerdp_av2_decompress(dec, dst, dstsize, out, format, stride, width, height, &rect, 1) < 0)
+		goto fail;
+	if (!checkChroma(dec, (profile == 1) ? 444 : 420))
 		goto fail;
 
 	int maxDiff = 0;
@@ -248,7 +266,7 @@ static BOOL testSequence(uint32_t width, uint32_t height, uint32_t frames)
 		                           1) < 0)
 			goto fail;
 		/* the encoder starts with a key frame, the frames after it refer to it */
-		if (!checkLastDecode(dec, FREERDP_DECODE_PICTURE, f == 0))
+		if (!checkLastDecode(dec, FREERDP_DECODE_PICTURE, f == 0) || !checkChroma(dec, 420))
 			goto fail;
 
 		int maxDiff = 0;

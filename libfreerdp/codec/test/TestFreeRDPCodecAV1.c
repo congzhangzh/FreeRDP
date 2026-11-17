@@ -197,6 +197,118 @@ static BOOL checkLastDecode(FREERDP_AV1_CONTEXT* dec, FREERDP_DECODE_STATUS stat
 	return TRUE;
 }
 
+WINPR_ATTR_NODISCARD
+static BOOL chromaIs(FREERDP_AV1_CONTEXT* dec, UINT32 chroma, const char* what)
+{
+	FREERDP_DECODE_RESULT result = WINPR_C_ARRAY_INIT;
+	if (!freerdp_av1_context_get_last_decode(dec, &result))
+		return FALSE;
+	if (result.chroma != chroma)
+	{
+		(void)fprintf(stderr, "[%s] %s: chroma %" PRIu32 ", expected %" PRIu32 "\n", __func__, what,
+		              result.chroma, chroma);
+		return FALSE;
+	}
+	return TRUE;
+}
+
+/* The chroma subsampling comes from the stream's sequence header (seq_profile: 0 is 4:2:0, 1 is
+ * 4:4:4), whatever the decoder makes of the data, and stays until the next sequence header. */
+WINPR_ATTR_NODISCARD
+static BOOL testChroma(void)
+{
+	BOOL rc = FALSE;
+	const UINT32 format = PIXEL_FORMAT_BGRA32;
+	const UINT32 width = 64;
+	const UINT32 height = 64;
+	const RECTANGLE_16 rect = { .left = 0, .top = 0, .right = width, .bottom = height };
+	void* src = nullptr;
+	void* out = nullptr;
+	FREERDP_AV1_CONTEXT* enc = nullptr;
+	FREERDP_AV1_CONTEXT* dec = freerdp_av1_context_new(FALSE);
+	uint32_t stride = 0;
+	uint32_t ostride = 0;
+	src = allocRGB(format, width, height, &stride);
+	out = allocRGB(format, width, height, &ostride);
+	if (!dec || !src || !out || (stride != ostride) ||
+	    !freerdp_av1_context_reset(dec, width, height))
+		goto fail;
+
+	/* a temporal delimiter, then a sequence header of one byte: seq_profile in its top 3 bits */
+	{
+		BYTE headers[] = { 0x12, 0x00, 0x0a, 0x01, 0x20 };
+		const BYTE delimiter[] = { 0x12, 0x00 };
+
+		if (!chromaIs(dec, 0, "before any stream"))
+			goto fail;
+		(void)freerdp_av1_decompress(dec, headers, sizeof(headers), out, format, stride, width,
+		                             height, &rect, 1);
+		if (!chromaIs(dec, 444, "seq_profile 1"))
+			goto fail;
+		(void)freerdp_av1_decompress(dec, delimiter, sizeof(delimiter), out, format, stride, width,
+		                             height, &rect, 1);
+		if (!chromaIs(dec, 444, "no sequence header: the last one stays"))
+			goto fail;
+		headers[4] = 0x00;
+		(void)freerdp_av1_decompress(dec, headers, sizeof(headers), out, format, stride, width,
+		                             height, &rect, 1);
+		if (!chromaIs(dec, 420, "seq_profile 0"))
+			goto fail;
+		headers[4] = 0x40;
+		(void)freerdp_av1_decompress(dec, headers, sizeof(headers), out, format, stride, width,
+		                             height, &rect, 1);
+		if (!chromaIs(dec, 0, "seq_profile 2, not told by its first byte"))
+			goto fail;
+	}
+	freerdp_av1_context_free(dec);
+	dec = nullptr;
+
+	/* real streams: the key frame carries the sequence header, the next frame none */
+	for (UINT32 profile = 0; profile <= 1; profile++)
+	{
+		const UINT32 expected = (profile == 1) ? 444 : 420;
+		RDPGFX_H264_METABLOCK meta = WINPR_C_ARRAY_INIT;
+		uint8_t* dst = nullptr;
+		uint32_t dstsize = 0;
+
+		enc = freerdp_av1_context_new(TRUE);
+		dec = freerdp_av1_context_new(FALSE);
+		if (!enc || !dec || !freerdp_av1_context_reset(enc, width, height) ||
+		    !freerdp_av1_context_reset(dec, width, height) ||
+		    !freerdp_av1_context_set_option(enc, FREERDP_AV1_CONTEXT_OPTION_PROFILE, profile))
+			goto fail;
+
+		for (size_t frame = 0; frame < 2; frame++)
+		{
+			if (winpr_RAND(src, 64) < 0)
+				goto fail;
+			if ((freerdp_av1_compress(enc, src, format, stride, width, height, &rect, &dst,
+			                          &dstsize, &meta) < 0) ||
+			    !dst || (dstsize == 0))
+				goto fail;
+			if (freerdp_av1_decompress(dec, dst, dstsize, out, format, stride, width, height, &rect,
+			                           1) < 0)
+				goto fail;
+			if (!chromaIs(dec, expected, (frame == 0) ? "the key frame" : "the next frame"))
+				goto fail;
+		}
+		freerdp_av1_context_free(enc);
+		freerdp_av1_context_free(dec);
+		enc = nullptr;
+		dec = nullptr;
+	}
+
+	rc = TRUE;
+fail:
+	if (!rc)
+		(void)fprintf(stderr, "[%s] failed\n", __func__);
+	freerdp_av1_context_free(enc);
+	freerdp_av1_context_free(dec);
+	free(src);
+	free(out);
+	return rc;
+}
+
 /* The return value says nothing about pictures, the last decode must: what was decoded, what was
  * only taken and what was refused. */
 WINPR_ATTR_NODISCARD
@@ -611,6 +723,9 @@ int TestFreeRDPCodecAV1(int argc, char* argv[])
 		return -1;
 
 	if (!testLastDecode())
+		return -1;
+
+	if (!testChroma())
 		return -1;
 
 	if (!testWideText())
