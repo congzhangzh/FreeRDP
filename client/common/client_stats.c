@@ -631,6 +631,21 @@ static const rdpContext* web_context = nullptr;
 static uint64_t web_surfaces[WEB_SURFACE_VALUES] = WINPR_C_ARRAY_INIT;
 static uint64_t web_surfaces_ns = 0;
 
+/* What comes from the settings is copied the same way: the session frees and replaces
+ * context->settings and the remote settings when it connects again (an auto-reconnect, a
+ * redirection) while the page stays attached, so the page never reads them itself. */
+#define WEB_SERVER_VALUES (STATS_SERVER_PORT + 1 - STATS_RDP_VERSION)
+static uint64_t web_server[WEB_SERVER_VALUES] = WINPR_C_ARRAY_INIT;
+static char web_strings[STRINGS_MAX][256] = WINPR_C_ARRAY_INIT;
+
+/* with the lock held */
+static void web_clear(void)
+{
+	memset(web_surfaces, 0, sizeof(web_surfaces));
+	memset(web_server, 0, sizeof(web_server));
+	memset(web_strings, 0, sizeof(web_strings));
+}
+
 #if defined(CHANNEL_RDPGFX_CLIENT)
 static pcRdpgfxEndFrame web_end_frame_next = nullptr;
 
@@ -647,9 +662,31 @@ static UINT web_end_frame(RdpgfxClientContext* context, const RDPGFX_END_FRAME_P
 	for (size_t x = 0; x < WEB_SURFACE_VALUES; x++)
 		values[x] = surface_value(context, STATS_GFX_SURFACES + x);
 
+	/* The settings, on this thread: the channel closes, and this thread stops, before the
+	 * session replaces them. The session the page reads is this one: attached at PostConnect,
+	 * detached at PostDisconnect after the channels closed. */
+	(void)pthread_mutex_lock(&web_lock);
+	const rdpContext* session = web_context;
+	(void)pthread_mutex_unlock(&web_lock);
+
+	uint64_t server[WEB_SERVER_VALUES] = WINPR_C_ARRAY_INIT;
+	char strings[STRINGS_MAX][256] = WINPR_C_ARRAY_INIT;
+	if (session)
+	{
+		for (size_t x = 0; x < WEB_SERVER_VALUES; x++)
+			server[x] = server_value(session, STATS_RDP_VERSION + x);
+		for (size_t x = 0; x < STRINGS_MAX; x++)
+		{
+			const char* v = freerdp_client_stats_string_value_for_index(session, x);
+			(void)_snprintf(strings[x], sizeof(strings[x]), "%s", v ? v : "");
+		}
+	}
+
 	/* the lock only to copy: never while waiting for the graphics context's */
 	(void)pthread_mutex_lock(&web_lock);
 	memcpy(web_surfaces, values, sizeof(web_surfaces));
+	memcpy(web_server, server, sizeof(web_server));
+	memcpy(web_strings, strings, sizeof(web_strings));
 	(void)pthread_mutex_unlock(&web_lock);
 	return rc;
 }
@@ -672,7 +709,7 @@ void client_stats_web_attach(const rdpContext* context)
 {
 	(void)pthread_mutex_lock(&web_lock);
 	web_context = context;
-	memset(web_surfaces, 0, sizeof(web_surfaces));
+	web_clear();
 	(void)pthread_mutex_unlock(&web_lock);
 }
 
@@ -681,24 +718,31 @@ void client_stats_web_detach(const rdpContext* context)
 	(void)pthread_mutex_lock(&web_lock);
 	if (web_context == context)
 		web_context = nullptr;
-	memset(web_surfaces, 0, sizeof(web_surfaces));
+	web_clear();
 	(void)pthread_mutex_unlock(&web_lock);
 }
 
 void client_stats_web_barrier(void)
 {
-	/* the graphics channel is gone: so are its surfaces */
+	/* the graphics channel is gone, and the connection may be on its way to the next one: the
+	 * copies go with it */
 	(void)pthread_mutex_lock(&web_lock);
-	memset(web_surfaces, 0, sizeof(web_surfaces));
+	web_clear();
 	(void)pthread_mutex_unlock(&web_lock);
 }
 
 uint64_t client_stats_web_value(size_t index)
 {
+	uint64_t value = 0;
 	(void)pthread_mutex_lock(&web_lock);
-	const uint64_t value = ((index >= STATS_GFX_SURFACES) && (index < STATS_SESSION_MAX))
-	                           ? (web_context ? web_surfaces[index - STATS_GFX_SURFACES] : 0)
-	                           : freerdp_client_stats_value_for_index(web_context, index);
+	if (!web_context)
+		value = 0;
+	else if ((index >= STATS_GFX_SURFACES) && (index < STATS_SESSION_MAX))
+		value = web_surfaces[index - STATS_GFX_SURFACES];
+	else if ((index >= STATS_RDP_VERSION) && (index <= STATS_SERVER_PORT))
+		value = web_server[index - STATS_RDP_VERSION];
+	else
+		value = freerdp_client_stats_value_for_index(web_context, index);
 	(void)pthread_mutex_unlock(&web_lock);
 	return value;
 }
@@ -708,8 +752,8 @@ const char* client_stats_web_string(size_t index, char* buffer, size_t size)
 	if (!buffer || (size == 0))
 		return nullptr;
 	(void)pthread_mutex_lock(&web_lock);
-	const char* v = freerdp_client_stats_string_value_for_index(web_context, index);
-	(void)_snprintf(buffer, size, "%s", v ? v : "");
+	const char* v = (web_context && (index < STRINGS_MAX)) ? web_strings[index] : "";
+	(void)_snprintf(buffer, size, "%s", v);
 	(void)pthread_mutex_unlock(&web_lock);
 	return buffer;
 }
