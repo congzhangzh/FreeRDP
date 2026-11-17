@@ -220,9 +220,10 @@ extern "C"
 	 *  (_FAILED), that it took without a picture to show (_NO_PICTURE), that carried a key frame
 	 *  whatever became of them (_KEY_FRAMES), the nanoseconds all decodes took (_DECODE_NS_SUM),
 	 *  the longest one (_DECODE_NS_MAX), the nanoseconds since the last picture, 0 before the
-	 *  first one (_LAST_PICTURE_AGE_NS), the last FREERDP_DECODE_HARDWARE value (_HARDWARE) and
-	 *  the decoders given up on (_FALLBACKS). A renderer that reports no decode results leaves
-	 *  them at 0.
+	 *  first one (_LAST_PICTURE_AGE_NS), the last FREERDP_DECODE_HARDWARE value (_HARDWARE), the
+	 *  decoders given up on (_FALLBACKS) and the chroma subsampling the decoder last learnt from
+	 *  the stream, 420, 422 or 444, 0 unknown (_CHROMA, AV1 and AV2). A renderer that reports no
+	 *  decode results leaves them at 0.
 	 *
 	 *  @return The number of GFX stats indices that will return a value
 	 *  @since version 3.27.0

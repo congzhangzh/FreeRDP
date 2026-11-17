@@ -652,6 +652,32 @@ static BOOL check_web_surfaces(rdpContext* context, RdpgfxClientContext* gfx)
 }
 #endif
 
+#if defined(WITH_GFX_AV1) || defined(WITH_GFX_AV2)
+/* the chroma an AV decoder learnt reaches RDPGFX_CODECID_AV1_CHROMA, and stays while a
+ * decode without one (a frame with no sequence header) goes by */
+static BOOL check_decoder_chroma(const rdpContext* context, RdpgfxClientContext* gfx)
+{
+	TEST_CHECK(gfx->DecodeResult);
+	TEST_CHECK(stat_value(context, "RDPGFX_CODECID_AV1_CHROMA") == 0);
+
+	FREERDP_DECODE_RESULT result = WINPR_C_ARRAY_INIT;
+	result.status = FREERDP_DECODE_PICTURE;
+	result.chroma = 444;
+	gfx->DecodeResult(gfx, RDPGFX_CODECID_AV1, &result, 1000);
+	TEST_CHECK(stat_value(context, "RDPGFX_CODECID_AV1_CHROMA") == 444);
+
+	result.chroma = 0;
+	gfx->DecodeResult(gfx, RDPGFX_CODECID_AV1, &result, 1000);
+	TEST_CHECK(stat_value(context, "RDPGFX_CODECID_AV1_CHROMA") == 444);
+
+	result.chroma = 420;
+	gfx->DecodeResult(gfx, RDPGFX_CODECID_AV1, &result, 1000);
+	TEST_CHECK(stat_value(context, "RDPGFX_CODECID_AV1_CHROMA") == 420);
+	TEST_CHECK(stat_value(context, "RDPGFX_CODECID_AVC420_CHROMA") == 0);
+	return TRUE;
+}
+#endif
+
 /* a graphics channel, reached the way a session reaches it: context->gdi->gfx */
 static BOOL check_gfx_channel(rdpContext* context, IWTSPlugin* plugin, test_channel_manager* mgr)
 {
@@ -687,6 +713,9 @@ static BOOL check_gfx_channel(rdpContext* context, IWTSPlugin* plugin, test_chan
 		rc = (stat_value(context, "GFX_CAPS_VERSION") == RDPGFX_CAPVERSION_107) &&
 		     (stat_value(context, "GFX_CAPS_FLAGS") == RDPGFX_CAPS_FLAG_SMALL_CACHE) &&
 		     check_surfaces(context, gfx) &&
+#if defined(WITH_GFX_AV1) || defined(WITH_GFX_AV2)
+		     check_decoder_chroma(context, gfx) &&
+#endif
 #if !defined(_WIN32) && defined(EXPORT_ALL_SYMBOLS)
 		     check_web_surfaces(context, gfx) &&
 #endif

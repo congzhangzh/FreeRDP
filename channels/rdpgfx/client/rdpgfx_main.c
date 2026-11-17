@@ -64,6 +64,7 @@ enum
 	RDPGFX_DECODER_LAST_PICTURE_NS, /* a point in time: read as its age */
 	RDPGFX_DECODER_HARDWARE,
 	RDPGFX_DECODER_FALLBACKS,
+	RDPGFX_DECODER_CHROMA, /* the last one a decoder learnt: 420, 422, 444, 0 unknown */
 	RDPGFX_DECODER_STATS
 };
 
@@ -97,6 +98,7 @@ static const char* const decoderStatNames[RDPGFX_DECODER_STATS] = {
 	[RDPGFX_DECODER_LAST_PICTURE_NS] = "_LAST_PICTURE_AGE_NS",
 	[RDPGFX_DECODER_HARDWARE] = "_HARDWARE",
 	[RDPGFX_DECODER_FALLBACKS] = "_FALLBACKS",
+	[RDPGFX_DECODER_CHROMA] = "_CHROMA",
 };
 static INIT_ONCE bytesGfxCodecNamesOnce = INIT_ONCE_STATIC_INIT;
 
@@ -233,6 +235,8 @@ static void rdpgfx_stats_decode_result(RdpgfxClientContext* context, UINT16 code
 		stats[RDPGFX_DECODER_KEY_FRAMES]++;
 	if (result->fellBack)
 		stats[RDPGFX_DECODER_FALLBACKS]++;
+	if (result->chroma != 0)
+		stats[RDPGFX_DECODER_CHROMA] = result->chroma;
 	stats[RDPGFX_DECODER_DECODE_NS_SUM] += decodeNS;
 	if (decodeNS > stats[RDPGFX_DECODER_DECODE_NS_MAX])
 		stats[RDPGFX_DECODER_DECODE_NS_MAX] = decodeNS;
