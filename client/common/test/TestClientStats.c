@@ -589,21 +589,58 @@ static BOOL check_web_surfaces(rdpContext* context, RdpgfxClientContext* gfx)
 	TEST_CHECK(gfx->SetSurfaceData(gfx, 7, &a) == CHANNEL_RC_OK);
 	TEST_CHECK(gfx->SetSurfaceData(gfx, 3, &b) == CHANNEL_RC_OK);
 
+	size_t serverVersion = 0;
+	size_t port = 0;
+	size_t cnIndex = 0;
+	TEST_CHECK(find_stat("SERVER_RDP_VERSION", &serverVersion));
+	TEST_CHECK(find_stat("SERVER_PORT", &port));
+	for (size_t x = 0; x < freerdp_client_stats_string_max_index(); x++)
+	{
+		if (strcmp(freerdp_client_stats_string_name_for_index(x), "SERVER_CERT_CN") == 0)
+			cnIndex = x;
+	}
+	char text[64] = WINPR_C_ARRAY_INIT;
+
+	rdpSettings* remote = (rdpSettings*)freerdp_get_remote_settings(context);
+	TEST_CHECK(remote);
+	TEST_CHECK(freerdp_settings_set_uint32(context->settings, FreeRDP_ServerPort, 3390));
+	TEST_CHECK(freerdp_settings_set_uint32(remote, FreeRDP_RdpVersion, RDP_VERSION_10_12));
+	TEST_CHECK(freerdp_settings_set_string(remote, FreeRDP_CertificateName, "cn.test"));
+
 	client_stats_web_attach(context);
 	client_stats_web_gfx_connected(gfx);
 
-	/* no frame yet: no copy, though the surfaces are there; other values read through */
+	/* no frame yet: no copy, though the surfaces and the settings are there; other values read
+	 * through */
 	BOOL rc = (client_stats_web_value(surfaces) == 0) &&
+	          (client_stats_web_value(serverVersion) == 0) &&
+	          (strcmp(client_stats_web_string(cnIndex, text, sizeof(text)), "") == 0) &&
 	          (client_stats_web_value(caps) == RDPGFX_CAPVERSION_107);
 
-	/* a frame ends on the graphics channel's thread: the copy is made there */
+	/* a frame ends on the graphics channel's thread: the copies are made there */
 	const RDPGFX_END_FRAME_PDU end = WINPR_C_ARRAY_INIT;
 	rc = rc && (gfx->EndFrame(gfx, &end) == CHANNEL_RC_OK) &&
-	     (client_stats_web_value(surfaces) == 2) && (client_stats_web_value(width) == 640);
+	     (client_stats_web_value(surfaces) == 2) && (client_stats_web_value(width) == 640) &&
+	     (client_stats_web_value(serverVersion) == RDP_VERSION_10_12) &&
+	     (client_stats_web_value(port) == 3390) &&
+	     (strcmp(client_stats_web_string(cnIndex, text, sizeof(text)), "cn.test") == 0);
 
-	/* the channel closes: its surfaces go with it; then the session goes */
+	/* the page reads only the copies: what the session changes, or frees and replaces when it
+	 * connects again (an auto-reconnect, a redirection), shows after the next frame */
+	TEST_CHECK(freerdp_settings_set_uint32(remote, FreeRDP_RdpVersion, RDP_VERSION_10_11));
+	TEST_CHECK(freerdp_settings_set_string(remote, FreeRDP_CertificateName, "other.test"));
+	rc = rc && (client_stats_web_value(serverVersion) == RDP_VERSION_10_12) &&
+	     (strcmp(client_stats_web_string(cnIndex, text, sizeof(text)), "cn.test") == 0);
+	TEST_CHECK(freerdp_context_reset(context->instance));
+	rc = rc && (client_stats_web_value(serverVersion) == RDP_VERSION_10_12) &&
+	     (client_stats_web_value(port) == 3390) &&
+	     (strcmp(client_stats_web_string(cnIndex, text, sizeof(text)), "cn.test") == 0);
+
+	/* the channel closes: its copies go with it; then the session goes */
 	client_stats_web_barrier();
-	rc = rc && (client_stats_web_value(surfaces) == 0);
+	rc = rc && (client_stats_web_value(surfaces) == 0) &&
+	     (client_stats_web_value(serverVersion) == 0) &&
+	     (strcmp(client_stats_web_string(cnIndex, text, sizeof(text)), "") == 0);
 	client_stats_web_detach(context);
 	rc = rc && (client_stats_web_value(caps) == 0);
 
