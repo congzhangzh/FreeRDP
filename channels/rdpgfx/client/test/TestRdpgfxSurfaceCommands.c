@@ -65,7 +65,12 @@ typedef struct
 	UINT32 lastEndFrame;
 	UINT32 acks;
 	UINT32 lastAckFrame;
+	UINT32 capsVersions[32]; /* of the caps advertise, in its order */
+	UINT32 capsCount;
 } test_seen;
+
+/* FreeRDP_GfxCodecOrder for the next test_open() */
+static UINT32 testCodecOrder = 0;
 
 static test_seen seen = WINPR_C_ARRAY_INIT;
 
@@ -170,6 +175,20 @@ static UINT test_channel_write(WINPR_ATTR_UNUSED IWTSVirtualChannel* pChannel, U
 
 	const UINT16 cmdId = Stream_Get_UINT16(s);
 	Stream_Seek(s, 6); /* flags, pduLength */
+	if ((cmdId == RDPGFX_CMDID_CAPSADVERTISE) && Stream_CheckAndLogRequiredLength("test", s, 2))
+	{
+		const UINT16 count = Stream_Get_UINT16(s);
+		for (UINT16 x = 0; (x < count) && (x < ARRAYSIZE(seen.capsVersions)); x++)
+		{
+			if (!Stream_CheckAndLogRequiredLength("test", s, 8))
+				break;
+			seen.capsVersions[x] = Stream_Get_UINT32(s);
+			const UINT32 length = Stream_Get_UINT32(s);
+			if (!Stream_SafeSeek(s, length))
+				break;
+			seen.capsCount = x + 1u;
+		}
+	}
 	if ((cmdId == RDPGFX_CMDID_FRAMEACKNOWLEDGE) && Stream_CheckAndLogRequiredLength("test", s, 8))
 	{
 		Stream_Seek_UINT32(s); /* queueDepth */
@@ -339,6 +358,8 @@ static BOOL test_open(test_session* session, UINT32 version, wStream* s)
 	    sizeof(rdpClientContext); /* the client API needs the whole client context */
 	session->context = freerdp_client_context_new(&entry);
 	TEST_CHECK(session->context);
+	TEST_CHECK(freerdp_settings_set_uint32(session->context->settings, FreeRDP_GfxCodecOrder,
+	                                       testCodecOrder));
 
 	PDVC_PLUGIN_ENTRY pluginEntry = WINPR_FUNC_PTR_CAST(
 	    freerdp_channels_load_static_addin_entry(RDPGFX_CHANNEL_NAME, nullptr, nullptr,
@@ -504,6 +525,79 @@ out:
 	return rc;
 }
 
+/* Where version stands in the last caps advertise, capsCount when it is not there */
+static UINT32 caps_position(UINT32 version)
+{
+	for (UINT32 x = 0; x < seen.capsCount; x++)
+	{
+		if (seen.capsVersions[x] == version)
+			return x;
+	}
+	return seen.capsCount;
+}
+
+/* The classic sets (8.0 to 10.7) keep their ascending order among themselves */
+static BOOL classic_ascending(void)
+{
+	UINT32 last = 0;
+	for (UINT32 x = 0; x < seen.capsCount; x++)
+	{
+		const UINT32 v = seen.capsVersions[x];
+		if ((v < RDPGFX_CAPVERSION_8) || (v > RDPGFX_CAPVERSION_107))
+			continue;
+		if (v < last)
+			return FALSE;
+		last = v;
+	}
+	return TRUE;
+}
+
+/* The order of the caps advertise follows FreeRDP_GfxCodecOrder, the preferred set last, as a
+ * server takes the last one it supports; without an order it is today's */
+static BOOL test_codec_order(wStream* s)
+{
+	test_session session = WINPR_C_ARRAY_INIT;
+
+	testCodecOrder = 0;
+	TEST_CHECK(test_open(&session, RDPGFX_CAPVERSION_107, s));
+	test_close(&session);
+	TEST_CHECK(seen.capsCount > 0);
+	TEST_CHECK(classic_ascending());
+#if defined(WITH_GFX_AV1) && defined(WITH_GFX_AV2)
+	/* today: AV1 then AV2, at the end */
+	if ((caps_position(RDPGFX_CAPVERSION_FRDP_2) < seen.capsCount) &&
+	    (caps_position(RDPGFX_CAPVERSION_FRDP_1) < seen.capsCount))
+		TEST_CHECK(caps_position(RDPGFX_CAPVERSION_FRDP_2) == seen.capsCount - 1);
+#endif
+
+#if defined(WITH_GFX_AV1)
+	/* AV1 then AV2: AV1 last */
+	testCodecOrder = RDPGFX_CODEC_ORDER_AV1 | (RDPGFX_CODEC_ORDER_AV2 << 4);
+	TEST_CHECK(test_open(&session, RDPGFX_CAPVERSION_107, s));
+	test_close(&session);
+	TEST_CHECK(classic_ascending());
+	if (caps_position(RDPGFX_CAPVERSION_FRDP_1) < seen.capsCount)
+	{
+		TEST_CHECK(caps_position(RDPGFX_CAPVERSION_FRDP_1) == seen.capsCount - 1);
+#if defined(WITH_GFX_AV2)
+		if (caps_position(RDPGFX_CAPVERSION_FRDP_2) < seen.capsCount)
+			TEST_CHECK(caps_position(RDPGFX_CAPVERSION_FRDP_2) == seen.capsCount - 2);
+#endif
+	}
+
+	/* AVC444 then AV1: the classic sets last, AV1 before them */
+	testCodecOrder = RDPGFX_CODEC_ORDER_AVC444 | (RDPGFX_CODEC_ORDER_AV1 << 4);
+	TEST_CHECK(test_open(&session, RDPGFX_CAPVERSION_107, s));
+	test_close(&session);
+	TEST_CHECK(classic_ascending());
+	TEST_CHECK(caps_position(RDPGFX_CAPVERSION_107) == seen.capsCount - 1);
+	if (caps_position(RDPGFX_CAPVERSION_FRDP_1) < seen.capsCount)
+		TEST_CHECK(caps_position(RDPGFX_CAPVERSION_FRDP_1) < caps_position(RDPGFX_CAPVERSION_8));
+#endif
+	testCodecOrder = 0;
+	return TRUE;
+}
+
 int TestRdpgfxSurfaceCommands(int argc, char* argv[])
 {
 	WINPR_UNUSED(argc);
@@ -515,6 +609,8 @@ int TestRdpgfxSurfaceCommands(int argc, char* argv[])
 		return -1;
 
 	if (!test_undecodable_commands(s))
+		goto out;
+	if (!test_codec_order(s))
 		goto out;
 #if defined(WITH_GFX_AV2)
 	if (!test_av2_pre_merge_codec_id(s, RDPGFX_CAPVERSION_FRDP_2, TRUE))
