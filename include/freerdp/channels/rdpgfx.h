@@ -223,6 +223,24 @@ typedef enum WINPR_C23_ENUM_TYPE(uint16_t)
 #endif
 } RDPGFX_CODECID;
 
+/** The codes of FreeRDP_GfxCodecOrder, the video codecs a client prefers: 4 bits each, the most
+ * preferred in the lowest, RDPGFX_CODEC_ORDER_END after the last. A client setting, not on the
+ * wire: the client offers the codecs in that order.
+ * @since version 3.34.0 */
+typedef enum
+{
+	RDPGFX_CODEC_ORDER_END = 0,
+	RDPGFX_CODEC_ORDER_AV2 = 1,
+	RDPGFX_CODEC_ORDER_AV1 = 2,
+	RDPGFX_CODEC_ORDER_HEVC = 3,
+	RDPGFX_CODEC_ORDER_AVC444 = 4,
+	RDPGFX_CODEC_ORDER_AVC420 = 5,
+	RDPGFX_CODEC_ORDER_RFX = 6,
+	RDPGFX_CODEC_ORDER_PROGRESSIVE = 7
+} RDPGFX_CODEC_ORDER;
+
+#define RDPGFX_CODEC_ORDER_MAX_SLOTS 8
+
 #define RDPGFX_WIRE_TO_SURFACE_PDU_1_SIZE 17
 
 typedef struct

@@ -361,6 +361,7 @@ static const struct settings_str_entry settings_map[] = {
 	{ FreeRDP_GfxCapsFilter, FREERDP_SETTINGS_TYPE_UINT32, "FreeRDP_GfxCapsFilter" },
 	{ FreeRDP_GfxCodecAV1Profile, FREERDP_SETTINGS_TYPE_UINT32, "FreeRDP_GfxCodecAV1Profile" },
 	{ FreeRDP_GfxCodecAV2Profile, FREERDP_SETTINGS_TYPE_UINT32, "FreeRDP_GfxCodecAV2Profile" },
+	{ FreeRDP_GfxCodecOrder, FREERDP_SETTINGS_TYPE_UINT32, "FreeRDP_GfxCodecOrder" },
 	{ FreeRDP_GlyphSupportLevel, FREERDP_SETTINGS_TYPE_UINT32, "FreeRDP_GlyphSupportLevel" },
 	{ FreeRDP_JpegCodecId, FREERDP_SETTINGS_TYPE_UINT32, "FreeRDP_JpegCodecId" },
 	{ FreeRDP_JpegQuality, FREERDP_SETTINGS_TYPE_UINT32, "FreeRDP_JpegQuality" },
