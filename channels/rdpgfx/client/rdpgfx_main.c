@@ -819,15 +819,14 @@ static UINT rdpgfx_send_supported_caps(GENERIC_CHANNEL_CALLBACK* callback)
 			capsSet->version = RDPGFX_CAPVERSION_FRDP_1;
 			capsSet->length = 0x4;
 
-			if (freerdp_codec_supported(gfx->rdpcontext, FREERDP_CODEC_AV1_I444, FALSE))
-				capsSet->flags = caps10Flags | RDPGFX_CAPS_FLAG_AV1_I444_SUPPORTED;
-			else
-				capsSet->flags |= RDPGFX_CAPS_FLAG_AV1_I444_DISABLED;
-
-			const UINT32 profile =
-			    freerdp_settings_get_uint32(gfx->rdpcontext->settings, FreeRDP_GfxCodecAV1Profile);
-			if (profile == 0)
-				capsSet->flags |= RDPGFX_CAPS_FLAG_AV1_I444_DISABLED;
+			/* 4:4:4 only when the decoder has it and the user did not ask for 4:2:0: a server
+			 * set for 4:2:0 refuses a set that offers it */
+			const BOOL i444 =
+			    freerdp_codec_supported(gfx->rdpcontext, FREERDP_CODEC_AV1_I444, FALSE) &&
+			    (freerdp_settings_get_uint32(gfx->rdpcontext->settings,
+			                                 FreeRDP_GfxCodecAV1Profile) != 0);
+			capsSet->flags = caps10Flags | (i444 ? RDPGFX_CAPS_FLAG_AV1_I444_SUPPORTED
+			                                     : RDPGFX_CAPS_FLAG_AV1_I444_DISABLED);
 
 			if (!freerdp_image_scaling_supported())
 				capsSet->flags |= RDPGFX_CAPS_FLAG_SCALEDMAP_DISABLE;
@@ -849,20 +848,13 @@ static UINT rdpgfx_send_supported_caps(GENERIC_CHANNEL_CALLBACK* callback)
 			capsSet->version = RDPGFX_CAPVERSION_FRDP_2;
 			capsSet->length = 0x4;
 
-			if (freerdp_codec_supported(gfx->rdpcontext, FREERDP_CODEC_AV2_I444, FALSE))
-			{
-				capsSet->flags = caps10Flags | RDPGFX_CAPS_FLAG_AV1_I444_SUPPORTED;
-
-				const UINT32 profile = freerdp_settings_get_uint32(gfx->rdpcontext->settings,
-				                                                   FreeRDP_GfxCodecAV2Profile);
-				if (profile == 0)
-					capsSet->flags |= RDPGFX_CAPS_FLAG_AV1_I444_DISABLED;
-			}
-			else
-			{
-				/* the decoder (dav2d) has no AV2 4:4:4: always ask for 4:2:0 */
-				capsSet->flags = caps10Flags | RDPGFX_CAPS_FLAG_AV1_I444_DISABLED;
-			}
+			/* as for AV1; the decoder dav2d has no AV2 4:4:4 */
+			const BOOL i444 =
+			    freerdp_codec_supported(gfx->rdpcontext, FREERDP_CODEC_AV2_I444, FALSE) &&
+			    (freerdp_settings_get_uint32(gfx->rdpcontext->settings,
+			                                 FreeRDP_GfxCodecAV2Profile) != 0);
+			capsSet->flags = caps10Flags | (i444 ? RDPGFX_CAPS_FLAG_AV1_I444_SUPPORTED
+			                                     : RDPGFX_CAPS_FLAG_AV1_I444_DISABLED);
 
 			if (!freerdp_image_scaling_supported())
 				capsSet->flags |= RDPGFX_CAPS_FLAG_SCALEDMAP_DISABLE;

@@ -66,11 +66,15 @@ typedef struct
 	UINT32 acks;
 	UINT32 lastAckFrame;
 	UINT32 capsVersions[32]; /* of the caps advertise, in its order */
+	UINT32 capsFlags[32];
 	UINT32 capsCount;
 } test_seen;
 
 /* FreeRDP_GfxCodecOrder for the next test_open() */
 static UINT32 testCodecOrder = 0;
+
+/* FreeRDP_GfxCodecAV1Profile and FreeRDP_GfxCodecAV2Profile for the next test_open() */
+static UINT32 testAvProfile = 1;
 
 static test_seen seen = WINPR_C_ARRAY_INIT;
 
@@ -184,7 +188,11 @@ static UINT test_channel_write(WINPR_ATTR_UNUSED IWTSVirtualChannel* pChannel, U
 				break;
 			seen.capsVersions[x] = Stream_Get_UINT32(s);
 			const UINT32 length = Stream_Get_UINT32(s);
-			if (!Stream_SafeSeek(s, length))
+			if ((length >= 4) && Stream_CheckAndLogRequiredLength("test", s, 4))
+				seen.capsFlags[x] = Stream_Get_UINT32(s);
+			else if (!Stream_SafeSeek(s, length))
+				break;
+			if ((length > 4) && !Stream_SafeSeek(s, length - 4))
 				break;
 			seen.capsCount = x + 1u;
 		}
@@ -360,6 +368,10 @@ static BOOL test_open(test_session* session, UINT32 version, wStream* s)
 	TEST_CHECK(session->context);
 	TEST_CHECK(freerdp_settings_set_uint32(session->context->settings, FreeRDP_GfxCodecOrder,
 	                                       testCodecOrder));
+	TEST_CHECK(freerdp_settings_set_uint32(session->context->settings, FreeRDP_GfxCodecAV1Profile,
+	                                       testAvProfile));
+	TEST_CHECK(freerdp_settings_set_uint32(session->context->settings, FreeRDP_GfxCodecAV2Profile,
+	                                       testAvProfile));
 
 	PDVC_PLUGIN_ENTRY pluginEntry = WINPR_FUNC_PTR_CAST(
 	    freerdp_channels_load_static_addin_entry(RDPGFX_CHANNEL_NAME, nullptr, nullptr,
@@ -598,6 +610,60 @@ static BOOL test_codec_order(wStream* s)
 	return TRUE;
 }
 
+#if defined(WITH_GFX_AV1) || defined(WITH_GFX_AV2)
+/* The flags of the AV set version in the last caps advertise: TRUE when it is there */
+static BOOL caps_flags(UINT32 version, UINT32* flags)
+{
+	for (UINT32 x = 0; x < seen.capsCount; x++)
+	{
+		if (seen.capsVersions[x] == version)
+		{
+			*flags = seen.capsFlags[x];
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
+
+/* An AV set offers 4:4:4 only when 4:4:4 is wanted: one that asks for 4:2:0 (profile 0) says
+ * I444_DISABLED and not I444_SUPPORTED, which a server set for 4:2:0 refuses. Either way it
+ * carries the version 10 flags (small cache). */
+static BOOL test_av_i444_offer(wStream* s)
+{
+	const UINT32 versions[] = {
+#if defined(WITH_GFX_AV1)
+		RDPGFX_CAPVERSION_FRDP_1,
+#endif
+#if defined(WITH_GFX_AV2)
+		RDPGFX_CAPVERSION_FRDP_2,
+#endif
+	};
+
+	for (UINT32 profile = 0; profile <= 1; profile++)
+	{
+		test_session session = WINPR_C_ARRAY_INIT;
+		testAvProfile = profile;
+		TEST_CHECK(test_open(&session, RDPGFX_CAPVERSION_107, s));
+		test_close(&session);
+
+		for (size_t x = 0; x < ARRAYSIZE(versions); x++)
+		{
+			UINT32 flags = 0;
+			if (!caps_flags(versions[x], &flags))
+				continue; /* the build cannot decode it */
+			TEST_CHECK((flags & RDPGFX_CAPS_FLAG_SMALL_CACHE) != 0);
+			const BOOL supported = (flags & RDPGFX_CAPS_FLAG_AV1_I444_SUPPORTED) != 0;
+			const BOOL disabled = (flags & RDPGFX_CAPS_FLAG_AV1_I444_DISABLED) != 0;
+			TEST_CHECK(supported != disabled);
+			if (profile == 0)
+				TEST_CHECK(disabled);
+		}
+	}
+	testAvProfile = 1;
+	return TRUE;
+}
+#endif
+
 int TestRdpgfxSurfaceCommands(int argc, char* argv[])
 {
 	WINPR_UNUSED(argc);
@@ -612,6 +678,10 @@ int TestRdpgfxSurfaceCommands(int argc, char* argv[])
 		goto out;
 	if (!test_codec_order(s))
 		goto out;
+#if defined(WITH_GFX_AV1) || defined(WITH_GFX_AV2)
+	if (!test_av_i444_offer(s))
+		goto out;
+#endif
 #if defined(WITH_GFX_AV2)
 	if (!test_av2_pre_merge_codec_id(s, RDPGFX_CAPVERSION_FRDP_2, TRUE))
 		goto out;
