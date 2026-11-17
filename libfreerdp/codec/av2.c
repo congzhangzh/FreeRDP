@@ -105,6 +105,7 @@ struct S_FREERDP_AV2_CONTEXT
 	UINT32 yuvStride[3];
 	UINT32 yuvHeight;
 	FREERDP_DECODE_RESULT lastDecode;
+	UINT32 chroma; /* of the last decoded picture, 0 before one */
 };
 
 #if defined(AV2_DECODER_DAV2D)
@@ -648,6 +649,8 @@ static INT32 av2_dav2d_drain_one(FREERDP_AV2_CONTEXT* av2, BYTE* pDstData, DWORD
 				                  .bpc = (UINT32)pic.p.bpc,
 				                  .highbd = (pic.p.bpc > 8),
 				                  .i444 = (pic.p.layout == DAV2D_PIXEL_LAYOUT_I444) };
+			av2->chroma = planes.i444 ? 444 : 420;
+			av2->lastDecode.chroma = av2->chroma;
 			rc = av2_convert(av2, &planes, pDstData, DstFormat, nDstStep, nDstWidth, nDstHeight,
 			                 regionRects, numRegionRect);
 		}
@@ -669,11 +672,13 @@ INT32 freerdp_av2_decompress(FREERDP_AV2_CONTEXT* av2, const BYTE* pSrcData, UIN
 	WINPR_ASSERT(av2);
 
 	/* A failure is what remains unless the decode gets to its end */
+	/* the chroma of the last picture: AV2's sequence header is not AV1's, the picture tells */
 	const FREERDP_DECODE_RESULT start = { .status = FREERDP_DECODE_FAILED,
 		                                  .keyFrame = FALSE,
 		                                  .fellBack = FALSE,
 		                                  .hardware = FREERDP_DECODE_HARDWARE_NO,
-		                                  .backend = AV2_DECODER_NAME };
+		                                  .backend = AV2_DECODER_NAME,
+		                                  .chroma = av2->chroma };
 	av2->lastDecode = start;
 
 	if (av2->encoder)
@@ -759,6 +764,8 @@ INT32 freerdp_av2_decompress(FREERDP_AV2_CONTEXT* av2, const BYTE* pSrcData, UIN
 			                  .bpc = img->bit_depth,
 			                  .highbd = (img->fmt & AVM_IMG_FMT_HIGHBITDEPTH) != 0,
 			                  .i444 = (fmt == AVM_IMG_FMT_I444) };
+		av2->chroma = planes.i444 ? 444 : 420;
+		av2->lastDecode.chroma = av2->chroma;
 
 		const INT32 crc = av2_convert(av2, &planes, pDstData, DstFormat, nDstStep, nDstWidth,
 		                              nDstHeight, regionRects, numRegionRect);
