@@ -3,6 +3,7 @@
 #include <freerdp/client.h>
 #include <freerdp/client/cmdline.h>
 #include <freerdp/settings.h>
+#include <freerdp/channels/rdpgfx.h>
 #include <winpr/cmdline.h>
 #include <winpr/spec.h>
 #include <winpr/strlst.h>
@@ -542,6 +543,74 @@ typedef struct
 } test;
 
 // NOLINTBEGIN(bugprone-suspicious-missing-comma)
+/* /gfx-codec-order:progressive,RFX: the order kept, those two offered, nothing else */
+static BOOL check_settings_gfx_codec_order(rdpSettings* settings)
+{
+	BOOL result = TRUE;
+	const UINT32 order = RDPGFX_CODEC_ORDER_PROGRESSIVE | (RDPGFX_CODEC_ORDER_RFX << 4);
+	if (freerdp_settings_get_uint32(settings, FreeRDP_GfxCodecOrder) != order)
+	{
+		TEST_FAILURE("Expected GfxCodecOrder = 0x%08" PRIx32 ", got 0x%08" PRIx32 "!\n", order,
+		             freerdp_settings_get_uint32(settings, FreeRDP_GfxCodecOrder));
+		result = FALSE;
+	}
+	if (!freerdp_settings_get_bool(settings, FreeRDP_SupportGraphicsPipeline) ||
+	    !freerdp_settings_get_bool(settings, FreeRDP_GfxProgressive) ||
+	    !freerdp_settings_get_bool(settings, FreeRDP_RemoteFxCodec))
+	{
+		TEST_FAILURE("Expected the graphics pipeline, progressive and RFX on!\n");
+		result = FALSE;
+	}
+	const FreeRDP_Settings_Keys_Bool off[] = {
+#if defined(WITH_GFX_AV1)
+		FreeRDP_GfxCodecAV1,
+#endif
+#if defined(WITH_GFX_AV2)
+		FreeRDP_GfxCodecAV2,
+#endif
+		FreeRDP_GfxH264, FreeRDP_GfxAVC444, FreeRDP_GfxAVC444v2
+	};
+	for (size_t x = 0; x < ARRAYSIZE(off); x++)
+	{
+		if (freerdp_settings_get_bool(settings, off[x]))
+		{
+			TEST_FAILURE("Expected %s = FALSE, the order does not name it!\n",
+			             freerdp_settings_get_name_for_key(off[x]));
+			result = FALSE;
+		}
+	}
+	return result;
+}
+
+#if defined(WITH_GFX_AV1) && defined(WITH_GFX_AV2)
+/* /gfx-codec-order:AV1,AV2: AV1 first, both offered */
+static BOOL check_settings_gfx_codec_order_av(rdpSettings* settings)
+{
+	BOOL result = TRUE;
+	const UINT32 order = RDPGFX_CODEC_ORDER_AV1 | (RDPGFX_CODEC_ORDER_AV2 << 4);
+	if ((freerdp_settings_get_uint32(settings, FreeRDP_GfxCodecOrder) != order) ||
+	    !freerdp_settings_get_bool(settings, FreeRDP_GfxCodecAV1) ||
+	    !freerdp_settings_get_bool(settings, FreeRDP_GfxCodecAV2) ||
+	    freerdp_settings_get_bool(settings, FreeRDP_GfxProgressive))
+	{
+		TEST_FAILURE("Expected AV1 then AV2, both on and nothing else!\n");
+		result = FALSE;
+	}
+	return result;
+}
+#endif
+
+/* no order given: none */
+static BOOL check_settings_no_codec_order(rdpSettings* settings)
+{
+	if (freerdp_settings_get_uint32(settings, FreeRDP_GfxCodecOrder) != 0)
+	{
+		TEST_FAILURE("Expected no GfxCodecOrder without /gfx-codec-order!\n");
+		return FALSE;
+	}
+	return TRUE;
+}
+
 static const test tests[] = {
 	{ COMMAND_LINE_STATUS_PRINT_HELP,
 	  check_settings_smartcard_no_redirection,
@@ -716,6 +785,33 @@ static const test tests[] = {
 	{ 0,
 	  check_settings_network_auto_h264,
 	  { "testfreerdp", "/network:auto", "/v:test.freerdp.com", nullptr },
+	  { WINPR_C_ARRAY_INIT } },
+#endif
+	{ 0,
+	  check_settings_gfx_codec_order,
+	  { "testfreerdp", "/gfx-codec-order:progressive,RFX", "/v:test.freerdp.com", nullptr },
+	  { WINPR_C_ARRAY_INIT } },
+	{ 0,
+	  check_settings_gfx_codec_order,
+	  { "testfreerdp", "/network:auto", "/gfx-codec-order:PROGRESSIVE,rfx", "/v:test.freerdp.com",
+	    nullptr },
+	  { WINPR_C_ARRAY_INIT } },
+	{ COMMAND_LINE_ERROR_UNEXPECTED_VALUE,
+	  check_settings_no_codec_order,
+	  { "testfreerdp", "/gfx-codec-order:RFX,RFX", "/v:test.freerdp.com", nullptr },
+	  { WINPR_C_ARRAY_INIT } },
+	{ COMMAND_LINE_ERROR_UNEXPECTED_VALUE,
+	  check_settings_no_codec_order,
+	  { "testfreerdp", "/gfx-codec-order:nocodec", "/v:test.freerdp.com", nullptr },
+	  { WINPR_C_ARRAY_INIT } },
+	{ 0,
+	  check_settings_no_codec_order,
+	  { "testfreerdp", "/gfx", "/v:test.freerdp.com", nullptr },
+	  { WINPR_C_ARRAY_INIT } },
+#if defined(WITH_GFX_AV1) && defined(WITH_GFX_AV2)
+	{ 0,
+	  check_settings_gfx_codec_order_av,
+	  { "testfreerdp", "/gfx-codec-order:AV1,AV2", "/v:test.freerdp.com", nullptr },
 	  { WINPR_C_ARRAY_INIT } },
 #endif
 #if defined(WITH_GFX_AV1) || defined(WITH_GFX_AV2)

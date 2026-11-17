@@ -36,6 +36,7 @@
 
 #include <freerdp/freerdp.h>
 #include <freerdp/addin.h>
+#include <freerdp/channels/rdpgfx.h>
 #include <freerdp/settings.h>
 #include <freerdp/client.h>
 #include <freerdp/client/channels.h>
@@ -2180,9 +2181,103 @@ static BOOL parseSizeValue(const char* input, unsigned long* v1, unsigned long* 
 }
 
 WINPR_ATTR_NODISCARD
+/* /gfx-codec-order: the codecs named are offered, in that order (FreeRDP_GfxCodecOrder), the
+ * others are not, as with a /gfx pick */
+WINPR_ATTR_NODISCARD
+static int parse_gfx_codec_order(rdpSettings* settings, const COMMAND_LINE_ARGUMENT_A* arg)
+{
+	WINPR_ASSERT(settings);
+	WINPR_ASSERT(arg);
+
+	static const struct
+	{
+		const char* name;
+		RDPGFX_CODEC_ORDER code;
+	} codecs[] = {
+#if defined(WITH_GFX_AV2)
+		{ "AV2", RDPGFX_CODEC_ORDER_AV2 },
+#endif
+#if defined(WITH_GFX_AV1)
+		{ "AV1", RDPGFX_CODEC_ORDER_AV1 },
+#endif
+#if defined(WITH_GFX_AZURE)
+		{ "HEVC", RDPGFX_CODEC_ORDER_HEVC },
+#endif
+#if defined(WITH_GFX_H264)
+		{ "AVC444", RDPGFX_CODEC_ORDER_AVC444 }, { "AVC420", RDPGFX_CODEC_ORDER_AVC420 },
+#endif
+		{ "RFX", RDPGFX_CODEC_ORDER_RFX },       { "progressive", RDPGFX_CODEC_ORDER_PROGRESSIVE },
+	};
+
+	if (!arg->Value)
+		return COMMAND_LINE_ERROR_MISSING_VALUE;
+
+	int rc = CHANNEL_RC_OK;
+	size_t count = 0;
+	char** list = CommandLineParseCommaSeparatedValues(arg->Value, &count);
+	if (!list || (count == 0) || (count > RDPGFX_CODEC_ORDER_MAX_SLOTS))
+		rc = COMMAND_LINE_ERROR_UNEXPECTED_VALUE;
+
+	UINT32 order = 0;
+	BOOL named[RDPGFX_CODEC_ORDER_MAX_SLOTS] = WINPR_C_ARRAY_INIT;
+	for (size_t x = 0; (rc == CHANNEL_RC_OK) && (x < count); x++)
+	{
+		size_t found = ARRAYSIZE(codecs);
+		for (size_t y = 0; y < ARRAYSIZE(codecs); y++)
+		{
+			if (_stricmp(list[x], codecs[y].name) == 0)
+				found = y;
+		}
+		if (found == ARRAYSIZE(codecs))
+		{
+			WLog_ERR(TAG, "/gfx-codec-order: no codec '%s' in this build", list[x]);
+			rc = COMMAND_LINE_ERROR_UNEXPECTED_VALUE;
+		}
+		else if (named[codecs[found].code])
+		{
+			WLog_ERR(TAG, "/gfx-codec-order: '%s' twice", list[x]);
+			rc = COMMAND_LINE_ERROR_UNEXPECTED_VALUE;
+		}
+		else
+		{
+			named[codecs[found].code] = TRUE;
+			order |= (UINT32)codecs[found].code << (4 * x);
+		}
+	}
+	CommandLineParserFree(list);
+	if (rc != CHANNEL_RC_OK)
+		return rc;
+
+	if (!freerdp_settings_set_uint32(settings, FreeRDP_GfxCodecOrder, order) ||
+	    !freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, TRUE) ||
+#if defined(WITH_GFX_AV2)
+	    !freerdp_settings_set_bool(settings, FreeRDP_GfxCodecAV2, named[RDPGFX_CODEC_ORDER_AV2]) ||
+#endif
+#if defined(WITH_GFX_AV1)
+	    !freerdp_settings_set_bool(settings, FreeRDP_GfxCodecAV1, named[RDPGFX_CODEC_ORDER_AV1]) ||
+#endif
+#if defined(WITH_GFX_AZURE)
+	    !freerdp_settings_set_bool(settings, FreeRDP_GfxCodecHEVC,
+	                               named[RDPGFX_CODEC_ORDER_HEVC]) ||
+	    !freerdp_settings_set_bool(settings, FreeRDP_GfxCodecHEVC444,
+	                               named[RDPGFX_CODEC_ORDER_HEVC]) ||
+#endif
+	    !freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, named[RDPGFX_CODEC_ORDER_AVC444]) ||
+	    !freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444v2,
+	                               named[RDPGFX_CODEC_ORDER_AVC444]) ||
+	    !freerdp_settings_set_bool(settings, FreeRDP_GfxH264, named[RDPGFX_CODEC_ORDER_AVC420]) ||
+	    !freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec,
+	                               named[RDPGFX_CODEC_ORDER_RFX]) ||
+	    !freerdp_settings_set_bool(settings, FreeRDP_GfxProgressive,
+	                               named[RDPGFX_CODEC_ORDER_PROGRESSIVE]))
+		return COMMAND_LINE_ERROR;
+	return CHANNEL_RC_OK;
+}
+
 static int prepare_default_settings(rdpSettings* settings, COMMAND_LINE_ARGUMENT_A* args)
 {
-	const char* arguments[] = { "network", "gfx", "rfx", "bpp" };
+	/* /gfx-codec-order after /gfx: what it offers wins */
+	const char* arguments[] = { "network", "gfx", "rfx", "bpp", "gfx-codec-order" };
 	WINPR_ASSERT(settings);
 	WINPR_ASSERT(args);
 
@@ -2236,6 +2331,14 @@ static int prepare_default_settings(rdpSettings* settings, COMMAND_LINE_ARGUMENT
 			case 3:
 			{
 				const int rc = parse_bpp_options(settings, p);
+				if (rc != 0)
+					return fail_at(p, rc);
+				garg = TRUE;
+			}
+			break;
+			case 4:
+			{
+				const int rc = parse_gfx_codec_order(settings, p);
 				if (rc != 0)
 					return fail_at(p, rc);
 				garg = TRUE;
@@ -5655,6 +5758,10 @@ static int parse_command_line(rdpSettings* settings, const COMMAND_LINE_ARGUMENT
 				return fail_at(arg, COMMAND_LINE_ERROR_UNEXPECTED_VALUE);
 		}
 		CommandLineSwitchCase(arg, "gfx")
+		{
+			/* applied before the other options: see prepare_default_settings */
+		}
+		CommandLineSwitchCase(arg, "gfx-codec-order")
 		{
 			/* applied before the other options: see prepare_default_settings */
 		}

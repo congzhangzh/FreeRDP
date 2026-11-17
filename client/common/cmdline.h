@@ -232,6 +232,24 @@ static const COMMAND_LINE_ARGUMENT_A global_cmd_args[] = {
 #endif
 	  "]",
 	  nullptr, nullptr, -1, nullptr, "RDP8 graphics pipeline" },
+	{ "gfx-codec-order", COMMAND_LINE_VALUE_REQUIRED, "<codec>[,<codec>...]", nullptr, nullptr, -1,
+	  nullptr,
+	  "Video codecs to offer, the first one preferred: "
+#if defined(WITH_GFX_AV2)
+	  "AV2, "
+#endif
+#if defined(WITH_GFX_AV1)
+	  "AV1, "
+#endif
+#if defined(WITH_GFX_AZURE)
+	  "HEVC, "
+#endif
+#ifdef WITH_GFX_H264
+	  "AVC444, AVC420, "
+#endif
+	  "RFX, progressive. Codecs not named are not offered. A server chooses among the codecs "
+	  "offered, FreeRDP's follow this order. A server set for 4:2:0 refuses AV1 and AV2 that "
+	  "offer 4:4:4: pick 4:2:0 with /gfx:AV1:i420 or /gfx:AV2:i420" },
 #if defined(WITH_FREERDP_DEPRECATED_COMMANDLINE)
 	{ "gfx-h264", COMMAND_LINE_VALUE_OPTIONAL, "[[AVC420|AVC444],mask:<value>]", nullptr, nullptr,
 	  -1, nullptr, "[DEPRECATED, use /gfx:avc420] RDP8.1 graphics pipeline using H264 codec" },
