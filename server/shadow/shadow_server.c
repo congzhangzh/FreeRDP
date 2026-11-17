@@ -42,6 +42,7 @@
 #endif
 
 #include "shadow.h"
+#include "shadow_config.h"
 #include "shadow_cliprdr.h"
 
 #define TAG SERVER_TAG("shadow")
@@ -209,6 +210,35 @@ int shadow_server_command_line_status_print(rdpShadowServer* server, int argc, c
 	return 1;
 }
 
+static void shadow_server_env_defaults(rdpShadowServer* server);
+
+/* The configuration file, before the command line: /config-file:<path> (it must be readable), or
+ * <config dir>/shadow/shadow.conf if there is one. Its settings come in under the environment's,
+ * so the defaults are read again; the command line comes after them. */
+WINPR_ATTR_NODISCARD
+static BOOL shadow_server_load_config(rdpShadowServer* server, int argc, char** argv)
+{
+	const char* path = nullptr;
+	for (int x = 1; argv && (x < argc); x++)
+	{
+		if (argv[x] && (strncmp(argv[x], "/config-file:", 13) == 0))
+			path = &argv[x][13];
+	}
+
+	BOOL rc = FALSE;
+	if (path)
+		rc = shadow_config_load(path, TRUE);
+	else
+	{
+		char* defaultPath = shadow_config_default_path();
+		rc = shadow_config_load(defaultPath, FALSE);
+		free(defaultPath);
+	}
+	if (rc)
+		shadow_server_env_defaults(server);
+	return rc;
+}
+
 int shadow_server_parse_command_line(rdpShadowServer* server, int argc, char** argv,
                                      COMMAND_LINE_ARGUMENT_A* cargs)
 {
@@ -216,6 +246,9 @@ int shadow_server_parse_command_line(rdpShadowServer* server, int argc, char** a
 	DWORD flags = 0;
 	const COMMAND_LINE_ARGUMENT_A* arg = nullptr;
 	rdpSettings* settings = server->settings;
+
+	if (!shadow_server_load_config(server, argc, argv))
+		return COMMAND_LINE_ERROR;
 
 	if ((argc < 2) || !argv || !cargs)
 		return 1;
@@ -515,6 +548,10 @@ int shadow_server_parse_command_line(rdpShadowServer* server, int argc, char** a
 			if (!freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline,
 			                               arg->Value != nullptr))
 				return fail_at(arg, COMMAND_LINE_ERROR);
+		}
+		CommandLineSwitchCase(arg, "config-file")
+		{
+			/* read before the other options: shadow_server_load_config() */
 		}
 		CommandLineSwitchCase(arg, "gfx-client-order")
 		{
@@ -1312,8 +1349,9 @@ static UINT32 shadow_server_env_u32(const char* name, UINT32 value, UINT32 min, 
 	const unsigned long long parsed = strtoull(text, &end, 10);
 	if ((errno != 0) || !end || (*end != '\0') || (parsed < min) || (parsed > max))
 	{
-		WLog_WARN(TAG, "%s=%s is not a number from %" PRIu32 " to %" PRIu32 ": %" PRIu32 " instead",
-		          name, text, min, max, value);
+		WLog_WARN(TAG,
+		          "%s=%s%s is not a number from %" PRIu32 " to %" PRIu32 ": %" PRIu32 " instead",
+		          name, text, shadow_config_origin(name), min, max, value);
 		return value;
 	}
 	return (UINT32)parsed;
@@ -1333,9 +1371,31 @@ static H264_RATECONTROL_MODE shadow_server_env_h264_rate_control(const char* nam
 	if (_stricmp(text, "cqp") == 0)
 		return H264_RATECONTROL_CQP;
 
-	WLog_WARN(TAG, "%s=%s is not vbr or cqp (H.264 has no other mode): %s instead", name, text,
-	          (mode == H264_RATECONTROL_CQP) ? "cqp" : "vbr");
+	WLog_WARN(TAG, "%s=%s%s is not vbr or cqp (H.264 has no other mode): %s instead", name, text,
+	          shadow_config_origin(name), (mode == H264_RATECONTROL_CQP) ? "cqp" : "vbr");
 	return mode;
+}
+
+/* on or off (1, 0, true, false, yes, no) */
+WINPR_ATTR_NODISCARD
+static BOOL shadow_server_env_bool(const char* name, BOOL value)
+{
+	const char* text = getenv(name);
+	if (!text || (*text == '\0'))
+		return value;
+
+	const char* on[] = { "on", "1", "true", "yes" };
+	const char* off[] = { "off", "0", "false", "no" };
+	for (size_t x = 0; x < ARRAYSIZE(on); x++)
+	{
+		if (_stricmp(text, on[x]) == 0)
+			return TRUE;
+		if (_stricmp(text, off[x]) == 0)
+			return FALSE;
+	}
+	WLog_WARN(TAG, "%s=%s%s is not on or off: %s instead", name, text, shadow_config_origin(name),
+	          value ? "on" : "off");
+	return value;
 }
 
 #if defined(WITH_GFX_AV1) || defined(WITH_GFX_AV2)
@@ -1363,12 +1423,13 @@ static UINT32 shadow_server_env_rate_control(const char* name, UINT32 target)
 		else if (_stricmp(text, "vbr") == 0)
 			mode = vbr;
 		else
-			WLog_WARN(TAG, "%s=%s is not q, cq, cbr or vbr: %s instead", name, text,
-			          (mode == q) ? "q" : "cq");
+			WLog_WARN(TAG, "%s=%s%s is not q, cq, cbr or vbr: %s instead", name, text,
+			          shadow_config_origin(name), (mode == q) ? "q" : "cq");
 	}
 	if ((mode != q) && (target == 0))
 	{
-		WLog_WARN(TAG, "%s: %s needs a target bit rate: q instead", name,
+		WLog_WARN(TAG, "%s%s: %s needs a target bit rate: q instead", name,
+		          shadow_config_origin(name),
 		          (mode == cq)    ? "cq"
 		          : (mode == cbr) ? "cbr"
 		                          : "vbr");
@@ -1436,6 +1497,15 @@ static void shadow_server_encoder_defaults(rdpShadowServer* server)
 #endif
 }
 
+/* The settings with an environment variable (and so a line in the configuration file) */
+static void shadow_server_env_defaults(rdpShadowServer* server)
+{
+	WINPR_ASSERT(server);
+	shadow_server_encoder_defaults(server);
+	server->GfxFollowClientCapsOrder =
+	    shadow_server_env_bool("FREERDP_SHADOW_GFX_CLIENT_ORDER", TRUE);
+}
+
 rdpShadowServer* shadow_server_new(void)
 {
 	rdpShadowServer* server = nullptr;
@@ -1450,8 +1520,7 @@ rdpShadowServer* shadow_server_new(void)
 	server->mayInteract = TRUE;
 	server->h264HwAccel = FALSE;
 	server->authentication = TRUE;
-	shadow_server_encoder_defaults(server);
-	server->GfxFollowClientCapsOrder = TRUE;
+	shadow_server_env_defaults(server);
 #if defined(WITH_GFX_AZURE)
 	server->HEVCBitRate = 500000;
 	server->HEVCRateControlMode = FREERDP_HEVC_VBR;

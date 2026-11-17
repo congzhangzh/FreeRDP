@@ -60,6 +60,8 @@ set(SRCS
     shadow_mcevent.h
     shadow_caps_order.c
     shadow_caps_order.h
+    shadow_config.c
+    shadow_config.h
     shadow_server.c
     shadow.h
 )
