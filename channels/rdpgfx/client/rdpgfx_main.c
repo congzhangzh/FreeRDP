@@ -485,6 +485,79 @@ static RDPGFX_CAPSET* nextCapset(RDPGFX_CAPS_ADVERTISE_PDU* pdu, size_t count)
 	return &pdu->capsSets[pdu->capsSetCount++];
 }
 
+/* Where a code stands in FreeRDP_GfxCodecOrder, 0 the most preferred; RDPGFX_CODEC_ORDER_MAX_SLOTS
+ * for a codec not in it */
+static size_t rdpgfx_codec_rank(UINT32 order, RDPGFX_CODEC_ORDER code)
+{
+	for (size_t x = 0; x < RDPGFX_CODEC_ORDER_MAX_SLOTS; x++)
+	{
+		const UINT32 slot = (order >> (4 * x)) & 0x0f;
+		if (slot == RDPGFX_CODEC_ORDER_END)
+			break;
+		if (slot == (UINT32)code)
+			return x;
+	}
+	return RDPGFX_CODEC_ORDER_MAX_SLOTS;
+}
+
+/* The rank of a capability set: AV2 and AV1 have one each, HEVC the 11.x ones, the others carry
+ * AVC444, AVC420, RemoteFX and progressive, so they rank as the best of these */
+static size_t rdpgfx_capset_rank(UINT32 order, UINT32 version)
+{
+	switch (version)
+	{
+#if defined(WITH_GFX_AV2)
+		case RDPGFX_CAPVERSION_FRDP_2:
+			return rdpgfx_codec_rank(order, RDPGFX_CODEC_ORDER_AV2);
+#endif
+#if defined(WITH_GFX_AV1)
+		case RDPGFX_CAPVERSION_FRDP_1:
+			return rdpgfx_codec_rank(order, RDPGFX_CODEC_ORDER_AV1);
+#endif
+#if defined(WITH_GFX_AZURE)
+		case RDPGFX_CAPVERSION_111:
+		case RDPGFX_CAPVERSION_112:
+		case RDPGFX_CAPVERSION_113:
+		case RDPGFX_CAPVERSION_115:
+			return rdpgfx_codec_rank(order, RDPGFX_CODEC_ORDER_HEVC);
+#endif
+		default:
+		{
+			const RDPGFX_CODEC_ORDER classic[] = { RDPGFX_CODEC_ORDER_AVC444,
+				                                   RDPGFX_CODEC_ORDER_AVC420,
+				                                   RDPGFX_CODEC_ORDER_RFX,
+				                                   RDPGFX_CODEC_ORDER_PROGRESSIVE };
+			size_t rank = RDPGFX_CODEC_ORDER_MAX_SLOTS;
+			for (size_t x = 0; x < ARRAYSIZE(classic); x++)
+				rank = MIN(rank, rdpgfx_codec_rank(order, classic[x]));
+			return rank;
+		}
+	}
+}
+
+/* With FreeRDP_GfxCodecOrder the sets go out with the most preferred last: a server takes the
+ * last set it supports (FreeRDP's convention, as today's ascending list ends with FRDP_2). Sets
+ * of one rank keep their order. Without an order nothing moves. */
+static void rdpgfx_order_capsets(RDPGFX_CAPS_ADVERTISE_PDU* pdu, UINT32 order)
+{
+	WINPR_ASSERT(pdu);
+	if (order == 0)
+		return;
+
+	for (size_t x = 1; x < pdu->capsSetCount; x++)
+	{
+		const RDPGFX_CAPSET set = pdu->capsSets[x];
+		const size_t rank = rdpgfx_capset_rank(order, set.version);
+		size_t y = x;
+		while ((y > 0) && (rdpgfx_capset_rank(order, pdu->capsSets[y - 1].version) < rank))
+		{
+			pdu->capsSets[y] = pdu->capsSets[y - 1];
+			y--;
+		}
+		pdu->capsSets[y] = set;
+	}
+}
+
 #if defined(WITH_GFX_AZURE)
 /* Only offer HEVC if it can be decoded: a server confirming it sends HEVC420 frames. */
 WINPR_ATTR_NODISCARD
@@ -797,6 +870,8 @@ static UINT rdpgfx_send_supported_caps(GENERIC_CHANNEL_CALLBACK* callback)
 	}
 #endif
 
+	rdpgfx_order_capsets(
+	    &pdu, freerdp_settings_get_uint32(gfx->rdpcontext->settings, FreeRDP_GfxCodecOrder));
 	return IFCALLRESULT(ERROR_BAD_CONFIGURATION, context->CapsAdvertise, context, &pdu);
 }
 
