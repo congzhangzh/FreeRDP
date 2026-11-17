@@ -288,6 +288,11 @@ extern "C"
 #else
 	    UINT32 reservedAV2Tune[5];
 #endif
+		/** TRUE: of a client's GFX capability sets, the last one the server supports is confirmed
+		 *  (the client's own order); FALSE: the server's order. TRUE by default, which is the
+		 *  server's order for a client that lists its sets in ascending order
+		 *  @since version 3.34.0 */
+		BOOL GfxFollowClientCapsOrder;
 	};
 
 	struct rdp_shadow_surface

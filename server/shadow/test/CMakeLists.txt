@@ -5,11 +5,12 @@ disable_warnings_for_directory(${CMAKE_CURRENT_BINARY_DIR})
 
 set(${MODULE_PREFIX}_DRIVER ${MODULE_NAME}.c)
 
-set(${MODULE_PREFIX}_TESTS TestShadowCaptureCompare.c TestShadowH264Settings.c)
+set(${MODULE_PREFIX}_TESTS TestShadowCaptureCompare.c TestShadowH264Settings.c TestShadowCapsOrder.c)
 
 create_test_sourcelist(${MODULE_PREFIX}_SRCS ${${MODULE_PREFIX}_DRIVER} ${${MODULE_PREFIX}_TESTS})
 
-add_executable(${MODULE_NAME} ${${MODULE_PREFIX}_SRCS})
+# shadow_caps_order.c is internal to the library: the test builds its own copy
+add_executable(${MODULE_NAME} ${${MODULE_PREFIX}_SRCS} ../shadow_caps_order.c)
 
 target_link_libraries(${MODULE_NAME} PRIVATE freerdp-shadow freerdp winpr)
 

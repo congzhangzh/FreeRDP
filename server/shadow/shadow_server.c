@@ -516,6 +516,10 @@ int shadow_server_parse_command_line(rdpShadowServer* server, int argc, char** a
 			                               arg->Value != nullptr))
 				return fail_at(arg, COMMAND_LINE_ERROR);
 		}
+		CommandLineSwitchCase(arg, "gfx-client-order")
+		{
+			server->GfxFollowClientCapsOrder = (arg->Value != nullptr);
+		}
 		CommandLineSwitchCase(arg, "gfx-progressive")
 		{
 			if (!freerdp_settings_set_bool(settings, FreeRDP_GfxProgressive, arg->Value != nullptr))
@@ -1447,6 +1451,7 @@ rdpShadowServer* shadow_server_new(void)
 	server->h264HwAccel = FALSE;
 	server->authentication = TRUE;
 	shadow_server_encoder_defaults(server);
+	server->GfxFollowClientCapsOrder = TRUE;
 #if defined(WITH_GFX_AZURE)
 	server->HEVCBitRate = 500000;
 	server->HEVCRateControlMode = FREERDP_HEVC_VBR;

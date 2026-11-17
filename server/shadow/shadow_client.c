@@ -35,6 +35,7 @@
 #include <freerdp/channels/drdynvc.h>
 
 #include "shadow.h"
+#include "shadow_caps_order.h"
 #include "shadow_rfx_dirty.h"
 #include "shadow_autodetect.h"
 
@@ -1186,21 +1187,12 @@ static UINT shadow_client_rdpgfx_caps_advertise(RdpgfxServerContext* context,
 	if (!shadow_client_refresh_rect(&client->context, 0, nullptr))
 		return rc;
 
-	const UINT32 capsVersions[] = {
-#if defined(WITH_GFX_AV2)
-		RDPGFX_CAPVERSION_FRDP_2,
-#endif
-#if defined(WITH_GFX_AV1)
-		RDPGFX_CAPVERSION_FRDP_1,
-#endif
-#if defined(WITH_GFX_AZURE)
-		RDPGFX_CAPVERSION_115,    RDPGFX_CAPVERSION_113, RDPGFX_CAPVERSION_112,
-		RDPGFX_CAPVERSION_111,
-#endif
-		RDPGFX_CAPVERSION_107,    RDPGFX_CAPVERSION_106, RDPGFX_CAPVERSION_106_ERR,
-		RDPGFX_CAPVERSION_105,    RDPGFX_CAPVERSION_104, RDPGFX_CAPVERSION_103,
-		RDPGFX_CAPVERSION_102,    RDPGFX_CAPVERSION_101, RDPGFX_CAPVERSION_10,
-	};
+	/* The client's order, or the server's (shadow_caps_order.h) */
+	UINT32 capsVersions[32] = WINPR_C_ARRAY_INIT;
+	WINPR_ASSERT(client->server);
+	const size_t capsCount = shadow_caps_order(capsAdvertise->capsSets, capsAdvertise->capsSetCount,
+	                                           client->server->GfxFollowClientCapsOrder,
+	                                           capsVersions, ARRAYSIZE(capsVersions));
 
 	const BOOL h264 = freerdp_codec_supported(&client->context, FREERDP_CODEC_AVC420, TRUE) ||
 	                  freerdp_codec_supported(&client->context, FREERDP_CODEC_AVC444, TRUE);
@@ -1260,7 +1252,7 @@ static UINT shadow_client_rdpgfx_caps_advertise(RdpgfxServerContext* context,
 	}
 #endif
 
-	for (size_t x = 0; x < ARRAYSIZE(capsVersions); x++)
+	for (size_t x = 0; x < capsCount; x++)
 	{
 		const UINT32 cur = capsVersions[x];
 		if (shadow_client_caps_test_version(context, client, h264, capsAdvertise->capsSets,

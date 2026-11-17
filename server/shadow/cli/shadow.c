@@ -125,6 +125,10 @@ int main(int argc, char** argv)
 		{ "gfx-av2", COMMAND_LINE_VALUE_OPTIONAL, "[:profile:[low|high|0|1]|off]", BoolValueTrue,
 		  nullptr, -1, nullptr, "Allow GFX pipeline AV2 codec extension" },
 #endif
+		{ "gfx-client-order", COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueTrue, nullptr, -1, nullptr,
+		  "Follow the order of the client's GFX capability sets: the last one the server supports "
+		  "is used (on by default; the same as the server's own order for a client that lists "
+		  "them in ascending order)" },
 		{ "gfx-progressive", COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueTrue, nullptr, -1, nullptr,
 		  "Allow GFX progressive codec" },
 		{ "gfx-rfx", COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueTrue, nullptr, -1, nullptr,
