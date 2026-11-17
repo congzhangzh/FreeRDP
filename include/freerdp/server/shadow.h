@@ -207,6 +207,22 @@ extern "C"
 		DispServerContext* disp; /** @since version 3.34.0 */
 	};
 
+	/** The GFX codecs of /gfx-codec-order, in rdpShadowServer::GfxCodecOrder
+	 *  @since version 3.34.0 */
+	typedef enum
+	{
+		SHADOW_GFX_CODEC_NONE = 0, /**< ends a shorter list */
+		SHADOW_GFX_CODEC_AV2,
+		SHADOW_GFX_CODEC_AV1,
+		SHADOW_GFX_CODEC_HEVC,
+		SHADOW_GFX_CODEC_AVC444,
+		SHADOW_GFX_CODEC_AVC420,
+		SHADOW_GFX_CODEC_RFX,
+		SHADOW_GFX_CODEC_PROGRESSIVE,
+		SHADOW_GFX_CODEC_PLANAR,
+		SHADOW_GFX_CODEC_COUNT
+	} SHADOW_GFX_CODEC;
+
 	struct rdp_shadow_server
 	{
 		void* ext;
@@ -288,6 +304,10 @@ extern "C"
 #else
 	    UINT32 reservedAV2Tune[5];
 #endif
+		/** the GFX codecs in the order a client is tried with them (/gfx-codec-order, then the
+		 *  rest in the default order AV2, AV1, HEVC, AVC444, AVC420, RFX, progressive, planar);
+		 *  uncompressed comes last @since version 3.34.0 */
+		SHADOW_GFX_CODEC GfxCodecOrder[SHADOW_GFX_CODEC_COUNT];
 	};
 
 	struct rdp_shadow_surface

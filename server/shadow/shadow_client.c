@@ -1156,6 +1156,91 @@ static BOOL shadow_client_caps_test_version(RdpgfxServerContext* context, rdpSha
 	return FALSE;
 }
 
+/* The capability versions a client's caps are tried with, in the order of
+ * rdpShadowServer::GfxCodecOrder: each codec's versions at its first place (AV2 FRDP_2, AV1
+ * FRDP_1, HEVC 11x, the others 10x). The default order gives FRDP_2, FRDP_1, 11x, 10x. */
+WINPR_ATTR_NODISCARD
+static size_t shadow_client_caps_order(const rdpShadowServer* server, UINT32* versions, size_t size)
+{
+	WINPR_ASSERT(server);
+	WINPR_ASSERT(versions);
+
+#if defined(WITH_GFX_AV2)
+	static const UINT32 av2[] = { RDPGFX_CAPVERSION_FRDP_2 };
+#endif
+#if defined(WITH_GFX_AV1)
+	static const UINT32 av1[] = { RDPGFX_CAPVERSION_FRDP_1 };
+#endif
+#if defined(WITH_GFX_AZURE)
+	static const UINT32 hevc[] = { RDPGFX_CAPVERSION_115, RDPGFX_CAPVERSION_113,
+		                           RDPGFX_CAPVERSION_112, RDPGFX_CAPVERSION_111 };
+#endif
+	static const UINT32 v10[] = { RDPGFX_CAPVERSION_107,     RDPGFX_CAPVERSION_106,
+		                          RDPGFX_CAPVERSION_106_ERR, RDPGFX_CAPVERSION_105,
+		                          RDPGFX_CAPVERSION_104,     RDPGFX_CAPVERSION_103,
+		                          RDPGFX_CAPVERSION_102,     RDPGFX_CAPVERSION_101,
+		                          RDPGFX_CAPVERSION_10 };
+
+	enum
+	{
+		GROUP_AV2,
+		GROUP_AV1,
+		GROUP_HEVC,
+		GROUP_V10,
+		GROUP_COUNT
+	};
+	BOOL added[GROUP_COUNT] = WINPR_C_ARRAY_INIT;
+	size_t count = 0;
+
+	for (size_t x = 0; x < ARRAYSIZE(server->GfxCodecOrder); x++)
+	{
+		const UINT32* group = nullptr;
+		size_t groupSize = 0;
+		size_t id = GROUP_COUNT;
+		switch (server->GfxCodecOrder[x])
+		{
+#if defined(WITH_GFX_AV2)
+			case SHADOW_GFX_CODEC_AV2:
+				group = av2;
+				groupSize = ARRAYSIZE(av2);
+				id = GROUP_AV2;
+				break;
+#endif
+#if defined(WITH_GFX_AV1)
+			case SHADOW_GFX_CODEC_AV1:
+				group = av1;
+				groupSize = ARRAYSIZE(av1);
+				id = GROUP_AV1;
+				break;
+#endif
+#if defined(WITH_GFX_AZURE)
+			case SHADOW_GFX_CODEC_HEVC:
+				group = hevc;
+				groupSize = ARRAYSIZE(hevc);
+				id = GROUP_HEVC;
+				break;
+#endif
+			case SHADOW_GFX_CODEC_AVC444:
+			case SHADOW_GFX_CODEC_AVC420:
+			case SHADOW_GFX_CODEC_RFX:
+			case SHADOW_GFX_CODEC_PROGRESSIVE:
+			case SHADOW_GFX_CODEC_PLANAR:
+				group = v10;
+				groupSize = ARRAYSIZE(v10);
+				id = GROUP_V10;
+				break;
+			default:
+				break;
+		}
+		if (!group || added[id])
+			continue;
+		added[id] = TRUE;
+		for (size_t y = 0; (y < groupSize) && (count < size); y++)
+			versions[count++] = group[y];
+	}
+	return count;
+}
+
 /**
  * Function description
  *
@@ -1186,21 +1271,10 @@ static UINT shadow_client_rdpgfx_caps_advertise(RdpgfxServerContext* context,
 	if (!shadow_client_refresh_rect(&client->context, 0, nullptr))
 		return rc;
 
-	const UINT32 capsVersions[] = {
-#if defined(WITH_GFX_AV2)
-		RDPGFX_CAPVERSION_FRDP_2,
-#endif
-#if defined(WITH_GFX_AV1)
-		RDPGFX_CAPVERSION_FRDP_1,
-#endif
-#if defined(WITH_GFX_AZURE)
-		RDPGFX_CAPVERSION_115,    RDPGFX_CAPVERSION_113, RDPGFX_CAPVERSION_112,
-		RDPGFX_CAPVERSION_111,
-#endif
-		RDPGFX_CAPVERSION_107,    RDPGFX_CAPVERSION_106, RDPGFX_CAPVERSION_106_ERR,
-		RDPGFX_CAPVERSION_105,    RDPGFX_CAPVERSION_104, RDPGFX_CAPVERSION_103,
-		RDPGFX_CAPVERSION_102,    RDPGFX_CAPVERSION_101, RDPGFX_CAPVERSION_10,
-	};
+	UINT32 capsVersions[16] = WINPR_C_ARRAY_INIT;
+	WINPR_ASSERT(client->server);
+	const size_t capsCount =
+	    shadow_client_caps_order(client->server, capsVersions, ARRAYSIZE(capsVersions));
 
 	const BOOL h264 = freerdp_codec_supported(&client->context, FREERDP_CODEC_AVC420, TRUE) ||
 	                  freerdp_codec_supported(&client->context, FREERDP_CODEC_AVC444, TRUE);
@@ -1260,7 +1334,7 @@ static UINT shadow_client_rdpgfx_caps_advertise(RdpgfxServerContext* context,
 	}
 #endif
 
-	for (size_t x = 0; x < ARRAYSIZE(capsVersions); x++)
+	for (size_t x = 0; x < capsCount; x++)
 	{
 		const UINT32 cur = capsVersions[x];
 		if (shadow_client_caps_test_version(context, client, h264, capsAdvertise->capsSets,
@@ -2069,74 +2143,78 @@ static BOOL shadow_client_send_surface_gfx(rdpShadowClient* client, const BYTE* 
 	cmd.width = nWidth;
 	cmd.height = nHeight;
 
+	/* The first codec of the order (/gfx-codec-order) this client can take */
+	WINPR_ASSERT(client->server);
+	const SHADOW_GFX_CODEC* order = client->server->GfxCodecOrder;
+	for (size_t x = 0; x < ARRAYSIZE(client->server->GfxCodecOrder); x++)
+	{
+		switch (order[x])
+		{
 #if defined(WITH_GFX_AV2)
-	if (freerdp_settings_get_bool(settings, FreeRDP_GfxCodecAV2))
-	{
-		if (client->confirmedCaps.version == RDPGFX_CAPVERSION_FRDP_2)
-		{
-			return shadow_client_send_av2(client, pSrcData, nSrcStep, SrcFormat, nWidth, nHeight,
-			                              &cmd, &cmdstart, &cmdend);
-		}
-	}
+			case SHADOW_GFX_CODEC_AV2:
+				if (freerdp_settings_get_bool(settings, FreeRDP_GfxCodecAV2) &&
+				    (client->confirmedCaps.version == RDPGFX_CAPVERSION_FRDP_2))
+					return shadow_client_send_av2(client, pSrcData, nSrcStep, SrcFormat, nWidth,
+					                              nHeight, &cmd, &cmdstart, &cmdend);
+				break;
 #endif
-
 #if defined(WITH_GFX_AV1)
-	if (shadow_client_av1_enabled(client))
-	{
-		return shadow_client_send_av1(client, pSrcData, nSrcStep, SrcFormat, nWidth, nHeight,
-		                              damage, &cmd, &cmdstart, &cmdend);
-	}
+			case SHADOW_GFX_CODEC_AV1:
+				if (shadow_client_av1_enabled(client))
+					return shadow_client_send_av1(client, pSrcData, nSrcStep, SrcFormat, nWidth,
+					                              nHeight, damage, &cmd, &cmdstart, &cmdend);
+				break;
 #endif
-
 #if defined(WITH_GFX_AZURE)
-	if (shadow_client_hevc_enabled(client))
-	{
-		return shadow_client_send_hevc(client, pSrcData, nSrcStep, SrcFormat, nWidth, nHeight,
-		                               damage, &cmd, &cmdstart, &cmdend);
-	}
+			case SHADOW_GFX_CODEC_HEVC:
+				if (shadow_client_hevc_enabled(client))
+					return shadow_client_send_hevc(client, pSrcData, nSrcStep, SrcFormat, nWidth,
+					                               nHeight, damage, &cmd, &cmdstart, &cmdend);
+				break;
 #endif
-
-	const UINT32 id = freerdp_settings_get_uint32(settings, FreeRDP_RemoteFxCodecId);
 #ifdef WITH_GFX_H264
-	const BOOL GfxH264 = freerdp_settings_get_bool(settings, FreeRDP_GfxH264);
-	const BOOL GfxAVC444 = freerdp_settings_get_bool(settings, FreeRDP_GfxAVC444);
-	const BOOL GfxAVC444v2 = freerdp_settings_get_bool(settings, FreeRDP_GfxAVC444v2);
-	if (GfxAVC444 || GfxAVC444v2)
-	{
-		if (shadow_avc444_enabled(client))
-		{
-			cmd.codecId = GfxAVC444v2 ? RDPGFX_CODECID_AVC444v2 : RDPGFX_CODECID_AVC444;
-			return shadow_client_send_avc444(client, pSrcData, nSrcStep, SrcFormat, nWidth, nHeight,
-			                                 &cmd, &cmdstart, &cmdend);
-		}
-	}
-
-	if (GfxH264 && shadow_avc420_enabled(client))
-	{
-		return shadow_client_send_avc420(client, pSrcData, nSrcStep, SrcFormat, nWidth, nHeight,
-		                                 &cmd, &cmdstart, &cmdend);
-	}
-
+			case SHADOW_GFX_CODEC_AVC444:
+			{
+				const BOOL GfxAVC444 = freerdp_settings_get_bool(settings, FreeRDP_GfxAVC444);
+				const BOOL GfxAVC444v2 = freerdp_settings_get_bool(settings, FreeRDP_GfxAVC444v2);
+				if ((GfxAVC444 || GfxAVC444v2) && shadow_avc444_enabled(client))
+				{
+					cmd.codecId = GfxAVC444v2 ? RDPGFX_CODECID_AVC444v2 : RDPGFX_CODECID_AVC444;
+					return shadow_client_send_avc444(client, pSrcData, nSrcStep, SrcFormat, nWidth,
+					                                 nHeight, &cmd, &cmdstart, &cmdend);
+				}
+				break;
+			}
+			case SHADOW_GFX_CODEC_AVC420:
+				if (freerdp_settings_get_bool(settings, FreeRDP_GfxH264) &&
+				    shadow_avc420_enabled(client))
+					return shadow_client_send_avc420(client, pSrcData, nSrcStep, SrcFormat, nWidth,
+					                                 nHeight, &cmd, &cmdstart, &cmdend);
+				break;
 #endif
-	if (freerdp_settings_get_bool(settings, FreeRDP_RemoteFxCodec) && (id != 0))
-	{
-		/* The RFX source image dims must be the whole surface: the tile grid
-		 * is aligned to absolute surface coordinates and edge tiles are
-		 * truncated at the surface bounds. */
-		return shadow_client_send_rfx(client, pSrcData, nSrcStep, SrcFormat, srcWidth, srcHeight,
-		                              &cmd, &cmdstart, &cmdend);
-	}
-
-	if (freerdp_settings_get_bool(settings, FreeRDP_GfxProgressive))
-	{
-		return shadow_client_send_progressive(client, pSrcData, nSrcStep, SrcFormat, nWidth,
-		                                      nHeight, &cmd, &cmdstart, &cmdend);
-	}
-
-	if (freerdp_settings_get_bool(settings, FreeRDP_GfxPlanar))
-	{
-		return shadow_client_send_planar(client, pSrcData, nSrcStep, SrcFormat, &cmd, &cmdstart,
-		                                 &cmdend);
+			case SHADOW_GFX_CODEC_RFX:
+				/* The RFX source image dims must be the whole surface: the tile grid
+				 * is aligned to absolute surface coordinates and edge tiles are
+				 * truncated at the surface bounds. */
+				if (freerdp_settings_get_bool(settings, FreeRDP_RemoteFxCodec) &&
+				    (freerdp_settings_get_uint32(settings, FreeRDP_RemoteFxCodecId) != 0))
+					return shadow_client_send_rfx(client, pSrcData, nSrcStep, SrcFormat, srcWidth,
+					                              srcHeight, &cmd, &cmdstart, &cmdend);
+				break;
+			case SHADOW_GFX_CODEC_PROGRESSIVE:
+				if (freerdp_settings_get_bool(settings, FreeRDP_GfxProgressive))
+					return shadow_client_send_progressive(client, pSrcData, nSrcStep, SrcFormat,
+					                                      nWidth, nHeight, &cmd, &cmdstart,
+					                                      &cmdend);
+				break;
+			case SHADOW_GFX_CODEC_PLANAR:
+				if (freerdp_settings_get_bool(settings, FreeRDP_GfxPlanar))
+					return shadow_client_send_planar(client, pSrcData, nSrcStep, SrcFormat, &cmd,
+					                                 &cmdstart, &cmdend);
+				break;
+			default:
+				break;
+		}
 	}
 
 	return shadow_client_send_uncompressed(client, pSrcData, nSrcStep, SrcFormat, &cmd, &cmdstart,
