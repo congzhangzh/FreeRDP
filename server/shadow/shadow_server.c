@@ -382,6 +382,134 @@ static BOOL shadow_server_parse_codec(rdpShadowServer* server, const char* value
 	server->HEVCBitRate = hevcBitRate;
 #endif
 	return TRUE;
+
+/* The GFX codecs by the names /gfx uses for them, in the default order of
+ * rdpShadowServer::GfxCodecOrder */
+static const struct
+{
+	const char* name;
+	SHADOW_GFX_CODEC codec;
+} shadow_gfx_codecs[] = {
+	{ "av2", SHADOW_GFX_CODEC_AV2 },
+	{ "av1", SHADOW_GFX_CODEC_AV1 },
+	{ "hevc", SHADOW_GFX_CODEC_HEVC },
+	{ "avc444", SHADOW_GFX_CODEC_AVC444 },
+	{ "avc420", SHADOW_GFX_CODEC_AVC420 },
+	{ "rfx", SHADOW_GFX_CODEC_RFX },
+	{ "progressive", SHADOW_GFX_CODEC_PROGRESSIVE },
+	{ "planar", SHADOW_GFX_CODEC_PLANAR },
+};
+
+/* Whether this build has the codec's encoder */
+WINPR_ATTR_NODISCARD
+static BOOL shadow_gfx_codec_built(SHADOW_GFX_CODEC codec)
+{
+	switch (codec)
+	{
+		case SHADOW_GFX_CODEC_AV2:
+#if defined(WITH_GFX_AV2)
+			return TRUE;
+#else
+			return FALSE;
+#endif
+		case SHADOW_GFX_CODEC_AV1:
+#if defined(WITH_GFX_AV1)
+			return TRUE;
+#else
+			return FALSE;
+#endif
+		case SHADOW_GFX_CODEC_HEVC:
+#if defined(WITH_GFX_AZURE)
+			return TRUE;
+#else
+			return FALSE;
+#endif
+		case SHADOW_GFX_CODEC_AVC444:
+		case SHADOW_GFX_CODEC_AVC420:
+#if defined(WITH_GFX_H264)
+			return TRUE;
+#else
+			return FALSE;
+#endif
+		case SHADOW_GFX_CODEC_RFX:
+		case SHADOW_GFX_CODEC_PROGRESSIVE:
+		case SHADOW_GFX_CODEC_PLANAR:
+			return TRUE;
+		default:
+			return FALSE;
+	}
+}
+
+/* The listed codecs first, then the others in the default order */
+static void shadow_server_set_codec_order(rdpShadowServer* server, const SHADOW_GFX_CODEC* listed,
+                                          size_t count)
+{
+	WINPR_ASSERT(server);
+	WINPR_ASSERT(listed || (count == 0));
+
+	size_t n = 0;
+	for (size_t x = 0; x < count; x++)
+		server->GfxCodecOrder[n++] = listed[x];
+	for (size_t x = 0; x < ARRAYSIZE(shadow_gfx_codecs); x++)
+	{
+		BOOL found = FALSE;
+		for (size_t y = 0; y < count; y++)
+		{
+			if (listed[y] == shadow_gfx_codecs[x].codec)
+				found = TRUE;
+		}
+		if (!found)
+			server->GfxCodecOrder[n++] = shadow_gfx_codecs[x].codec;
+	}
+	while (n < ARRAYSIZE(server->GfxCodecOrder))
+		server->GfxCodecOrder[n++] = SHADOW_GFX_CODEC_NONE;
+}
+
+/* /gfx-codec-order:<name>[,<name>...]: it ranks the codecs, it does not switch any on. A name
+ * /gfx does not know, a codec not built in or a name given twice is an error, and then the order
+ * stays as it was. */
+WINPR_ATTR_NODISCARD
+static BOOL shadow_server_parse_codec_order(rdpShadowServer* server, const char* value)
+{
+	WINPR_ASSERT(server);
+	if (!value)
+		return FALSE;
+
+	SHADOW_GFX_CODEC listed[ARRAYSIZE(shadow_gfx_codecs)] = WINPR_C_ARRAY_INIT;
+	size_t count = 0;
+	size_t argc = 0;
+	char** args = CommandLineParseCommaSeparatedValues(value, &argc);
+	BOOL ok = (args != nullptr) && (argc > 0);
+	for (size_t x = 0; ok && (x < argc); x++)
+	{
+		SHADOW_GFX_CODEC codec = SHADOW_GFX_CODEC_NONE;
+		for (size_t y = 0; y < ARRAYSIZE(shadow_gfx_codecs); y++)
+		{
+			if (_stricmp(args[x], shadow_gfx_codecs[y].name) == 0)
+				codec = shadow_gfx_codecs[y].codec;
+		}
+		if ((codec == SHADOW_GFX_CODEC_NONE) || !shadow_gfx_codec_built(codec))
+		{
+			WLog_ERR(TAG, "/gfx-codec-order: '%s' is no codec of this build", args[x]);
+			ok = FALSE;
+			break;
+		}
+		for (size_t y = 0; y < count; y++)
+		{
+			if (listed[y] == codec)
+			{
+				WLog_ERR(TAG, "/gfx-codec-order: '%s' is given twice", args[x]);
+				ok = FALSE;
+			}
+		}
+		if (ok)
+			listed[count++] = codec;
+	}
+	CommandLineParserFree(args);
+
+	if (ok)
+		shadow_server_set_codec_order(server, listed, count);
+	return ok;
 }
 
 int shadow_server_parse_command_line(rdpShadowServer* server, int argc, char** argv,
@@ -699,6 +827,12 @@ int shadow_server_parse_command_line(rdpShadowServer* server, int argc, char** a
 				return fail_at(arg, COMMAND_LINE_ERROR);
 		}
 #endif
+
+		CommandLineSwitchCase(arg, "gfx-codec-order")
+		{
+			if (!shadow_server_parse_codec_order(server, arg->Value))
+				return fail_at(arg, COMMAND_LINE_ERROR);
+		}
 		CommandLineSwitchCase(arg, "gfx-progressive")
 		{
 			if (!freerdp_settings_set_bool(settings, FreeRDP_GfxProgressive, arg->Value != nullptr))
@@ -1630,6 +1764,7 @@ rdpShadowServer* shadow_server_new(void)
 	server->h264HwAccel = FALSE;
 	server->authentication = TRUE;
 	shadow_server_encoder_defaults(server);
+	shadow_server_set_codec_order(server, nullptr, 0);
 #if defined(WITH_GFX_AZURE)
 	server->HEVCBitRate = 500000;
 	server->HEVCRateControlMode = FREERDP_HEVC_VBR;
