@@ -44,6 +44,8 @@ namespace
 		"RDPGFX_CODECID_AV1_DECODE_NS_SUM",
 		"RDPGFX_CODECID_AV1_DECODE_NS_MAX",
 		"RDPGFX_CODECID_AV1_HARDWARE",
+		"RDPGFX_CODECID_AV1_CHROMA",
+		"RDPGFX_CODECID_AV1",
 		"RDPGFX_CODECID_UNKNOWN_PICTURES",
 		"FREERDP_CLIENT_STATS_UNUSED",
 		"NETWORK_BYTES_RECEIVED", /* a repeated name: the first one counts */
@@ -72,6 +74,8 @@ namespace
 		AV1_NS_SUM,
 		AV1_NS_MAX,
 		AV1_HARDWARE,
+		AV1_CHROMA,
+		AV1_COMMANDS,
 		UNKNOWN_PICTURES,
 		UNUSED,
 		RX_AGAIN,
@@ -229,6 +233,24 @@ namespace
 		now.values[AV1_HARDWARE] = 0;
 		const auto unknownHw = sdl::overlay::realtimeRows(n, now, nullptr, {});
 		EXPECT(next(unknownHw, "AV1 results"), "0.0 ms per attempt, 0.0 ms max");
+
+		/* the chroma the decoder learnt from the stream: after the codec's name in its codec row
+		 * and its decoder rows, nothing while it is not known */
+		now.values[AV1_COMMANDS] = 5;
+		const auto noChroma = sdl::overlay::realtimeRows(n, now, nullptr, {});
+		CHECK(find(noChroma, "AV1 results"));
+		CHECK(find(noChroma, "Video codecs") &&
+		      (find(noChroma, "Video codecs")->value.rfind("AV1 –/s", 0) == 0));
+		now.values[AV1_CHROMA] = 444;
+		const auto i444 = sdl::overlay::realtimeRows(n, now, nullptr, {});
+		CHECK(find(i444, "AV1 4:4:4 results"));
+		CHECK(find(i444, "Video codecs") &&
+		      (find(i444, "Video codecs")->value.rfind("AV1 4:4:4 –/s", 0) == 0));
+		now.values[AV1_CHROMA] = 420;
+		const auto i420 = sdl::overlay::realtimeRows(n, now, nullptr, {});
+		CHECK(find(i420, "AV1 4:2:0 results"));
+		now.values[AV1_CHROMA] = 0;
+		now.values[AV1_COMMANDS] = 0;
 
 		/* nothing decoded: no codec and no decoder rows */
 		const auto empty = sdl::overlay::realtimeRows(n, reading(1), nullptr, {});

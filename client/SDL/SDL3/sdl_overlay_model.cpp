@@ -118,6 +118,23 @@ namespace sdl::overlay
 #endif
 		}
 
+		/* " 4:4:4" from what the AV decoder last learnt of the stream (RDPGFX_CODECID_AV1_CHROMA:
+		 * 420, 422, 444), nothing before it knows */
+		std::string av1Chroma(const Names& names, const Reading& now)
+		{
+			switch (names.get(now, codecPrefix + "AV1_CHROMA").value_or(0))
+			{
+				case 420:
+					return " 4:2:0";
+				case 422:
+					return " 4:2:2";
+				case 444:
+					return " 4:4:4";
+				default:
+					return "";
+			}
+		}
+
 		std::string decoderLabel(const Names& names, const Reading& now, const Label& d)
 		{
 			if (strcmp(d.id, "AV1") == 0)
@@ -162,8 +179,9 @@ namespace sdl::overlay
 				const std::string name = codecPrefix + c.id;
 				if (names.get(now, name).value_or(0) == 0)
 					continue;
-				const std::string label =
-				    (strcmp(c.id, "AV1") == 0) ? av1Label(names, now) : c.label;
+				const std::string label = (strcmp(c.id, "AV1") == 0)
+				                              ? av1Label(names, now) + av1Chroma(names, now)
+				                              : c.label;
 				const auto bytes = rate(names, now, prev, name + "_BYTES");
 				const auto kbit =
 				    bytes ? std::optional<double>(*bytes * 8.0 / 1000.0) : std::nullopt;
@@ -218,7 +236,9 @@ namespace sdl::overlay
 				if (const auto fallbacks = get("_FALLBACKS"))
 					second += ", " + std::to_string(fallbacks) + " fallbacks";
 
-				rows.push_back({ decoderLabel(names, now, d) + " results",
+				const std::string chroma =
+				    (strcmp(d.id, "AV1") == 0) ? av1Chroma(names, now) : std::string();
+				rows.push_back({ decoderLabel(names, now, d) + chroma + " results",
 				                 "pictures: " + std::to_string(pictures) + " (" +
 				                     per(rate(names, now, prev, p + "_PICTURES")) +
 				                     " /s), failed: " + std::to_string(failed) +
