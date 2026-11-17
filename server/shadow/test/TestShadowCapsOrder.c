@@ -52,16 +52,6 @@ static size_t make_sets(const UINT32* versions, size_t count, RDPGFX_CAPSET* set
 	return count;
 }
 
-static BOOL contains(const UINT32* list, size_t count, UINT32 version)
-{
-	for (size_t x = 0; x < count; x++)
-	{
-		if (list[x] == version)
-			return TRUE;
-	}
-	return FALSE;
-}
-
 WINPR_ATTR_NODISCARD
 static BOOL same(const char* what, const UINT32* got, size_t gotCount, const UINT32* want,
                  size_t wantCount)
@@ -82,24 +72,37 @@ static BOOL same(const char* what, const UINT32* got, size_t gotCount, const UIN
 	return ok;
 }
 
-/* Today's client: following its order gives the server's own order (of what it offers) */
+/* Today's client, ascending, and the same list descending (as a client might list them highest
+ * first): no order of their own, so the server's order, as before */
 WINPR_ATTR_NODISCARD
-static BOOL test_ascending(void)
+static BOOL test_monotonic(void)
 {
 	RDPGFX_CAPSET sets[32] = { 0 };
-	const size_t count = make_sets(ascending, ARRAYSIZE(ascending), sets);
-
-	UINT32 want[32] = { 0 };
-	size_t wantCount = 0;
-	for (size_t x = 0; x < ARRAYSIZE(server_order); x++)
-	{
-		if (contains(ascending, ARRAYSIZE(ascending), server_order[x]))
-			want[wantCount++] = server_order[x];
-	}
-
+	size_t count = make_sets(ascending, ARRAYSIZE(ascending), sets);
 	UINT32 got[32] = { 0 };
-	const size_t gotCount = shadow_caps_order(sets, count, TRUE, got, ARRAYSIZE(got));
-	return same("ascending client, followed", got, gotCount, want, wantCount);
+	size_t gotCount = shadow_caps_order(sets, count, TRUE, got, ARRAYSIZE(got));
+	BOOL ok = !shadow_caps_reordered(sets, count);
+	ok &= same("ascending client", got, gotCount, server_order, ARRAYSIZE(server_order));
+
+	UINT32 descending[ARRAYSIZE(ascending)] = { 0 };
+	for (size_t x = 0; x < ARRAYSIZE(ascending); x++)
+		descending[x] = ascending[ARRAYSIZE(ascending) - 1 - x];
+	count = make_sets(descending, ARRAYSIZE(descending), sets);
+	gotCount = shadow_caps_order(sets, count, TRUE, got, ARRAYSIZE(got));
+	ok &= !shadow_caps_reordered(sets, count);
+	ok &= same("descending client", got, gotCount, server_order, ARRAYSIZE(server_order));
+
+	/* 10.6 then 10.6_ERR is one set twice, not an order: still ascending */
+	{
+		const UINT32 client[] = { RDPGFX_CAPVERSION_8,       RDPGFX_CAPVERSION_10,
+			                      RDPGFX_CAPVERSION_105,     RDPGFX_CAPVERSION_106,
+			                      RDPGFX_CAPVERSION_106_ERR, RDPGFX_CAPVERSION_107 };
+		count = make_sets(client, ARRAYSIZE(client), sets);
+		gotCount = shadow_caps_order(sets, count, TRUE, got, ARRAYSIZE(got));
+		ok &= !shadow_caps_reordered(sets, count);
+		ok &= same("10.6 and 10.6_ERR", got, gotCount, server_order, ARRAYSIZE(server_order));
+	}
+	return ok;
 }
 
 /* The server's own order without following, whatever the client sends */
@@ -123,7 +126,9 @@ static BOOL test_reordered(void)
 
 	/* 10.7 preferred over every other */
 	{
-		const UINT32 client[] = { RDPGFX_CAPVERSION_8, RDPGFX_CAPVERSION_10,
+		/* 10.0, 10.4, then 8.0: an order of its own in every build */
+		const UINT32 client[] = { RDPGFX_CAPVERSION_10,     RDPGFX_CAPVERSION_104,
+			                      RDPGFX_CAPVERSION_8,
 #if defined(WITH_GFX_AV1)
 			                      RDPGFX_CAPVERSION_FRDP_1,
 #endif
@@ -139,6 +144,36 @@ static BOOL test_reordered(void)
 		if (!ok)
 			(void)fprintf(stderr, "10.7 last: not tried first\n");
 	}
+
+#if defined(WITH_GFX_AV1)
+	/* FreeRDP's client with /gfx-codec-order:progressive,AV1: AV1's set first, the 8.x and 10.x
+	 * sets last, ascending among themselves */
+	{
+		const UINT32 client[] = { RDPGFX_CAPVERSION_FRDP_1, RDPGFX_CAPVERSION_8,
+			                      RDPGFX_CAPVERSION_81,     RDPGFX_CAPVERSION_10,
+			                      RDPGFX_CAPVERSION_104,    RDPGFX_CAPVERSION_107 };
+		const UINT32 want[] = { RDPGFX_CAPVERSION_107, RDPGFX_CAPVERSION_104, RDPGFX_CAPVERSION_10,
+			                    RDPGFX_CAPVERSION_FRDP_1 };
+		RDPGFX_CAPSET sets[6] = { 0 };
+		const size_t count = make_sets(client, ARRAYSIZE(client), sets);
+		UINT32 got[32] = { 0 };
+		const size_t gotCount = shadow_caps_order(sets, count, TRUE, got, ARRAYSIZE(got));
+		ok &= shadow_caps_reordered(sets, count);
+		ok &= same("progressive first", got, gotCount, want, ARRAYSIZE(want));
+	}
+
+	/* The rule's known limit: a list of its own that happens to be descending (only FRDP_1 and
+	 * 10.7, 10.7 preferred) cannot be told from a descending one, so it gets the server's order */
+	{
+		const UINT32 client[] = { RDPGFX_CAPVERSION_FRDP_1, RDPGFX_CAPVERSION_107 };
+		RDPGFX_CAPSET sets[2] = { 0 };
+		const size_t count = make_sets(client, ARRAYSIZE(client), sets);
+		UINT32 got[32] = { 0 };
+		const size_t gotCount = shadow_caps_order(sets, count, TRUE, got, ARRAYSIZE(got));
+		ok &= !shadow_caps_reordered(sets, count);
+		ok &= same("two sets, descending", got, gotCount, server_order, ARRAYSIZE(server_order));
+	}
+#endif
 
 #if defined(WITH_GFX_AV1) && defined(WITH_GFX_AV2)
 	/* AV1 preferred over AV2 */
@@ -174,7 +209,14 @@ static BOOL test_skipped(void)
 	UINT32 one[1] = { 0 };
 	ok &= (shadow_caps_order(sets, count, TRUE, one, ARRAYSIZE(one)) == 1) &&
 	      (one[0] == RDPGFX_CAPVERSION_10);
-	ok &= (shadow_caps_order(nullptr, 0, TRUE, one, ARRAYSIZE(one)) == 0);
+	if (!ok)
+		(void)fprintf(stderr, "no room: not the one set expected\n");
+
+	/* no sets, no order of the client's: the server's */
+	ok &= (shadow_caps_order(nullptr, 0, TRUE, one, ARRAYSIZE(one)) == 1) &&
+	      (one[0] == server_order[0]);
+	if (!ok)
+		(void)fprintf(stderr, "no sets: not the server's order\n");
 	return ok;
 }
 
@@ -208,7 +250,7 @@ int TestShadowCapsOrder(int argc, char* argv[])
 	WINPR_UNUSED(argv);
 
 	BOOL ok = TRUE;
-	ok &= test_ascending();
+	ok &= test_monotonic();
 	ok &= test_server_order();
 	ok &= test_reordered();
 	ok &= test_skipped();

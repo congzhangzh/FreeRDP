@@ -288,10 +288,10 @@ extern "C"
 #else
 	    UINT32 reservedAV2Tune[5];
 #endif
-		/** TRUE: of a client's GFX capability sets, the last one the server supports is confirmed
-		 *  (the client's own order); FALSE: the server's order. TRUE by default, which is the
-		 *  server's order for a client that lists its sets in ascending order
-		 *  @since version 3.34.0 */
+		/** TRUE: a client that lists its GFX capability sets in an order of its own (up and down
+		 *  by the server's priority) gets the last one the server supports; one that lists them in
+		 *  ascending or descending order gets the server's order, as before. FALSE: the server's
+		 *  order for every client. TRUE by default @since version 3.34.0 */
 		BOOL GfxFollowClientCapsOrder;
 	};
 

@@ -40,6 +40,45 @@ static const UINT32 shadow_caps_versions[] = {
 	RDPGFX_CAPVERSION_102,    RDPGFX_CAPVERSION_101, RDPGFX_CAPVERSION_10,
 };
 
+/* The rank of a version in the server's priority, 8.0 lowest: 0 for one it does not know. 10.6 and
+ * 10.6_ERR are the same capability set and rank the same. */
+static size_t shadow_caps_rank(UINT32 version)
+{
+	if (version == RDPGFX_CAPVERSION_8)
+		return 1;
+	if (version == RDPGFX_CAPVERSION_81)
+		return 2;
+	if (version == RDPGFX_CAPVERSION_106_ERR)
+		version = RDPGFX_CAPVERSION_106;
+	for (size_t x = 0; x < ARRAYSIZE(shadow_caps_versions); x++)
+	{
+		if (shadow_caps_versions[x] == version)
+			return 2 + ARRAYSIZE(shadow_caps_versions) - x;
+	}
+	return 0;
+}
+
+BOOL shadow_caps_reordered(const RDPGFX_CAPSET* capsSets, size_t count)
+{
+	WINPR_ASSERT(capsSets || (count == 0));
+
+	BOOL up = FALSE;
+	BOOL down = FALSE;
+	size_t last = 0;
+	for (size_t x = 0; x < count; x++)
+	{
+		const size_t rank = shadow_caps_rank(capsSets[x].version);
+		if (rank == 0)
+			continue;
+		if ((last != 0) && (rank > last))
+			up = TRUE;
+		if ((last != 0) && (rank < last))
+			down = TRUE;
+		last = rank;
+	}
+	return up && down;
+}
+
 static BOOL shadow_caps_supported(UINT32 version)
 {
 	for (size_t x = 0; x < ARRAYSIZE(shadow_caps_versions); x++)
@@ -57,7 +96,7 @@ size_t shadow_caps_order(const RDPGFX_CAPSET* capsSets, size_t count, BOOL follo
 	WINPR_ASSERT(versions || (size == 0));
 
 	size_t n = 0;
-	if (!followClient)
+	if (!followClient || !shadow_caps_reordered(capsSets, count))
 	{
 		for (size_t x = 0; (x < ARRAYSIZE(shadow_caps_versions)) && (n < size); x++)
 			versions[n++] = shadow_caps_versions[x];

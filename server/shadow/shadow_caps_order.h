@@ -24,13 +24,19 @@
 
 #include <freerdp/channels/rdpgfx.h>
 
+/* TRUE when a client's sets are in an order of its own: by the server's priority (8.0 lowest,
+ * FRDP_2 highest) they go up at one place and down at another. A list in ascending order (FreeRDP's
+ * client) or descending order is not; versions the server does not know are passed over, and 10.6
+ * and 10.6_ERR count as one. */
+WINPR_ATTR_NODISCARD
+BOOL shadow_caps_reordered(const RDPGFX_CAPSET* capsSets, size_t count);
+
 /* The capability versions to try a client's Caps Advertise with, the first that works is
- * confirmed. followClient: the client's own sets from its last to its first, those the server
- * supports. Clients list them from the least to the most preferred (8.0 ... 10.7, 11.x, FRDP_1,
- * FRDP_2), so for a client that keeps that order this is the server's own order; one with an order
- * of its own puts the set it prefers last. Without followClient: the server's own order (FRDP_2,
- * FRDP_1, 11.x, 10.7 ... 10.0). 8.1 and 8.0 are tried after these, as before. Returns how many
- * versions were written. */
+ * confirmed. followClient and a client with an order of its own (shadow_caps_reordered): the
+ * client's sets from its last to its first, those the server supports, so the set it prefers goes
+ * last. Otherwise the server's own order (FRDP_2, FRDP_1, 11.x, 10.7 ... 10.0), whatever the
+ * client's. 8.1 and 8.0 are tried after these, as before. Returns how many versions were
+ * written. */
 WINPR_ATTR_NODISCARD
 size_t shadow_caps_order(const RDPGFX_CAPSET* capsSets, size_t count, BOOL followClient,
                          UINT32* versions, size_t size);

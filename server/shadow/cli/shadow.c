@@ -130,9 +130,9 @@ int main(int argc, char** argv)
 		  "environment's and the command line's (default: shadow/shadow.conf in the FreeRDP "
 		  "config directory, if there is one)" },
 		{ "gfx-client-order", COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueTrue, nullptr, -1, nullptr,
-		  "Follow the order of the client's GFX capability sets: the last one the server supports "
-		  "is used (on by default; the same as the server's own order for a client that lists "
-		  "them in ascending order)" },
+		  "Follow the order of a client's GFX capability sets when it has one of its own: the last "
+		  "one the server supports is used (on by default; a client that lists them in ascending "
+		  "or descending order gets the server's order)" },
 		{ "gfx-progressive", COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueTrue, nullptr, -1, nullptr,
 		  "Allow GFX progressive codec" },
 		{ "gfx-rfx", COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueTrue, nullptr, -1, nullptr,
