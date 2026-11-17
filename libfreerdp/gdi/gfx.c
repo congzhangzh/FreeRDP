@@ -2414,7 +2414,6 @@ BOOL gdi_graphics_pipeline_init_ex(rdpGdi* gdi, RdpgfxClientContext* gfx,
 	rdpContext* context = gdi->context;
 	rdpSettings* settings = context->settings;
 
-	gdi->gfx = gfx;
 	gfx->custom = (void*)gdi;
 	gfx->ResetGraphics = gdi_ResetGraphics;
 	gfx->StartFrame = gdi_StartFrame;
@@ -2469,6 +2468,9 @@ BOOL gdi_graphics_pipeline_init_ex(rdpGdi* gdi, RdpgfxClientContext* gfx,
 		gfx->SurfaceCommand = nullptr;
 	}
 
+	/* Last: the channel's thread runs this, and another thread may find gfx through gdi from
+	 * this moment on, so everything it uses, the lock first, must be ready. */
+	gdi->gfx = gfx;
 	return TRUE;
 }
 
