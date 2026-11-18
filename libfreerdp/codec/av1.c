@@ -876,6 +876,12 @@ INT32 freerdp_av1_decompress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, UIN
 		av1->lastDecode.backend = "VideoToolbox";
 		AV1_VT_PICTURE pic = WINPR_C_ARRAY_INIT;
 		const INT32 vrc = av1_vt_decode(av1->vt, pSrcData, SrcSize, &pic);
+		if (vrc != AV1_VT_UNSUPPORTED)
+		{
+			/* VideoToolbox has the stream, whatever became of this decode */
+			av1->lastDecode.hardware = FREERDP_DECODE_HARDWARE_YES;
+			av1->lastDecode.backend = "VideoToolbox";
+		}
 		if (vrc == TRUE)
 		{
 			const INT32 crc = av1_convert_planar(av1, pic.i444, pic.planes, pic.strides, pic.width,
@@ -896,6 +902,7 @@ INT32 freerdp_av1_decompress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, UIN
 
 		/* The software decoder takes the rest of this stream (until the next reset). */
 		av1->vtStream = false;
+		av1->lastDecode.fellBack = TRUE;
 		if (vrc != AV1_VT_UNSUPPORTED)
 		{
 			/* In the middle of the stream: the software decoder has none of its references,
