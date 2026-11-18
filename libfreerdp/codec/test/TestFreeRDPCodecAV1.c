@@ -87,9 +87,17 @@ static BOOL checkLastDecode(FREERDP_AV1_CONTEXT* dec, FREERDP_DECODE_STATUS stat
 #else
 	const char* backend = "libaom";
 #endif
+	FREERDP_DECODE_HARDWARE hardware = FREERDP_DECODE_HARDWARE_NO;
+#if defined(WITH_AV1_VIDEOTOOLBOX)
+	/* a Mac with the hardware decodes with VideoToolbox, one without with the software */
+	if (result.backend && (strcmp(result.backend, "VideoToolbox") == 0))
+	{
+		backend = "VideoToolbox";
+		hardware = FREERDP_DECODE_HARDWARE_YES;
+	}
+#endif
 	if ((result.status != status) || (result.keyFrame != keyFrame) || result.fellBack ||
-	    (result.hardware != FREERDP_DECODE_HARDWARE_NO) || !result.backend ||
-	    (strcmp(result.backend, backend) != 0))
+	    (result.hardware != hardware) || !result.backend || (strcmp(result.backend, backend) != 0))
 	{
 		(void)fprintf(stderr,
 		              "[%s] got status %d keyFrame %d fellBack %d hardware %d backend %s, "
