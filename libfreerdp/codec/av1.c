@@ -879,6 +879,9 @@ INT32 freerdp_av1_decompress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, UIN
 			                          regionRects, numRegionRect);
 		if (vrc == FALSE)
 			return TRUE;
+		/* bad input: refused, the stream stays with VideoToolbox */
+		if (vrc == AV1_VT_INVALID)
+			return -1;
 
 		/* The software decoder takes the rest of this stream (until the next reset). */
 		av1->vtStream = false;

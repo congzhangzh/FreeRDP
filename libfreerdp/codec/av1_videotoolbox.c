@@ -46,6 +46,9 @@ enum
 {
 	OBU_SEQUENCE_HEADER = 1,
 	OBU_TEMPORAL_DELIMITER = 2,
+	OBU_FRAME_HEADER = 3,
+	OBU_TILE_GROUP = 4,
+	OBU_FRAME = 6,
 	OBU_PADDING = 15
 };
 
@@ -306,18 +309,19 @@ static CFDictionaryRef av1_vt_dictionary(const void* key, const void* value)
 	                          &kCFTypeDictionaryValueCallBacks);
 }
 
-/* Return: TRUE, or AV1_VT_UNSUPPORTED, or -1 */
+/* Return: TRUE, AV1_VT_UNSUPPORTED, AV1_VT_INVALID (nothing changed) or -1 */
 static INT32 av1_vt_open(AV1_VT* vt, const BYTE* obu, size_t obuSize, const BYTE* payload,
                          size_t payloadSize)
 {
-	av1_vt_close(vt);
-
 	AV1_VT_SEQ s = WINPR_C_ARRAY_INIT;
 	if (!av1_vt_parse_sequence_header(payload, payloadSize, &s))
 	{
 		WLog_Print(vt->log, WLOG_WARN, "AV1 sequence header too short");
-		return -1;
+		return AV1_VT_INVALID;
 	}
+
+	/* a new stream: the old session is done */
+	av1_vt_close(vt);
 
 	/* What av1.c converts: 8 bit 4:2:0 and 4:4:4 */
 	const BOOL i420 = (s.subsamplingX == 1) && (s.subsamplingY == 1);
@@ -535,6 +539,30 @@ INT32 av1_vt_decode(AV1_VT* vt, const BYTE* pSrcData, UINT32 SrcSize, AV1_VT_PIC
 	WINPR_ASSERT(pic);
 
 	av1_vt_release_picture(vt);
+
+	/* First check the whole temporal unit, so that bad input changes nothing, and see whether
+	 * it carries a frame at all (a temporal unit may hold a sequence header only). */
+	BOOL hasFrame = FALSE;
+	for (size_t pos = 0; pos < SrcSize;)
+	{
+		const size_t start = pos;
+		const BYTE header = pSrcData[pos++];
+		const unsigned type = (header >> 3) & 0x0f;
+		if (header & 0x04) /* obu_extension_flag */
+			pos++;
+		UINT64 size = 0;
+		if (((header & 0x02) == 0) || !av1_vt_leb128(pSrcData, SrcSize, &pos, &size) ||
+		    (size > SrcSize - pos))
+		{
+			WLog_Print(vt->log, WLOG_WARN, "AV1 OBU at %" PRIuz " of %" PRIu32 " is malformed",
+			           start, SrcSize);
+			return AV1_VT_INVALID;
+		}
+		pos += (size_t)size;
+		if ((type == OBU_FRAME_HEADER) || (type == OBU_TILE_GROUP) || (type == OBU_FRAME))
+			hasFrame = TRUE;
+	}
+
 	if (!av1_vt_reserve(vt, SrcSize))
 		return -1;
 
@@ -550,13 +578,8 @@ INT32 av1_vt_decode(AV1_VT* vt, const BYTE* pSrcData, UINT32 SrcSize, AV1_VT_PIC
 		if (header & 0x04) /* obu_extension_flag */
 			pos++;
 		UINT64 size = 0;
-		if (((header & 0x02) == 0) || !av1_vt_leb128(pSrcData, SrcSize, &pos, &size) ||
-		    (size > SrcSize - pos))
-		{
-			WLog_Print(vt->log, WLOG_WARN, "AV1 OBU at %" PRIuz " of %" PRIu32 " is malformed",
-			           start, SrcSize);
-			return -1;
-		}
+		if (!av1_vt_leb128(pSrcData, SrcSize, &pos, &size)) /* checked above */
+			return AV1_VT_INVALID;
 		const size_t payload = pos;
 		pos += (size_t)size;
 
@@ -581,9 +604,9 @@ INT32 av1_vt_decode(AV1_VT* vt, const BYTE* pSrcData, UINT32 SrcSize, AV1_VT_PIC
 	if (!vt->session)
 	{
 		WLog_Print(vt->log, WLOG_WARN, "AV1 stream without a sequence header");
-		return -1;
+		return AV1_VT_INVALID;
 	}
-	if (sampleSize == 0)
+	if (!hasFrame)
 		return FALSE;
 
 	CMBlockBufferRef block = nullptr;

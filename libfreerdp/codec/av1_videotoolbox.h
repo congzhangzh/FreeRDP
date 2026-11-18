@@ -37,6 +37,9 @@ typedef struct
 
 /** The stream (its sequence header) is one VideoToolbox can't decode here: use software. */
 #define AV1_VT_UNSUPPORTED (-100)
+/** The input is no valid temporal unit (or comes before any sequence header): refused, the
+ * decoder is as it was and keeps the stream. */
+#define AV1_VT_INVALID (-101)
 
 /** @return a decoder, or nullptr when this machine has no hardware AV1 decoder. */
 AV1_VT* av1_vt_new(wLog* log);
@@ -49,8 +52,9 @@ void av1_vt_reset(AV1_VT* vt);
  *
  * @return TRUE and @p pic filled when a frame was shown, FALSE when none was,
  *         AV1_VT_UNSUPPORTED when VideoToolbox can't decode this stream (no frame of it was
- *         decoded, so a software decoder can start with the same temporal unit), or another
- *         negative value on an error.
+ *         decoded, so a software decoder can start with the same temporal unit),
+ *         AV1_VT_INVALID for bad input (nothing changed), or another negative value when
+ *         VideoToolbox failed in the middle of the stream.
  */
 INT32 av1_vt_decode(AV1_VT* vt, const BYTE* pSrcData, UINT32 SrcSize, AV1_VT_PICTURE* pic);
 
