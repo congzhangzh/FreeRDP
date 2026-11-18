@@ -58,6 +58,8 @@ set(SRCS
     shadow_subsystem.h
     shadow_mcevent.c
     shadow_mcevent.h
+    shadow_config.c
+    shadow_config.h
     shadow_server.c
     shadow.h
 )

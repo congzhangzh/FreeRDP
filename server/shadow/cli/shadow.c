@@ -125,6 +125,10 @@ int main(int argc, char** argv)
 		{ "gfx-av2", COMMAND_LINE_VALUE_OPTIONAL, "[:profile:[low|high|0|1]|off]", BoolValueTrue,
 		  nullptr, -1, nullptr, "Allow GFX pipeline AV2 codec extension" },
 #endif
+		{ "config-file", COMMAND_LINE_VALUE_REQUIRED, "<path>", nullptr, nullptr, -1, nullptr,
+		  "The configuration file: FREERDP_SHADOW_* settings as KEY=VALUE lines, under the "
+		  "environment's and the command line's (default: shadow/shadow.conf in the FreeRDP "
+		  "config directory, if there is one)" },
 		{ "gfx-codec-order", COMMAND_LINE_VALUE_REQUIRED, "<codec>[,<codec>...]", nullptr, nullptr,
 		  -1, nullptr,
 		  "The order the GFX codecs are tried in, of av2, av1, hevc, avc444, avc420, rfx, "
