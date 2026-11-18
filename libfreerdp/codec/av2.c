@@ -497,6 +497,19 @@ static BOOL areRectsValid(wLog* log, UINT32 width, UINT32 height, const RECTANGL
 /* AV2's main profiles are 10 bit: a decoder may hand out 16 bit samples, even for an 8 bit
  * stream. Bring them down to 8 bit into the context's own planes, so that the colour
  * conversion below always reads 8 bit samples. */
+/* One row of 16 bit samples to 8 bit. libavm hands out 16 bit buffers even for 8 bit streams, so
+ * this runs on every sample of every frame. The restrict pointers let gcc vectorize it at -O2
+ * too (it did only at -O3); clang did at both. */
+static void av2_narrow_row(const UINT16* WINPR_RESTRICT src, BYTE* WINPR_RESTRICT dst, UINT32 count,
+                           UINT32 shift)
+{
+	for (UINT32 x = 0; x < count; x++)
+	{
+		const UINT16 v = (UINT16)(src[x] >> shift);
+		dst[x] = (BYTE)((v > UINT8_MAX) ? UINT8_MAX : v);
+	}
+}
+
 WINPR_ATTR_NODISCARD
 static BOOL av2_planes_to_8bit(FREERDP_AV2_CONTEXT* av2, av2_planes* planes)
 {
@@ -530,11 +543,7 @@ static BOOL av2_planes_to_8bit(FREERDP_AV2_CONTEXT* av2, av2_planes* planes)
 			const UINT16* src = WINPR_PACKED_ALIGN_CAST(
 			    const UINT16*, &planes->data[p][1ull * y * planes->stride[p]]);
 			BYTE* dst = &av2->yuvdata[p][1ull * y * av2->yuvStride[p]];
-			for (UINT32 x = 0; x < w; x++)
-			{
-				const UINT32 v = src[x] >> shift;
-				dst[x] = (BYTE)MIN(v, UINT8_MAX);
-			}
+			av2_narrow_row(src, dst, w, shift);
 		}
 		planes->data[p] = av2->yuvdata[p];
 		planes->stride[p] = av2->yuvStride[p];
