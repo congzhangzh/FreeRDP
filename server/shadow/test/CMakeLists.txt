@@ -6,7 +6,7 @@ disable_warnings_for_directory(${CMAKE_CURRENT_BINARY_DIR})
 set(${MODULE_PREFIX}_DRIVER ${MODULE_NAME}.c)
 
 set(${MODULE_PREFIX}_TESTS TestShadowCaptureCompare.c TestShadowCodecOptions.c TestShadowH264Settings.c
-    TestShadowGfxCodecOrder.c)
+    TestShadowGfxCodecOrder.c TestShadowConfigLayers.c)
 
 create_test_sourcelist(${MODULE_PREFIX}_SRCS ${${MODULE_PREFIX}_DRIVER} ${${MODULE_PREFIX}_TESTS})
 
