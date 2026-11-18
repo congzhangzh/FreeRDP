@@ -49,7 +49,7 @@
 #define TAG SERVER_TAG("shadow.mac")
 
 /* Frames per second asked from ScreenCaptureKit at most */
-#define MAC_SHADOW_FPS 30
+#define MAC_SHADOW_FPS 60
 /* how often to look for the display again after the stream ended */
 #define MAC_SHADOW_RESTART_MS 1000
 /* how often to look at the displays: a reconfiguration callback only reaches a
