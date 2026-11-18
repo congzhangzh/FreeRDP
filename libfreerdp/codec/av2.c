@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+#include <winpr/sysinfo.h>
+
 #include <freerdp/codec/av2.h>
 #include <freerdp/primitives.h>
 #include <freerdp/log.h>
@@ -793,6 +795,23 @@ BOOL freerdp_av2_context_get_last_decode(const FREERDP_AV2_CONTEXT* av2,
 	return TRUE;
 }
 
+#if defined(WITH_LIBAVM) && !defined(__EMSCRIPTEN__)
+/* Decoder threads: with row-mt they share the superblock rows of a tile. Measured on an Apple M5
+ * (libavm 20261106.1, 1080p/1440p screen content): 1.5-1.6x at 4 threads, flat above 3-4. */
+#define AV2_AVM_DECODER_MAX_THREADS 4
+
+static unsigned int av2_avm_decoder_threads(void)
+{
+	SYSTEM_INFO sysInfo = WINPR_C_ARRAY_INIT;
+	GetNativeSystemInfo(&sysInfo);
+	if (sysInfo.dwNumberOfProcessors < 1)
+		return 1;
+	if (sysInfo.dwNumberOfProcessors > AV2_AVM_DECODER_MAX_THREADS)
+		return AV2_AVM_DECODER_MAX_THREADS;
+	return sysInfo.dwNumberOfProcessors;
+}
+#endif
+
 BOOL freerdp_av2_context_reset(FREERDP_AV2_CONTEXT* av2, UINT32 width, UINT32 height)
 {
 	if (av2->encoder)
@@ -845,6 +864,7 @@ BOOL freerdp_av2_context_reset(FREERDP_AV2_CONTEXT* av2, UINT32 width, UINT32 he
 		if (((av2->ecfg.rc_end_usage == AVM_Q) || (av2->ecfg.rc_end_usage == AVM_CQ)) &&
 		    (av2->qp > 0) && !av2_avm_control(av2, AVME_SET_QP, "AVME_SET_QP", (int)av2->qp))
 			return FALSE;
+
 		/* Each reference frame is kept whole, in 16 bits with a border: the setting that
 		 * decides most of the encoder's memory. libavm has no control for it, only the
 		 * option avmenc's --dpb-size sets, before the first frame. */
@@ -905,6 +925,10 @@ BOOL freerdp_av2_context_reset(FREERDP_AV2_CONTEXT* av2, UINT32 width, UINT32 he
 
 		av2->dcfg.w = width;
 		av2->dcfg.h = height;
+#if !defined(__EMSCRIPTEN__)
+		/* Not in the browser: its libavm has threads only where the page is built for them */
+		av2->dcfg.threads = av2_avm_decoder_threads();
+#endif
 		const avm_codec_err_t rc =
 		    avm_codec_dec_init(&av2->ctx, av2->iface, &av2->dcfg, av2->flags);
 		if (rc != AVM_CODEC_OK)
@@ -913,6 +937,13 @@ BOOL freerdp_av2_context_reset(FREERDP_AV2_CONTEXT* av2, UINT32 width, UINT32 he
 			return FALSE;
 		}
 		av2->initialized = true;
+#if !defined(__EMSCRIPTEN__)
+		/* Without row-mt libavm starts no worker for a single tile, the threads stay idle. The
+		 * workers run inside avm_codec_decode(): the picture still comes out of the same call. */
+		if (avm_codec_control(&av2->ctx, AV2D_SET_ROW_MT, 1) != AVM_CODEC_OK)
+			WLog_Print(av2->log, WLOG_WARN, "AV2D_SET_ROW_MT refused: %s",
+			           avm_codec_error(&av2->ctx));
+#endif
 #else
 		WLog_Print(av2->log, WLOG_WARN,
 		           "This build does not support AV2 decoding. Recompile with '-DWITH_DAV2D=ON' "
