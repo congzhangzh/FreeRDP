@@ -31,6 +31,10 @@
  * XRDP_GFX_FRAMES_IN_FLIGHT=8; FREERDP_SHADOW_GFX_FRAMES_IN_FLIGHT overrides it */
 #define SHADOW_GFX_FRAMES_IN_FLIGHT 8
 
+/* the most frames per second a subsystem that paces its capture by
+ * shadow_encoder_preferred_fps() is asked for (X11, Windows) */
+#define SHADOW_ENCODER_MAX_FPS 60
+
 struct rdp_shadow_encoder
 {
 	rdpShadowClient* client;

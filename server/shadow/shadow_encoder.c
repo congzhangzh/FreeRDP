@@ -624,7 +624,7 @@ int shadow_encoder_reset(rdpShadowEncoder* encoder)
 		return -1;
 
 	encoder->fps = 16;
-	encoder->maxFps = 32;
+	encoder->maxFps = SHADOW_ENCODER_MAX_FPS;
 	encoder->frameId = 0;
 	encoder->lastAckframeId = 0;
 	encoder->lastAckTick = GetTickCount64();
@@ -751,7 +751,7 @@ rdpShadowEncoder* shadow_encoder_new(rdpShadowClient* client)
 	encoder->client = client;
 	encoder->server = server;
 	encoder->fps = 16;
-	encoder->maxFps = 32;
+	encoder->maxFps = SHADOW_ENCODER_MAX_FPS;
 	encoder->lastAckTick = GetTickCount64();
 	{
 		/* like xrdp's XRDP_GFX_FRAMES_IN_FLIGHT; 0 turns the limit off */
