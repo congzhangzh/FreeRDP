@@ -17,6 +17,10 @@
 
 #include <winpr/sysinfo.h>
 
+#if defined(__EMSCRIPTEN__)
+#include <emscripten/threading.h>
+#endif
+
 #include <freerdp/codec/av2.h>
 #include <freerdp/primitives.h>
 #include <freerdp/log.h>
@@ -803,9 +807,17 @@ INT32 freerdp_av2_decompress(FREERDP_AV2_CONTEXT* av2, const BYTE* pSrcData, UIN
 static unsigned int av2_avm_decoder_threads(void)
 {
 #if defined(__EMSCRIPTEN__)
-	/* libavm's default, no workers: in the browser it has threads only where the page is built
-	 * for them */
-	return 0;
+	/* In the browser: threads only when the module was built with them and the page may start
+	 * them (cross-origin isolated, a SharedArrayBuffer); else libavm's default, no workers. The
+	 * workers come from the page's pthread pool. */
+	if (!emscripten_has_threading_support())
+		return 0;
+	const int cores = emscripten_num_logical_cores();
+	if (cores < 1)
+		return 0;
+	if (cores > AV2_AVM_DECODER_MAX_THREADS)
+		return AV2_AVM_DECODER_MAX_THREADS;
+	return (unsigned int)cores;
 #else
 	SYSTEM_INFO sysInfo = WINPR_C_ARRAY_INIT;
 	GetNativeSystemInfo(&sysInfo);
