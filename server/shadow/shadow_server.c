@@ -383,6 +383,7 @@ static BOOL shadow_server_parse_codec(rdpShadowServer* server, const char* value
 	server->HEVCBitRate = hevcBitRate;
 #endif
 	return TRUE;
+}
 
 /* The GFX codecs by the names /gfx uses for them, in the default order of
  * rdpShadowServer::GfxCodecOrder */
