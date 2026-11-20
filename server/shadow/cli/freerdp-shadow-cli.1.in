@@ -49,6 +49,9 @@ The most frames per second the server captures and sends, for every subsystem
 and codec, e.g. /framerate:30. Without it each keeps its own: the encoders go
 up to 60, the H.264 encoder is set to 30, the macOS capture asks for 60 and the
 GNOME (Mutter) capture for up to 60. A value outside 1 to 120 is an error.
+The same value can come from FREERDP_SHADOW_FRAMERATE in the environment or in
+the configuration file (what a session manager passes on); the command line
+wins over it, and a wrong value there is logged and ignored.
 .IP -auth
 Disable authentication. If authentication is enabled PAM is used with the
 X11 subsystem. Running as root is not necessary, however if run as user only

@@ -156,7 +156,8 @@ int main(int argc, char** argv)
 
 		{ "framerate", COMMAND_LINE_VALUE_REQUIRED, "<1-120>", nullptr, nullptr, -1, nullptr,
 		  "The most frames per second the server captures and sends, for every subsystem and "
-		  "codec (default: each its own, e.g. 60 for the encoders, 30 for H.264)" },
+		  "codec (default: each its own, e.g. 60 for the encoders, 30 for H.264; or "
+		  "FREERDP_SHADOW_FRAMERATE from the environment or the configuration file)" },
 #if defined(WITH_GFX_AZURE)
 		{ "gfx-hevc", COMMAND_LINE_VALUE_OPTIONAL, "[on|off|i420|i444]", BoolValueTrue, nullptr, -1,
 		  nullptr, "Allow GFX pipeline HEVC codec extension" },

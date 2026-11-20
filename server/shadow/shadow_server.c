@@ -1804,6 +1804,12 @@ static void shadow_server_env_defaults(rdpShadowServer* server)
 	shadow_server_encoder_defaults(server);
 	shadow_server_set_codec_order(server, nullptr, 0);
 
+	/* /framerate's value, for a server started with no command line of its own (a session
+	 * manager's); a wrong one is logged and the rates stay each their own */
+	server->maxFrameRate = shadow_server_env_u32("FREERDP_SHADOW_FRAMERATE", 0, 1, 120);
+	if (server->maxFrameRate > 0)
+		server->h264FrameRate = server->maxFrameRate;
+
 	const char* name = "FREERDP_SHADOW_GFX_CODEC_ORDER";
 	const char* order = getenv(name);
 	if (order && (*order != '\0') && !shadow_server_parse_codec_order(server, order))
