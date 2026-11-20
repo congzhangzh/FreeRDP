@@ -76,8 +76,15 @@ UINT32 shadow_encoder_create_frame_id(rdpShadowEncoder* encoder)
 	 * Calculate preferred fps according to how much frames are
 	 * in-progress. Note that it only works when subsystem implementation
 	 * calls shadow_encoder_preferred_fps and takes the suggestion.
+	 *
+	 * Lower it only when the client is behind: when this frame fills the window of the GFX flow
+	 * control (maxInFlight), after which new damage is held. Below that the frames in flight are
+	 * the link's delay, not a slow client: one that keeps up with 60 frames per second has 3 in
+	 * flight at a round trip of 40 ms, and lowering the rate at 2 held such a client to 20-26.
+	 * With the limit off (0) nothing else holds the frames: lower it from 2 in flight, as before.
 	 */
-	if (inFlightFrames > 1)
+	const UINT64 behindAt = (encoder->maxInFlight > 2) ? (encoder->maxInFlight - 1) : 2;
+	if (inFlightFrames >= behindAt)
 	{
 		UINT64 fps = (100 / (inFlightFrames + 1) * encoder->maxFps) / 100;
 		if (fps > encoder->maxFps)
