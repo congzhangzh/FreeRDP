@@ -40,11 +40,14 @@
 #define SHADOW_CONFIG_LINE 1024
 #define SHADOW_CONFIG_MAX 64
 
-/* where each setting the file gave came from, for the messages about its value */
+/* each setting the file gave: its value, where it came from (for the messages about it), and
+ * whether it became the environment's (applied) or the environment had its own */
 static struct
 {
 	char name[96];
+	char value[SHADOW_CONFIG_LINE];
 	char origin[160];
+	BOOL applied;
 } shadow_config_origins[SHADOW_CONFIG_MAX];
 static size_t shadow_config_count = 0;
 
@@ -140,24 +143,27 @@ BOOL shadow_config_load(const char* path, BOOL required)
 			continue;
 		}
 
+		BOOL applied = FALSE;
 		if (getenv(name))
-		{
 			WLog_DBG(TAG, "%s:%" PRIuz ": %s is set in the environment, which wins", path, number,
 			         name);
-			continue;
-		}
-		if (!shadow_config_setenv(name, value))
+		else if (!shadow_config_setenv(name, value))
 		{
 			WLog_WARN(TAG, "%s:%" PRIuz ": %s could not be set: passed over", path, number, name);
 			continue;
 		}
+		else
+			applied = TRUE;
 		if (shadow_config_count < SHADOW_CONFIG_MAX)
 		{
 			(void)_snprintf(shadow_config_origins[shadow_config_count].name,
 			                sizeof(shadow_config_origins[shadow_config_count].name), "%s", name);
+			(void)_snprintf(shadow_config_origins[shadow_config_count].value,
+			                sizeof(shadow_config_origins[shadow_config_count].value), "%s", value);
 			(void)_snprintf(shadow_config_origins[shadow_config_count].origin,
 			                sizeof(shadow_config_origins[shadow_config_count].origin),
 			                " (from %s:%" PRIuz ")", path, number);
+			shadow_config_origins[shadow_config_count].applied = applied;
 			shadow_config_count++;
 		}
 	}
@@ -171,10 +177,25 @@ const char* shadow_config_origin(const char* name)
 		return "";
 	for (size_t x = 0; x < shadow_config_count; x++)
 	{
-		if (strcmp(shadow_config_origins[x].name, name) == 0)
+		if (shadow_config_origins[x].applied && (strcmp(shadow_config_origins[x].name, name) == 0))
 			return shadow_config_origins[x].origin;
 	}
 	return "";
+}
+
+const char* shadow_config_file_value(const char* name, const char** origin)
+{
+	for (size_t x = 0; name && (x < shadow_config_count); x++)
+	{
+		/* the first line for a name, as for the environment: a later one does not replace it */
+		if (strcmp(shadow_config_origins[x].name, name) == 0)
+		{
+			if (origin)
+				*origin = shadow_config_origins[x].origin;
+			return shadow_config_origins[x].value;
+		}
+	}
+	return nullptr;
 }
 
 char* shadow_config_default_path(void)

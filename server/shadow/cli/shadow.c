@@ -151,8 +151,10 @@ int main(int argc, char** argv)
 		{ "codec", COMMAND_LINE_VALUE_REQUIRED, "<codec>:<key>:<value>[,<codec>:<key>:<value>...]",
 		  nullptr, nullptr, -1, nullptr,
 		  "Encoder settings, bit rates in kbit/s: h264:rate-control:vbr|cqp, h264:bitrate, "
-		  "h264:qp:<0-51>; av1 and av2: rate-control:vbr|cbr|cq|q, bitrate; hevc: "
-		  "rate-control:vbr, bitrate (a codec not built in is refused)" },
+		  "h264:qp:<0-51>; av1 and av2: rate-control:vbr|cbr|cq|q, bitrate, threads, cpu-used; "
+		  "av1: cq-level:<0-63>; av2: qp:<0-255>, tile-columns:<0-6>, dpb-size:<1-16>; hevc: "
+		  "rate-control:vbr, bitrate (a codec not built in is refused; or FREERDP_SHADOW_CODEC "
+		  "from the environment or the configuration file, keys over keys)" },
 		{ "gfx-stats-period", COMMAND_LINE_VALUE_REQUIRED, "<seconds>", nullptr, nullptr, -1,
 		  nullptr,
 		  "Write the GFX counters of each client (captured, sent, held, acknowledged, encode "

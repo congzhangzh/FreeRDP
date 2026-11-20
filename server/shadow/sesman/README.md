@@ -75,25 +75,35 @@ freerdp-shadow-sesman [--port 3389] [--bind <address>] [--shadow <freerdp-shadow
 The shadow servers it starts get every `FREERDP_SHADOW_*` variable of its own environment
 (`Environment=` in a drop-in for the service), up to 32, but `FREERDP_SHADOW_MUTTER_VIRTUAL`,
 which it sets for each user itself. A variable it does not pass on is logged. The encoder
-settings among them, as `freerdp-shadow-cli` reads them from its environment:
+settings are one of them, `FREERDP_SHADOW_CODEC`, with the value of `freerdp-shadow-cli`'s
+`/codec` (keys separated by commas, each `<codec>:<key>:<value>`; the keys it does not name keep
+their defaults), e.g.
 
-| Variable | Default | Meaning |
+```
+Environment=FREERDP_SHADOW_CODEC=av1:rate-control:cq,av1:cq-level:26,av1:bitrate:4000,av1:threads:8
+```
+
+| Key | Default | Meaning |
 |---|---|---|
-| `FREERDP_SHADOW_AV1_CQ_LEVEL` | 16 | libaom's quality, 1 to 63 (lower is better) |
-| `FREERDP_SHADOW_AV1_TARGET_BITRATE` | 12000 | kbit/s, the ceiling of `cq` and the target of `cbr` and `vbr`; 0 for `q` |
-| `FREERDP_SHADOW_AV1_RATE_CONTROL` | `cq` (`q` without a target) | `q` constant quality, `cq` the quality up to the target, `cbr`, `vbr` |
-| `FREERDP_SHADOW_AV1_THREADS` | 0 | 0 for up to 4 |
-| `FREERDP_SHADOW_AV1_CPU_USED` | 10 | 0 (slowest) to 12 |
-| `FREERDP_SHADOW_AV2_QP` | 100 | libavm's quantizer, 1 to 255 (lower is better) |
-| `FREERDP_SHADOW_AV2_TARGET_BITRATE` | 10000 | kbit/s, the ceiling of `cq` and the target of `cbr` and `vbr`; 0 for `q` |
-| `FREERDP_SHADOW_AV2_RATE_CONTROL` | `cq` (`q` without a target) | as for AV1 |
-| `FREERDP_SHADOW_AV2_THREADS` | up to 4 | |
-| `FREERDP_SHADOW_AV2_CPU_USED` | 10 | 0 (slowest) to 10 |
-| `FREERDP_SHADOW_AV2_TILE_COLUMNS` | 1 | log2: 1 is two columns |
-| `FREERDP_SHADOW_AV2_DPB_SIZE` | 4 | reference frames, 1 to 16; libavm keeps 8, each a whole frame |
-| `FREERDP_SHADOW_H264_RATE_CONTROL` | `vbr` | `vbr` or `cqp` (H.264 has no other mode) |
-| `FREERDP_SHADOW_H264_BITRATE` | 10000 | kbit/s, for `vbr` |
-| `FREERDP_SHADOW_H264_QP` | 0 | 0 to 51, for `cqp` |
+| `av1:rate-control` | `cq` | `q` constant quality, `cq` the quality up to the bit rate, `cbr`, `vbr` |
+| `av1:bitrate` | 12000 | kbit/s, the ceiling of `cq` and the target of `cbr` and `vbr` |
+| `av1:cq-level` | 16 | libaom's quality, 0 (libaom's) to 63, lower is better |
+| `av1:threads` | 0 | 0 for up to 4 |
+| `av1:cpu-used` | 10 | 0 (slowest) to 12 |
+| `av2:rate-control` | `cq` | as for AV1 |
+| `av2:bitrate` | 10000 | kbit/s, as for AV1 |
+| `av2:qp` | 100 | libavm's quantizer, 0 (libavm's) to 255, lower is better |
+| `av2:threads` | up to 4 | 1 to 64 |
+| `av2:cpu-used` | 10 | 0 (slowest) to 10 |
+| `av2:tile-columns` | 1 | log2, 0 to 6: 1 is two columns |
+| `av2:dpb-size` | 4 | reference frames, 1 to 16; libavm keeps 8, each a whole frame |
+| `h264:rate-control` | `vbr` | `vbr` or `cqp` (H.264 has no other mode) |
+| `h264:bitrate` | 10000 | kbit/s, for `vbr` |
+| `h264:qp` | 0 | 0 to 51, for `cqp` |
+
+A value with a wrong key changes nothing and is logged. The variables before it
+(`FREERDP_SHADOW_AV1_*`, `FREERDP_SHADOW_AV2_*`, `FREERDP_SHADOW_H264_*`) are no longer read; one
+still set is logged with the key that took its place.
 
 ## Test
 

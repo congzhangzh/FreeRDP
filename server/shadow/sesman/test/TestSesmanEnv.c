@@ -31,14 +31,14 @@ int TestSesmanEnv(int argc, char* argv[])
 	tooLong[sizeof(tooLong) - 1] = '\0';
 
 	char* envp[] = { "PATH=/usr/bin",
-		             "FREERDP_SHADOW_AV1_CQ_LEVEL=20",
+		             "FREERDP_SHADOW_CODEC=av1:cq-level:20,h264:bitrate:4000",
 		             "WLOG_LEVEL=DEBUG",
-		             "FREERDP_SHADOW_H264_BITRATE=4000",
+		             "FREERDP_SHADOW_FRAMERATE=30",
 		             "FREERDP_SHADOW_MUTTER_VIRTUAL=1920x1080",
 		             "FREERDP_SHADOWX=1",
-		             "XFREERDP_SHADOW_AV2_QP=1",
+		             "XFREERDP_SHADOW_CODEC=av2:qp:1",
 		             tooLong,
-		             "FREERDP_SHADOW_H264_RATE_CONTROL=vbr",
+		             "FREERDP_SHADOW_GFX_STATS_PERIOD=5",
 		             NULL };
 
 	int ok = 1;
@@ -48,11 +48,15 @@ int TestSesmanEnv(int argc, char* argv[])
 	droppedCount = 0;
 	size_t n = sesman_shadow_env(envp, out, SESMAN_ENV_MAX, dropped);
 	ok &= check("count", n == 3);
-	ok &= check("av1", (n > 0) && (strcmp(out[0], "--setenv=FREERDP_SHADOW_AV1_CQ_LEVEL=20") == 0));
-	ok &= check("h264 bitrate",
-	            (n > 1) && (strcmp(out[1], "--setenv=FREERDP_SHADOW_H264_BITRATE=4000") == 0));
-	ok &= check("h264 mode",
-	            (n > 2) && (strcmp(out[2], "--setenv=FREERDP_SHADOW_H264_RATE_CONTROL=vbr") == 0));
+	ok = check("codec", (n > 0) && (strcmp(out[0], "--setenv=FREERDP_SHADOW_CODEC=av1:cq-level:20,"
+	                                               "h264:bitrate:4000") == 0)) &&
+	     ok;
+	ok = check("framerate",
+	           (n > 1) && (strcmp(out[1], "--setenv=FREERDP_SHADOW_FRAMERATE=30") == 0)) &&
+	     ok;
+	ok = check("stats period",
+	           (n > 2) && (strcmp(out[2], "--setenv=FREERDP_SHADOW_GFX_STATS_PERIOD=5") == 0)) &&
+	     ok;
 	ok &= check("dropped", droppedCount == 2);
 	ok &= check("own", strstr(droppedWhy[0], "sesman sets it itself") != NULL);
 	ok &= check("too long", strstr(droppedWhy[1], "too long") != NULL);

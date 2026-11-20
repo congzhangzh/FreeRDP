@@ -36,6 +36,11 @@ BOOL shadow_config_load(const char* path, BOOL required);
  * value */
 const char* shadow_config_origin(const char* name);
 
+/* The value the file gave for name, also when the environment has its own and wins; nullptr
+ * when the file has none. origin (may be nullptr) gets " (from <file>:<line>)". For a setting
+ * made of keys (FREERDP_SHADOW_CODEC) the file's keys go first and the environment's over them. */
+const char* shadow_config_file_value(const char* name, const char** origin);
+
 /* <the FreeRDP config directory>/shadow/shadow.conf, to free; nullptr without one */
 WINPR_ATTR_MALLOC(free, 1)
 char* shadow_config_default_path(void);

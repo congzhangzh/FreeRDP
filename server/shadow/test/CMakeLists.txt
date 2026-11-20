@@ -8,7 +8,6 @@ set(${MODULE_PREFIX}_DRIVER ${MODULE_NAME}.c)
 set(${MODULE_PREFIX}_TESTS
     TestShadowCaptureCompare.c
     TestShadowCodecOptions.c
-    TestShadowH264Settings.c
     TestShadowGfxCodecOrder.c
     TestShadowConfigLayers.c
     TestShadowGfxStats.c
