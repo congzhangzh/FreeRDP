@@ -292,6 +292,23 @@ static void shadow_server_set_codec_order(rdpShadowServer* server, const SHADOW_
 		server->GfxCodecOrder[n++] = SHADOW_GFX_CODEC_NONE;
 }
 
+/* A whole number from min to max, nothing else */
+WINPR_ATTR_NODISCARD
+static BOOL shadow_server_parse_u32(const char* text, UINT32 min, UINT32 max, UINT32* value)
+{
+	WINPR_ASSERT(value);
+	if (!text)
+		return FALSE;
+
+	char* end = nullptr;
+	errno = 0;
+	const unsigned long long parsed = strtoull(text, &end, 0);
+	if ((errno != 0) || !end || (*end != '\0') || (parsed < min) || (parsed > max))
+		return FALSE;
+	*value = (UINT32)parsed;
+	return TRUE;
+}
+
 /* /gfx-codec-order:<name>[,<name>...]: it ranks the codecs, it does not switch any on. A name
  * /gfx does not know, a codec not built in or a name given twice is an error, and then the order
  * stays as it was. */
@@ -686,6 +703,15 @@ int shadow_server_parse_command_line(rdpShadowServer* server, int argc, char** a
 		{
 			if (!shadow_server_parse_codec_order(server, arg->Value))
 				return fail_at(arg, COMMAND_LINE_ERROR);
+		}
+		CommandLineSwitchCase(arg, "framerate")
+		{
+			/* H.264 follows it too */
+			UINT32 rate = 0;
+			if (!shadow_server_parse_u32(arg->Value, 1, 120, &rate))
+				return fail_at(arg, COMMAND_LINE_ERROR);
+			server->maxFrameRate = rate;
+			server->h264FrameRate = rate;
 		}
 		CommandLineSwitchCase(arg, "gfx-progressive")
 		{

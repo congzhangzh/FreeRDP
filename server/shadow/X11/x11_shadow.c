@@ -1039,7 +1039,11 @@ static DWORD WINAPI x11_shadow_subsystem_thread(LPVOID arg)
 	nCount = 0;
 	events[nCount++] = subsystem->common.event;
 	events[nCount++] = MessageQueue_Event(MsgPipe->In);
-	subsystem->common.captureFrameRate = 16;
+	/* /framerate caps the first rate too; with one client its encoder's suggestion takes over */
+	const UINT32 maxFrameRate =
+	    subsystem->common.server ? subsystem->common.server->maxFrameRate : 0;
+	subsystem->common.captureFrameRate =
+	    ((maxFrameRate > 0) && (maxFrameRate < 16)) ? maxFrameRate : 16;
 	dwInterval = 1000 / subsystem->common.captureFrameRate;
 	frameTime = GetTickCount64() + dwInterval;
 

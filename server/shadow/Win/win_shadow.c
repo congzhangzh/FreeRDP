@@ -578,13 +578,16 @@ static DWORD WINAPI win_shadow_subsystem_thread(LPVOID arg)
 	UINT64 frameTime;
 	HANDLE events[32];
 	HANDLE StopEvent;
+	WINPR_ASSERT(subsystem->base.server);
 	StopEvent = subsystem->base.server->StopEvent;
 	wMessagePipe* MsgPipe = subsystem->base.MsgPipe;
 	WINPR_ASSERT(MsgPipe);
 	nCount = 0;
 	events[nCount++] = StopEvent;
 	events[nCount++] = MessageQueue_Event(MsgPipe->In);
-	subsystem->base.captureFrameRate = 120;
+	/* /framerate caps the first rate too; the encoders' suggestion takes over from there */
+	subsystem->base.captureFrameRate =
+	    (subsystem->base.server->maxFrameRate > 0) ? subsystem->base.server->maxFrameRate : 120;
 	dwInterval = 1000 / subsystem->base.captureFrameRate;
 	frameTime = GetTickCount64() + dwInterval;
 	BOOL refresh = FALSE;

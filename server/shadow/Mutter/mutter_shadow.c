@@ -1566,15 +1566,25 @@ static BOOL mutter_connect_stream(mutterShadowSubsystem* mutter)
 	return TRUE;
 }
 
-/* The format the stream asks for, size being what a virtual monitor takes */
+/* The most frames per second asked of Mutter: /framerate, else 60 */
+WINPR_ATTR_NODISCARD
+static UINT32 mutter_stream_max_rate(const mutterShadowSubsystem* mutter)
+{
+	WINPR_ASSERT(mutter);
+	const rdpShadowServer* server = mutter->common.server;
+	return (server && (server->maxFrameRate > 0)) ? server->maxFrameRate : 60;
+}
+
+/* The format the stream asks for, size being what a virtual monitor takes, at most fps frames
+ * per second */
 WINPR_ATTR_NODISCARD
 static const struct spa_pod* mutter_stream_format(struct spa_pod_builder* b,
-                                                  const struct spa_rectangle* size)
+                                                  const struct spa_rectangle* size, UINT32 fps)
 {
 	const struct spa_rectangle minSize = SPA_RECTANGLE(1, 1);
 	const struct spa_rectangle maxSize = SPA_RECTANGLE(8192, 8192);
 	const struct spa_fraction rate = SPA_FRACTION(0, 1);
-	const struct spa_fraction maxRate = SPA_FRACTION(60, 1);
+	const struct spa_fraction maxRate = SPA_FRACTION(fps, 1);
 	const struct spa_fraction minRate = SPA_FRACTION(1, 1);
 
 	WINPR_PRAGMA_DIAG_PUSH
@@ -1620,7 +1630,8 @@ static BOOL mutter_stream_connect_node(mutterShadowSubsystem* mutter, mutterOutp
 	const struct spa_rectangle size = mutter->virtualMonitor
 	                                      ? SPA_RECTANGLE(output->wantWidth, output->wantHeight)
 	                                      : SPA_RECTANGLE(1920, 1080);
-	const struct spa_pod* params[] = { mutter_stream_format(&b, &size) };
+	const UINT32 fps = mutter_stream_max_rate(mutter);
+	const struct spa_pod* params[] = { mutter_stream_format(&b, &size, fps) };
 
 	if (pw_stream_connect(
 	        output->stream, PW_DIRECTION_INPUT, output->nodeId,
@@ -1647,7 +1658,8 @@ static void mutter_output_resize(mutterOutput* output, UINT32 width, UINT32 heig
 	uint8_t podBuffer[1024] = WINPR_C_ARRAY_INIT;
 	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(podBuffer, sizeof(podBuffer));
 	const struct spa_rectangle size = SPA_RECTANGLE(width, height);
-	const struct spa_pod* params[] = { mutter_stream_format(&b, &size) };
+	const UINT32 fps = mutter_stream_max_rate(output->mutter);
+	const struct spa_pod* params[] = { mutter_stream_format(&b, &size, fps) };
 	if (pw_stream_update_params(output->stream, params, ARRAYSIZE(params)) < 0)
 		WLog_WARN(TAG, "output %" PRIu32 ": cannot ask for %" PRIu32 "x%" PRIu32, output->index,
 		          width, height);
