@@ -126,7 +126,14 @@ static BOOL tls_keep_peer_certificate(rdpTls* tls, const rdpCertificate* cert)
 	rdpCertificate* copy = freerdp_certificate_clone(cert);
 	if (!copy)
 		return FALSE;
-	return freerdp_settings_set_pointer_len(remoteSettings, FreeRDP_RdpServerCertificate, copy, 1);
+	if (!freerdp_settings_set_pointer_len(remoteSettings, FreeRDP_RdpServerCertificate, copy, 1))
+		return FALSE;
+
+	/* integration only: its common name too, as CertificateName, for the stats' string reader */
+	char* name = freerdp_certificate_get_common_name(cert, nullptr);
+	const BOOL rc = freerdp_settings_set_string(remoteSettings, FreeRDP_CertificateName, name);
+	free(name);
+	return rc;
 }
 
 WINPR_ATTR_NODISCARD
