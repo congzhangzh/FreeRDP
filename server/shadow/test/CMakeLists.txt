@@ -5,11 +5,14 @@ disable_warnings_for_directory(${CMAKE_CURRENT_BINARY_DIR})
 
 set(${MODULE_PREFIX}_DRIVER ${MODULE_NAME}.c)
 
-set(${MODULE_PREFIX}_TESTS TestShadowCaptureCompare.c TestShadowH264Settings.c TestShadowGfxCodecOrder.c TestShadowConfigLayers.c)
+set(${MODULE_PREFIX}_TESTS TestShadowCaptureCompare.c TestShadowH264Settings.c TestShadowGfxCodecOrder.c
+                           TestShadowConfigLayers.c TestShadowGfxStats.c
+)
 
 create_test_sourcelist(${MODULE_PREFIX}_SRCS ${${MODULE_PREFIX}_DRIVER} ${${MODULE_PREFIX}_TESTS})
 
-add_executable(${MODULE_NAME} ${${MODULE_PREFIX}_SRCS})
+# the 5 s line is private to the library: its file is built in
+add_executable(${MODULE_NAME} ${${MODULE_PREFIX}_SRCS} ../shadow_gfx_stats.c)
 
 target_link_libraries(${MODULE_NAME} PRIVATE freerdp-shadow freerdp winpr)
 

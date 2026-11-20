@@ -880,6 +880,7 @@ static inline void shadow_client_common_frame_acknowledge(rdpShadowClient* clien
 	client->encoder->lastAckframeId = frameId;
 	client->encoder->lastAckTick = GetTickCount64();
 	client->encoder->everAcked = TRUE;
+	shadow_gfx_stats_frame_acked(&client->encoder->gfxStats, frameId, winpr_GetTickCount64NS());
 }
 
 WINPR_ATTR_NODISCARD
@@ -1411,6 +1412,24 @@ static UINT shadow_client_rdpgfx_caps_advertise(RdpgfxServerContext* context,
 	return CHANNEL_RC_UNSUPPORTED_VERSION;
 }
 
+/* every GFX frame goes out here, so the 5 s line knows which encodes sent one */
+WINPR_ATTR_NODISCARD
+static UINT shadow_client_gfx_frame_command(rdpShadowClient* client,
+                                            const RDPGFX_SURFACE_COMMAND* cmd,
+                                            const RDPGFX_START_FRAME_PDU* cmdstart,
+                                            const RDPGFX_END_FRAME_PDU* cmdend)
+{
+	WINPR_ASSERT(client);
+	WINPR_ASSERT(client->rdpgfx);
+	WINPR_ASSERT(client->encoder);
+
+	UINT error = CHANNEL_RC_OK;
+	IFCALLRET(client->rdpgfx->SurfaceFrameCommand, error, client->rdpgfx, cmd, cmdstart, cmdend);
+	if ((error == CHANNEL_RC_OK) && client->rdpgfx->SurfaceFrameCommand)
+		client->encoder->gfxFrameOut = TRUE;
+	return error;
+}
+
 WINPR_ATTR_NODISCARD
 static inline UINT32 rdpgfx_estimate_h264_avc420(RDPGFX_AVC420_BITMAP_STREAM* havc420)
 {
@@ -1473,8 +1492,7 @@ static BOOL shadow_client_send_av1(rdpShadowClient* client, const BYTE* pSrcData
 		cmd->codecId = RDPGFX_CODECID_AV1;
 		cmd->extra = (void*)&avc420;
 
-		IFCALLRET(client->rdpgfx->SurfaceFrameCommand, error, client->rdpgfx, cmd, cmdstart,
-		          cmdend);
+		error = shadow_client_gfx_frame_command(client, cmd, cmdstart, cmdend);
 		cmd->extra = nullptr;
 	}
 	free_h264_metablock(&avc420.meta);
@@ -1539,8 +1557,7 @@ static BOOL shadow_client_send_av2(rdpShadowClient* client, const BYTE* pSrcData
 		cmd->codecId = RDPGFX_CODECID_AV1;
 		cmd->extra = (void*)&avc420;
 
-		IFCALLRET(client->rdpgfx->SurfaceFrameCommand, error, client->rdpgfx, cmd, cmdstart,
-		          cmdend);
+		error = shadow_client_gfx_frame_command(client, cmd, cmdstart, cmdend);
 		cmd->extra = nullptr;
 	}
 	free_h264_metablock(&avc420.meta);
@@ -1627,8 +1644,7 @@ static BOOL shadow_client_send_hevc(rdpShadowClient* client, const BYTE* pSrcDat
 		hevc.nalSize = nalArray;
 		cmd->extra = (void*)&hevc;
 
-		IFCALLRET(client->rdpgfx->SurfaceFrameCommand, error, client->rdpgfx, cmd, cmdstart,
-		          cmdend);
+		error = shadow_client_gfx_frame_command(client, cmd, cmdstart, cmdend);
 		cmd->extra = nullptr;
 	}
 	free_h264_metablock(&hevc.meta);
@@ -1691,8 +1707,7 @@ static BOOL shadow_client_send_avc444(rdpShadowClient* client, const BYTE* pSrcD
 	{
 		avc444.cbAvc420EncodedBitstream1 = rdpgfx_estimate_h264_avc420(&avc444.bitstream[0]);
 		cmd->extra = (void*)&avc444;
-		IFCALLRET(client->rdpgfx->SurfaceFrameCommand, error, client->rdpgfx, cmd, cmdstart,
-		          cmdend);
+		error = shadow_client_gfx_frame_command(client, cmd, cmdstart, cmdend);
 		cmd->extra = nullptr;
 	}
 
@@ -1750,8 +1765,7 @@ static BOOL shadow_client_send_avc420(rdpShadowClient* client, const BYTE* pSrcD
 	{
 		cmd->codecId = RDPGFX_CODECID_AVC420;
 		cmd->extra = (void*)&avc420;
-		IFCALLRET(client->rdpgfx->SurfaceFrameCommand, error, client->rdpgfx, cmd, cmdstart,
-		          cmdend);
+		error = shadow_client_gfx_frame_command(client, cmd, cmdstart, cmdend);
 		cmd->extra = nullptr;
 	}
 	free_h264_metablock(&avc420.meta);
@@ -1865,8 +1879,7 @@ static BOOL shadow_client_send_rfx(rdpShadowClient* client, const BYTE* pSrcData
 		cmd->data = Stream_Buffer(s);
 		cmd->length = (UINT32)pos;
 
-		IFCALLRET(client->rdpgfx->SurfaceFrameCommand, error, client->rdpgfx, cmd, cmdstart,
-		          cmdend);
+		error = shadow_client_gfx_frame_command(client, cmd, cmdstart, cmdend);
 		cmd->data = nullptr;
 	}
 
@@ -1930,8 +1943,7 @@ static BOOL shadow_client_send_progressive(rdpShadowClient* client, const BYTE* 
 	{
 		cmd->codecId = RDPGFX_CODECID_CAPROGRESSIVE;
 
-		IFCALLRET(client->rdpgfx->SurfaceFrameCommand, error, client->rdpgfx, cmd, cmdstart,
-		          cmdend);
+		error = shadow_client_gfx_frame_command(client, cmd, cmdstart, cmdend);
 	}
 	cmd->data = nullptr;
 
@@ -1978,7 +1990,7 @@ static BOOL shadow_client_send_planar(rdpShadowClient* client, const BYTE* pSrcD
 
 	cmd->codecId = RDPGFX_CODECID_PLANAR;
 
-	IFCALLRET(client->rdpgfx->SurfaceFrameCommand, error, client->rdpgfx, cmd, cmdstart, cmdend);
+	error = shadow_client_gfx_frame_command(client, cmd, cmdstart, cmdend);
 	free(cmd->data);
 	cmd->data = nullptr;
 
@@ -2040,7 +2052,7 @@ static BOOL shadow_client_send_uncompressed(rdpShadowClient* client, const BYTE*
 	cmd->length = length;
 	cmd->codecId = RDPGFX_CODECID_UNCOMPRESSED;
 
-	IFCALLRET(client->rdpgfx->SurfaceFrameCommand, error, client->rdpgfx, cmd, cmdstart, cmdend);
+	error = shadow_client_gfx_frame_command(client, cmd, cmdstart, cmdend);
 	free(data);
 	cmd->data = nullptr;
 	if (error)
@@ -2094,11 +2106,11 @@ static BOOL shadow_avc420_enabled(const rdpShadowClient* client)
  * @return TRUE on success
  */
 WINPR_ATTR_NODISCARD
-static BOOL shadow_client_send_surface_gfx(rdpShadowClient* client, const BYTE* pSrcData,
-                                           UINT32 nSrcStep, UINT32 SrcFormat, UINT16 nXSrc,
-                                           UINT16 nYSrc, UINT16 nWidth, UINT16 nHeight,
-                                           UINT16 srcWidth, UINT16 srcHeight,
-                                           const RECTANGLE_16* damage)
+static BOOL shadow_client_encode_surface_gfx(rdpShadowClient* client, const BYTE* pSrcData,
+                                             UINT32 nSrcStep, UINT32 SrcFormat, UINT16 nXSrc,
+                                             UINT16 nYSrc, UINT16 nWidth, UINT16 nHeight,
+                                             UINT16 srcWidth, UINT16 srcHeight,
+                                             const RECTANGLE_16* damage)
 {
 	const rdpContext* context = (const rdpContext*)client;
 	RDPGFX_SURFACE_COMMAND cmd = WINPR_C_ARRAY_INIT;
@@ -2219,6 +2231,30 @@ static BOOL shadow_client_send_surface_gfx(rdpShadowClient* client, const BYTE* 
 
 	return shadow_client_send_uncompressed(client, pSrcData, nSrcStep, SrcFormat, &cmd, &cmdstart,
 	                                       &cmdend);
+}
+
+/* shadow_client_encode_surface_gfx, timed for the 5 s line: the encode and send of a frame, and
+ * its send time for the delay to its acknowledgement */
+WINPR_ATTR_NODISCARD
+static BOOL shadow_client_send_surface_gfx(rdpShadowClient* client, const BYTE* pSrcData,
+                                           UINT32 nSrcStep, UINT32 SrcFormat, UINT16 nXSrc,
+                                           UINT16 nYSrc, UINT16 nWidth, UINT16 nHeight,
+                                           UINT16 srcWidth, UINT16 srcHeight,
+                                           const RECTANGLE_16* damage)
+{
+	if (!client || !client->encoder)
+		return FALSE;
+
+	rdpShadowEncoder* encoder = client->encoder;
+	encoder->gfxFrameOut = FALSE;
+	const UINT64 start = winpr_GetTickCount64NS();
+	const BOOL rc =
+	    shadow_client_encode_surface_gfx(client, pSrcData, nSrcStep, SrcFormat, nXSrc, nYSrc,
+	                                     nWidth, nHeight, srcWidth, srcHeight, damage);
+	if (rc && encoder->gfxFrameOut)
+		shadow_gfx_stats_frame_sent(&encoder->gfxStats, encoder->frameId, start,
+		                            winpr_GetTickCount64NS());
+	return rc;
 }
 
 WINPR_ATTR_NODISCARD
@@ -3261,7 +3297,7 @@ static BOOL shadow_client_gfx_must_wait(rdpShadowClient* client, const SHADOW_GF
 
 	/* 0 when the client suspended its acknowledgements */
 	const UINT32 inFlight = shadow_encoder_inflight_frames(encoder);
-	encoder->statsMaxInFlight = MAX(encoder->statsMaxInFlight, inFlight);
+	encoder->gfxStats.maxInFlight = MAX(encoder->gfxStats.maxInFlight, inFlight);
 	if (inFlight < encoder->maxInFlight)
 		return FALSE;
 
@@ -3283,7 +3319,7 @@ static BOOL shadow_client_gfx_must_wait(rdpShadowClient* client, const SHADOW_GF
 	return TRUE;
 }
 
-/* the 5 s line for the flow control, at debug level */
+/* the 5 s line, at debug level: what this client's frames did (shadow_gfx_stats.h) */
 static void shadow_client_gfx_stats(rdpShadowClient* client)
 {
 	WINPR_ASSERT(client);
@@ -3293,14 +3329,33 @@ static void shadow_client_gfx_stats(rdpShadowClient* client)
 	const UINT64 now = GetTickCount64();
 	if (now - encoder->statsLogged < 5000)
 		return;
-	if (encoder->statsLogged != 0)
-		WLog_DBG(TAG,
-		         "gfx: at most %" PRIu32 " of %" PRIu32 " frames in flight, %" PRIu64
-		         " round(s) waited",
-		         encoder->statsMaxInFlight, encoder->maxInFlight, encoder->statsHeld);
-	encoder->statsMaxInFlight = 0;
-	encoder->statsHeld = 0;
+	if ((encoder->statsLogged != 0) && WLog_IsLevelActive(WLog_Get(TAG), WLOG_DEBUG))
+	{
+		char line[512] = WINPR_C_ARRAY_INIT;
+		if (shadow_gfx_stats_format(&encoder->gfxStats, encoder->maxInFlight,
+		                            encoder->queueDepth == SUSPEND_FRAME_ACKNOWLEDGEMENT,
+		                            now - encoder->statsLogged, line, sizeof(line)))
+			WLog_DBG(TAG, "%s", line);
+	}
+	shadow_gfx_stats_next_period(&encoder->gfxStats);
 	encoder->statsLogged = now;
+}
+
+/* sends this round's frame; a frame that goes out after held rounds carries their damage */
+WINPR_ATTR_NODISCARD
+static BOOL shadow_client_send_frame(rdpShadowClient* client, SHADOW_GFX_STATUS* status)
+{
+	WINPR_ASSERT(client);
+	rdpShadowEncoder* encoder = client->encoder;
+	WINPR_ASSERT(encoder);
+
+	const UINT64 sent = encoder->gfxStats.sent;
+	if (!shadow_client_send_surface_update(client, status))
+		return FALSE;
+	if (encoder->gfxHeld && (encoder->gfxStats.sent != sent))
+		encoder->gfxStats.merged++;
+	encoder->gfxHeld = FALSE;
+	return TRUE;
 }
 
 WINPR_ATTR_NODISCARD
@@ -3450,6 +3505,8 @@ static DWORD WINAPI shadow_client_thread(LPVOID arg)
 			 * triggers the event and then wait for completion */
 			if (client->activated && !client->suppressOutput)
 			{
+				client->encoder->gfxStats.captured++;
+
 				/* Send screen update or resize to this client */
 
 				/* Check resize */
@@ -3463,12 +3520,11 @@ static DWORD WINAPI shadow_client_thread(LPVOID arg)
 							WLog_ERR(TAG, "Failed to resize the graphics pipeline");
 							break;
 						}
-						if (!shadow_client_send_surface_update(client, &gfxstatus))
+						if (!shadow_client_send_frame(client, &gfxstatus))
 						{
 							WLog_ERR(TAG, "Failed to send surface update");
 							break;
 						}
-						client->encoder->gfxHeld = FALSE;
 					}
 					/* Screen size changed, do resize */
 					else if (!shadow_client_send_resize(client, &gfxstatus))
@@ -3486,17 +3542,16 @@ static DWORD WINAPI shadow_client_thread(LPVOID arg)
 						break;
 					}
 					client->encoder->gfxHeld = TRUE;
-					client->encoder->statsHeld++;
+					client->encoder->gfxStats.held++;
 				}
 				else
 				{
 					/* Send frame */
-					if (!shadow_client_send_surface_update(client, &gfxstatus))
+					if (!shadow_client_send_frame(client, &gfxstatus))
 					{
 						WLog_ERR(TAG, "Failed to send surface update");
 						break;
 					}
-					client->encoder->gfxHeld = FALSE;
 				}
 			}
 			else
@@ -3620,12 +3675,11 @@ static DWORD WINAPI shadow_client_thread(LPVOID arg)
 		if (client->encoder->gfxHeld && client->activated && !client->suppressOutput &&
 		    !shadow_client_gfx_must_wait(client, &gfxstatus))
 		{
-			if (!shadow_client_send_surface_update(client, &gfxstatus))
+			if (!shadow_client_send_frame(client, &gfxstatus))
 			{
 				WLog_ERR(TAG, "Failed to send surface update");
 				goto fail;
 			}
-			client->encoder->gfxHeld = FALSE;
 		}
 		if (client->activated)
 			shadow_client_gfx_stats(client);

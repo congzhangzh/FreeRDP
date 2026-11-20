@@ -627,6 +627,7 @@ int shadow_encoder_reset(rdpShadowEncoder* encoder)
 	encoder->maxFps = SHADOW_ENCODER_MAX_FPS;
 	encoder->frameId = 0;
 	encoder->lastAckframeId = 0;
+	shadow_gfx_stats_forget_frames(&encoder->gfxStats);
 	encoder->lastAckTick = GetTickCount64();
 	encoder->gfxHeld = FALSE;
 	encoder->frameAck = freerdp_settings_get_bool(settings, FreeRDP_SurfaceFrameMarkerEnabled);
