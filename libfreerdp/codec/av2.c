@@ -633,9 +633,6 @@ static INT32 av2_dav2d_drain_one(FREERDP_AV2_CONTEXT* av2, BYTE* pDstData, DWORD
 		return -1;
 	}
 
-	if (pic.frame_hdr && (pic.frame_hdr->frame_type == DAV2D_FRAME_TYPE_KEY))
-		av2->lastDecode.keyFrame = TRUE;
-
 	INT32 rc = -1;
 	switch (pic.p.layout)
 	{
@@ -672,9 +669,6 @@ INT32 freerdp_av2_decompress(FREERDP_AV2_CONTEXT* av2, const BYTE* pSrcData, UIN
 
 	/* A failure is what remains unless the decode gets to its end */
 	const FREERDP_DECODE_RESULT start = { .status = FREERDP_DECODE_FAILED,
-		                                  .keyFrame = FALSE,
-		                                  .fellBack = FALSE,
-		                                  .hardware = FREERDP_DECODE_HARDWARE_NO,
 		                                  .backend = AV2_DECODER_NAME };
 	av2->lastDecode = start;
 
@@ -768,11 +762,6 @@ INT32 freerdp_av2_decompress(FREERDP_AV2_CONTEXT* av2, const BYTE* pSrcData, UIN
 			return crc;
 		picture = TRUE;
 	}
-
-	/* the flags of the frame shown last, or of the one just decoded if none was shown */
-	int frameFlags = 0;
-	if (avm_codec_control(&av2->ctx, AVMD_GET_FRAME_FLAGS, &frameFlags) == AVM_CODEC_OK)
-		av2->lastDecode.keyFrame = (frameFlags & AVM_FRAME_IS_KEY) != 0;
 
 	av2->lastDecode.status = picture ? FREERDP_DECODE_PICTURE : FREERDP_DECODE_NO_PICTURE;
 	return TRUE;
