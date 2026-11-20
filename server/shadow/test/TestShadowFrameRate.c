@@ -1,6 +1,8 @@
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <winpr/wtypes.h>
+#include <winpr/string.h>
 #include <winpr/cmdline.h>
 #include <freerdp/server/shadow.h>
 
@@ -10,6 +12,20 @@ static COMMAND_LINE_ARGUMENT_A options[] = { { "framerate", COMMAND_LINE_VALUE_R
 	                                           nullptr, nullptr, -1, nullptr, "Frame rate" },
 	                                         { nullptr, 0, nullptr, nullptr, nullptr, -1, nullptr,
 	                                           nullptr } };
+
+/* The server reads FREERDP_SHADOW_FRAMERATE with getenv: the C runtime's environment. nullptr
+ * unsets. */
+WINPR_ATTR_NODISCARD
+static BOOL set(const char* name, const char* value)
+{
+#if defined(_WIN32)
+	return _putenv_s(name, value ? value : "") == 0;
+#else
+	if (!value)
+		return unsetenv(name) == 0;     // NOLINT(concurrency-mt-unsafe): one thread
+	return setenv(name, value, 1) == 0; // NOLINT(concurrency-mt-unsafe): one thread
+#endif
+}
 
 /* Parses the options on a new server. Accepted: maxFrameRate, h264FrameRate and h264BitRate
  * must be as given. Refused: the command line must fail and every field keep its default. */
@@ -79,6 +95,23 @@ int TestShadowFrameRate(int argc, char* argv[])
 	ok = expect("60fps", "/framerate:60fps", nullptr, FALSE, 0, 0, 0) && ok;
 	ok = expect("empty", "/framerate:", nullptr, FALSE, 0, 0, 0) && ok;
 	ok = expect("no value", "/framerate", nullptr, FALSE, 0, 0, 0) && ok;
+
+	/* FREERDP_SHADOW_FRAMERATE: the same value without a command line; /framerate wins; a wrong
+	 * value is ignored, the command line still accepted */
+	const char* name = "FREERDP_SHADOW_FRAMERATE";
+	const char* old = getenv(name); // NOLINT(concurrency-mt-unsafe): one thread
+	char* saved = old ? _strdup(old) : nullptr;
+	ok = set(name, "50") && ok;
+	ok = expect("env 50", nullptr, nullptr, TRUE, 50, 50, 10000000) && ok;
+	ok = expect("env 50, /framerate:20", "/framerate:20", nullptr, TRUE, 20, 20, 10000000) && ok;
+	ok = set(name, "abc") && ok;
+	ok = expect("env abc", nullptr, nullptr, TRUE, 0, 30, 10000000) && ok;
+	ok = set(name, "0") && ok;
+	ok = expect("env 0", nullptr, nullptr, TRUE, 0, 30, 10000000) && ok;
+	ok = set(name, "121") && ok;
+	ok = expect("env 121", nullptr, nullptr, TRUE, 0, 30, 10000000) && ok;
+	ok = set(name, saved) && ok;
+	free(saved);
 
 	return ok ? 0 : -1;
 }
