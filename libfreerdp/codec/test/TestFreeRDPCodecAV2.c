@@ -170,15 +170,20 @@ fail:
  * frames, and checks the colours of each decoded frame. */
 WINPR_ATTR_NODISCARD
 static BOOL checkLastDecode(const FREERDP_AV2_CONTEXT* dec, FREERDP_DECODE_STATUS status,
-                            WINPR_ATTR_UNUSED BOOL keyFrame /* not in the upstream result */)
+                            BOOL keyFrame)
 {
 	FREERDP_DECODE_RESULT result = WINPR_C_ARRAY_INIT;
 	if (!freerdp_av2_context_get_last_decode(dec, &result))
 		return FALSE;
-	if ((result.status != status) || !result.backend || (strcmp(result.backend, "libavm") != 0))
+	if ((result.status != status) || (result.keyFrame != keyFrame) || result.fellBack ||
+	    (result.hardware != FREERDP_DECODE_HARDWARE_NO) || !result.backend ||
+	    (strcmp(result.backend, "libavm") != 0))
 	{
-		(void)fprintf(stderr, "[%s] got status %d backend %s, expected status %d\n", __func__,
-		              result.status, result.backend ? result.backend : "(none)", status);
+		(void)fprintf(stderr,
+		              "[%s] got status %d keyFrame %d fellBack %d hardware %d backend %s, "
+		              "expected status %d keyFrame %d\n",
+		              __func__, result.status, result.keyFrame, result.fellBack, result.hardware,
+		              result.backend ? result.backend : "(none)", status, keyFrame);
 		return FALSE;
 	}
 	return TRUE;
