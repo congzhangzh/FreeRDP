@@ -13,6 +13,7 @@ set(${MODULE_PREFIX}_TESTS
     TestShadowConfigLayers.c
     TestShadowGfxStats.c
     TestShadowFrameRate.c
+    TestShadowGfxDefault.c
 )
 
 create_test_sourcelist(${MODULE_PREFIX}_SRCS ${${MODULE_PREFIX}_DRIVER} ${${MODULE_PREFIX}_TESTS})

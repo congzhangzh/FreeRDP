@@ -1838,6 +1838,16 @@ rdpShadowServer* shadow_server_new(void)
 	server->HEVCRateControlMode = FREERDP_HEVC_VBR;
 #endif
 	server->settings = freerdp_settings_new(FREERDP_SETTINGS_SERVER_MODE);
+	/* The graphics pipeline (and with it AV1, AV2, H.264, progressive) unless -gfx: libfreerdp's
+	 * server settings leave it off by default, and a session manager starts the shadow server
+	 * without /gfx, so its clients got bitmaps only */
+	if (!server->settings ||
+	    !freerdp_settings_set_bool(server->settings, FreeRDP_SupportGraphicsPipeline, TRUE))
+	{
+		freerdp_settings_free(server->settings);
+		free(server);
+		return nullptr;
+	}
 	return server;
 }
 
