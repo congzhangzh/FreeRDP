@@ -89,7 +89,8 @@ struct S_FREERDP_AV2_CONTEXT
 	avm_codec_ctx_t ctx;
 #if defined(AV2_ENCODER_LIBAVM)
 	avm_codec_enc_cfg_t ecfg;
-	avm_codec_pts_t framecount;
+	avm_codec_pts_t pts; /* the next frame's time in ms (AV2_AVM_TIMEBASE) */
+	UINT64 lastFrameNS;  /* when the last frame came, 0: none yet */
 	avm_enc_frame_flags_t eflags;
 	UINT32 qp;          /* FREERDP_AV2_CONTEXT_OPTION_QP, 0: libavm's */
 	UINT32 speed;       /* FREERDP_AV2_CONTEXT_OPTION_SPEED, UINT32_MAX: by usage */
@@ -142,6 +143,30 @@ static BOOL av2_avm_control(FREERDP_AV2_CONTEXT* av2, int id, const char* name, 
 		return FALSE;
 	}
 	return TRUE;
+}
+
+/* Rate control gives a frame about target bit rate x the frame's duration, and takes the frame
+ * rate from the durations. Frames come on damage, not at a fixed rate, so each frame gets the real
+ * time since the last one, in ms, kept between 1/200 s and 1/10 s: a frame after a pause gets at
+ * most 100 ms of bits, so it is not one big frame that holds up the next ones. The first frame
+ * gets 1/30 s, libavm's own guess. */
+#define AV2_AVM_TIMEBASE 1000
+#define AV2_AVM_FIRST_FRAME_MS 33
+#define AV2_AVM_MIN_FRAME_MS 5
+#define AV2_AVM_MAX_FRAME_MS 100
+
+static unsigned long av2_avm_frame_duration(FREERDP_AV2_CONTEXT* av2)
+{
+	const UINT64 now = winpr_GetTickCount64NS();
+	UINT64 ms = AV2_AVM_FIRST_FRAME_MS;
+	if (av2->lastFrameNS != 0)
+		ms = (now - av2->lastFrameNS) / 1000000ull;
+	av2->lastFrameNS = now;
+	if (ms < AV2_AVM_MIN_FRAME_MS)
+		return AV2_AVM_MIN_FRAME_MS;
+	if (ms > AV2_AVM_MAX_FRAME_MS)
+		return AV2_AVM_MAX_FRAME_MS;
+	return (unsigned long)ms;
 }
 #endif
 
@@ -418,8 +443,10 @@ INT32 freerdp_av2_compress(FREERDP_AV2_CONTEXT* av2, const BYTE* pSrcData, DWORD
 	img->planes[1] = av2->yuvdata[1];
 	img->planes[2] = av2->yuvdata[2];
 
-	const avm_codec_err_t rc = avm_codec_encode(&av2->ctx, img, ++av2->framecount, 1, av2->eflags);
+	const unsigned long duration = av2_avm_frame_duration(av2);
+	const avm_codec_err_t rc = avm_codec_encode(&av2->ctx, img, av2->pts, duration, av2->eflags);
 	av2->eflags = 0;
+	av2->pts += WINPR_ASSERTING_INT_CAST(avm_codec_pts_t, duration);
 
 	if (rc != AVM_CODEC_OK)
 	{
@@ -918,7 +945,8 @@ BOOL freerdp_av2_context_reset(FREERDP_AV2_CONTEXT* av2, UINT32 width, UINT32 he
 		           av2->ecfg.rc_target_bitrate, cpuUsed, av2->ecfg.g_threads, 1 << av2->tileColumns,
 		           av2->dpbSize);
 
-		av2->framecount = 0;
+		av2->pts = 0;
+		av2->lastFrameNS = 0;
 		av2->eflags = AVM_EFLAG_FORCE_KF;
 #else
 		WLog_Print(av2->log, WLOG_ERROR,
@@ -1063,6 +1091,8 @@ FREERDP_AV2_CONTEXT* freerdp_av2_context_new(BOOL Compressor)
 		ctx->ecfg.g_profile = AV2_PROFILE_MAIN_420_10_IP0;
 		ctx->ecfg.g_bit_depth = AVM_BITS_8;
 		ctx->ecfg.g_input_bit_depth = 8;
+		ctx->ecfg.g_timebase.num = 1;
+		ctx->ecfg.g_timebase.den = AV2_AVM_TIMEBASE;
 		ctx->speed = UINT32_MAX;
 #else
 		WLog_Print(ctx->log, WLOG_ERROR,
