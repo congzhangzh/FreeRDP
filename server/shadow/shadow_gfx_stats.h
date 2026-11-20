@@ -26,6 +26,12 @@
  * client may have in flight; an acknowledgement for an older frame is counted without a delay */
 #define SHADOW_GFX_STATS_RING 64u
 
+/* the logger of the line: its own, so a log filter can keep it or leave it out by name */
+#define SHADOW_GFX_STATS_TAG "com.freerdp.server.shadow.gfx"
+
+/* the period of the counters when no /gfx-stats-period is given */
+#define SHADOW_GFX_STATS_DEFAULT_SECONDS 5u
+
 typedef struct
 {
 	UINT32 frameId;
@@ -69,6 +75,15 @@ extern "C"
 
 	/** forgets the send times, for when the frame ids start again */
 	FREERDP_LOCAL void shadow_gfx_stats_forget_frames(SHADOW_GFX_STATS* stats);
+
+	/** TRUE when SHADOW_GFX_STATS_TAG is at DEBUG or TRACE: the line is written without
+	 * /gfx-stats-period
+	 */
+	WINPR_ATTR_NODISCARD FREERDP_LOCAL BOOL shadow_gfx_stats_debug(void);
+
+	/** writes the line (shadow_gfx_stats_format) at INFO on its own logger, SHADOW_GFX_STATS_TAG */
+	FREERDP_LOCAL void shadow_gfx_stats_write(const SHADOW_GFX_STATS* stats, UINT32 inFlightLimit,
+	                                          BOOL acksSuspended, UINT64 elapsedMs);
 
 	/** writes the 5 s line.
 	 *  @param inFlightLimit the encoder's limit of frames in flight, 0: none

@@ -871,6 +871,13 @@ int shadow_server_parse_command_line(rdpShadowServer* server, int argc, char** a
 			if (!shadow_server_parse_codec_order(server, arg->Value))
 				return fail_at(arg, COMMAND_LINE_ERROR);
 		}
+		CommandLineSwitchCase(arg, "gfx-stats-period")
+		{
+			UINT32 seconds = 0;
+			if (!shadow_server_parse_u32(arg->Value, 0, 3600, &seconds))
+				return fail_at(arg, COMMAND_LINE_ERROR);
+			server->statsPeriod = seconds;
+		}
 		CommandLineSwitchCase(arg, "framerate")
 		{
 			/* H.264 follows it too */
@@ -1804,6 +1811,10 @@ static void shadow_server_env_defaults(rdpShadowServer* server)
 	WINPR_ASSERT(server);
 	shadow_server_encoder_defaults(server);
 	shadow_server_set_codec_order(server, nullptr, 0);
+
+	/* /gfx-stats-period: write the counters of each client every so many seconds; 0 (the default):
+	 * only when their logger is at DEBUG or TRACE */
+	server->statsPeriod = shadow_server_env_u32("FREERDP_SHADOW_GFX_STATS_PERIOD", 0, 0, 3600);
 
 	/* /framerate's value, for a server started with no command line of its own (a session
 	 * manager's); a wrong one is logged and the rates stay each their own */

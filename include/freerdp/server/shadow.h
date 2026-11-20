@@ -312,6 +312,12 @@ extern "C"
 		 *  encoder (/framerate, 1 to 120); 0 keeps the rate each of them has of its own
 		 *  @since version 3.34.0 */
 		UINT32 maxFrameRate;
+		/** write the GFX counters of each client every so many seconds, at INFO on
+		 *  com.freerdp.server.shadow.gfx (/gfx-stats-period, FREERDP_SHADOW_GFX_STATS_PERIOD); 0
+		 * (the default): only when that logger is at DEBUG or TRACE, every 5 s. They are counted
+		 * either way.
+		 *  @since version 3.34.0 */
+		UINT32 statsPeriod;
 	};
 
 	struct rdp_shadow_surface

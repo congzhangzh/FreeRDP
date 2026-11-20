@@ -13,6 +13,7 @@
 [\fB/subsystem:\fP\fI<name>[,<name>...]\fP]
 [\fB/rect:\fP\fI<x,y,w,h>\fP]
 [\fB/framerate:\fP\fI<1-120>\fP]
+[\fB/gfx-stats-period:\fP\fI<seconds>\fP]
 [\fB+auth\fP]
 [\fB-may-view\fP]
 [\fB-may-interact\fP]
@@ -52,6 +53,15 @@ GNOME (Mutter) capture for up to 60. A value outside 1 to 120 is an error.
 The same value can come from FREERDP_SHADOW_FRAMERATE in the environment or in
 the configuration file (what a session manager passes on); the command line
 wins over it, and a wrong value there is logged and ignored.
+.IP /gfx-stats-period:<seconds>
+Every <seconds>, one line per client at INFO on the logger
+com.freerdp.server.shadow.gfx: the rounds captured for it, the frames sent,
+held and merged, the acknowledgements and their delay, the encode time and the
+frames in flight. The server counts them always; without the option (or with 0)
+it writes them only when that logger is at DEBUG or TRACE, every 5 seconds,
+e.g. WLOG_FILTER=com.freerdp.server.shadow.gfx:DEBUG. The same value can come from
+FREERDP_SHADOW_GFX_STATS_PERIOD in the environment or in the configuration file; the
+command line wins over it, and a wrong value there is logged and ignored.
 .IP -auth
 Disable authentication. If authentication is enabled PAM is used with the
 X11 subsystem. Running as root is not necessary, however if run as user only

@@ -3344,24 +3344,24 @@ static BOOL shadow_client_gfx_must_wait(rdpShadowClient* client, const SHADOW_GF
 	return TRUE;
 }
 
-/* the 5 s line, at debug level: what this client's frames did (shadow_gfx_stats.h) */
+/* What this client's frames did (shadow_gfx_stats.h), counted always, period by period (the
+ * counters a client's overlay can be sent). The line is written when asked for
+ * (rdpShadowServer::statsPeriod, /gfx-stats-period) or when its logger is at DEBUG or TRACE. */
 static void shadow_client_gfx_stats(rdpShadowClient* client)
 {
 	WINPR_ASSERT(client);
 	rdpShadowEncoder* encoder = client->encoder;
 	WINPR_ASSERT(encoder);
 
+	const UINT32 seconds = client->server ? client->server->statsPeriod : 0;
+	const UINT64 periodMs = 1000ull * ((seconds > 0) ? seconds : SHADOW_GFX_STATS_DEFAULT_SECONDS);
 	const UINT64 now = GetTickCount64();
-	if (now - encoder->statsLogged < 5000)
+	if (now - encoder->statsLogged < periodMs)
 		return;
-	if ((encoder->statsLogged != 0) && WLog_IsLevelActive(WLog_Get(TAG), WLOG_DEBUG))
-	{
-		char line[512] = WINPR_C_ARRAY_INIT;
-		if (shadow_gfx_stats_format(&encoder->gfxStats, encoder->maxInFlight,
-		                            encoder->queueDepth == SUSPEND_FRAME_ACKNOWLEDGEMENT,
-		                            now - encoder->statsLogged, line, sizeof(line)))
-			WLog_DBG(TAG, "%s", line);
-	}
+	if ((encoder->statsLogged != 0) && ((seconds > 0) || shadow_gfx_stats_debug()))
+		shadow_gfx_stats_write(&encoder->gfxStats, encoder->maxInFlight,
+		                       encoder->queueDepth == SUSPEND_FRAME_ACKNOWLEDGEMENT,
+		                       now - encoder->statsLogged);
 	shadow_gfx_stats_next_period(&encoder->gfxStats);
 	encoder->statsLogged = now;
 }

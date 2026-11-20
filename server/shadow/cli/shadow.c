@@ -153,7 +153,12 @@ int main(int argc, char** argv)
 		  "Encoder settings, bit rates in kbit/s: h264:rate-control:vbr|cqp, h264:bitrate, "
 		  "h264:qp:<0-51>; av1 and av2: rate-control:vbr|cbr|cq|q, bitrate; hevc: "
 		  "rate-control:vbr, bitrate (a codec not built in is refused)" },
-
+		{ "gfx-stats-period", COMMAND_LINE_VALUE_REQUIRED, "<seconds>", nullptr, nullptr, -1,
+		  nullptr,
+		  "Write the GFX counters of each client (captured, sent, held, acknowledged, encode "
+		  "time) every <seconds>, at INFO on com.freerdp.server.shadow.gfx (default 0: only when "
+		  "that logger is at DEBUG or TRACE, every 5 s; or FREERDP_SHADOW_GFX_STATS_PERIOD from "
+		  "the environment or the configuration file)" },
 		{ "framerate", COMMAND_LINE_VALUE_REQUIRED, "<1-120>", nullptr, nullptr, -1, nullptr,
 		  "The most frames per second the server captures and sends, for every subsystem and "
 		  "codec (default: each its own, e.g. 60 for the encoders, 30 for H.264; or "

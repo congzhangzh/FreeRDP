@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include <winpr/wtypes.h>
+#include <winpr/wlog.h>
 
 #include "../shadow_gfx_stats.h"
 
@@ -200,13 +201,29 @@ static BOOL test_limits(void)
 	return TRUE;
 }
 
+/* without /gfx-stats-period the line is written only when its logger is at DEBUG or TRACE */
+static BOOL test_debug_switch(void)
+{
+	wLog* log = WLog_Get(SHADOW_GFX_STATS_TAG);
+	if (!log)
+		return FALSE;
+	const DWORD level = WLog_GetLogLevel(log);
+	BOOL ok = WLog_SetLogLevel(log, WLOG_INFO) && !shadow_gfx_stats_debug();
+	ok = WLog_SetLogLevel(log, WLOG_DEBUG) && shadow_gfx_stats_debug() && ok;
+	ok = WLog_SetLogLevel(log, WLOG_TRACE) && shadow_gfx_stats_debug() && ok;
+	ok = WLog_SetLogLevel(log, level) && ok;
+	if (!ok)
+		(void)fprintf(stderr, "debug switch: INFO must not write, DEBUG and TRACE must\n");
+	return ok;
+}
+
 int TestShadowGfxStats(int argc, char* argv[])
 {
 	WINPR_UNUSED(argc);
 	WINPR_UNUSED(argv);
 
 	if (!test_normal() || !test_zero_sent() || !test_elapsed_zero() || !test_ring_wrap() ||
-	    !test_suspended_and_periods() || !test_limits())
+	    !test_suspended_and_periods() || !test_limits() || !test_debug_switch())
 		return -1;
 	return 0;
 }

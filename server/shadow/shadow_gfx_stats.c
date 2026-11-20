@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include <winpr/assert.h>
+#include <winpr/wlog.h>
 #include <freerdp/types.h>
 
 #include "shadow_gfx_stats.h"
@@ -98,6 +99,27 @@ void shadow_gfx_stats_forget_frames(SHADOW_GFX_STATS* stats)
 {
 	WINPR_ASSERT(stats);
 	memset(stats->ring, 0, sizeof(stats->ring));
+}
+
+BOOL shadow_gfx_stats_debug(void)
+{
+	wLog* log = WLog_Get(SHADOW_GFX_STATS_TAG);
+	return log && WLog_IsLevelActive(log, WLOG_DEBUG);
+}
+
+void shadow_gfx_stats_write(const SHADOW_GFX_STATS* stats, UINT32 inFlightLimit, BOOL acksSuspended,
+                            UINT64 elapsedMs)
+{
+	WINPR_ASSERT(stats);
+
+	/* the logger by name, not through WLog_INFO: WLog_INFO keeps the first logger a source file
+	 * asks for and uses it for every tag after it */
+	wLog* log = WLog_Get(SHADOW_GFX_STATS_TAG);
+	if (!log || !WLog_IsLevelActive(log, WLOG_INFO))
+		return;
+	char line[512] = WINPR_C_ARRAY_INIT;
+	if (shadow_gfx_stats_format(stats, inFlightLimit, acksSuspended, elapsedMs, line, sizeof(line)))
+		WLog_Print(log, WLOG_INFO, "%s", line);
 }
 
 BOOL shadow_gfx_stats_format(const SHADOW_GFX_STATS* stats, UINT32 inFlightLimit,

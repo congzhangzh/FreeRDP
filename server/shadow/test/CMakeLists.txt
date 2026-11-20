@@ -13,6 +13,7 @@ set(${MODULE_PREFIX}_TESTS
     TestShadowConfigLayers.c
     TestShadowGfxStats.c
     TestShadowFrameRate.c
+    TestShadowGfxStatsPeriod.c
     TestShadowGfxDefault.c
 )
 
