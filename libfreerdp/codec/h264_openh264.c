@@ -24,6 +24,7 @@
 #include <winpr/library.h>
 #include <winpr/assert.h>
 #include <winpr/cast.h>
+#include <winpr/sysinfo.h>
 
 #include <freerdp/log.h>
 #include <freerdp/codec/h264.h>
@@ -56,6 +57,8 @@ typedef struct
 	ISVCDecoder* pDecoder;
 	ISVCEncoder* pEncoder;
 	SEncParamExt EncParamExt;
+	UINT64 lastFrameNS; /* when the last frame came, 0: none yet */
+	double frameMs;     /* the time between frames, smoothed; 0: not known yet */
 } H264_CONTEXT_OPENH264;
 
 #if defined(WITH_OPENH264_LOADING)
@@ -194,6 +197,59 @@ static int openh264_decompress(H264_CONTEXT* WINPR_RESTRICT h264,
 	return 1;
 }
 
+/* OpenH264's rate control gives a frame target bit rate / frame rate (fMaxFrameRate) and dates the
+ * frames 1 / frame rate apart. Frames come on damage, not at the configured rate, and AVC444
+ * encodes two pictures per frame, so the encoder gets the real rate of its own calls: the time
+ * between them, up to 100 ms (a pause counts as one slow frame), averaged over about ten calls (the
+ * times, not their inverses, so the average is calls / elapsed time). It is passed on when it moved
+ * by a tenth or more; OpenH264 rescales its budget then (RcUpdateBitrateFps). OpenH264 takes at
+ * most 60 frames per second: above that it gets 60 and the bit rate scaled by 60 / rate, which
+ * gives each call the same share. The configured frame rate is the first guess. */
+#define OPENH264_MAX_FRAME_MS 100.0
+#define OPENH264_MAX_FRAME_RATE 60.0
+
+static void openh264_measure_frame_rate(H264_CONTEXT_OPENH264* sys)
+{
+	WINPR_ASSERT(sys);
+
+	const UINT64 now = winpr_GetTickCount64NS();
+	if (sys->lastFrameNS != 0)
+	{
+		double ms = (double)(now - sys->lastFrameNS) / 1000000.0;
+		if (ms > OPENH264_MAX_FRAME_MS)
+			ms = OPENH264_MAX_FRAME_MS;
+		sys->frameMs = (sys->frameMs > 0.0) ? (0.9 * sys->frameMs + 0.1 * ms) : ms;
+	}
+	sys->lastFrameNS = now;
+}
+
+/* the calls per second: the real rate when known, else the configured frame rate; at least 1 */
+static double openh264_call_rate(const H264_CONTEXT* h264, const H264_CONTEXT_OPENH264* sys)
+{
+	WINPR_ASSERT(h264);
+	WINPR_ASSERT(sys);
+
+	const double rate = (sys->frameMs > 0.0) ? (1000.0 / sys->frameMs) : (double)h264->FrameRate;
+	return (rate < 1.0) ? 1.0 : rate;
+}
+
+/* the frame rate for OpenH264: the call rate, at most 60 */
+static float openh264_frame_rate(const H264_CONTEXT* h264, const H264_CONTEXT_OPENH264* sys)
+{
+	const double rate = openh264_call_rate(h264, sys);
+	return (float)((rate > OPENH264_MAX_FRAME_RATE) ? OPENH264_MAX_FRAME_RATE : rate);
+}
+
+/* the bit rate for OpenH264: the configured one, scaled by 60 / rate above 60 calls per second */
+static int openh264_bit_rate(const H264_CONTEXT* h264, const H264_CONTEXT_OPENH264* sys)
+{
+	const double rate = openh264_call_rate(h264, sys);
+	double bitRate = (double)h264->BitRate;
+	if (rate > OPENH264_MAX_FRAME_RATE)
+		bitRate = bitRate * OPENH264_MAX_FRAME_RATE / rate;
+	return (bitRate < 1.0) ? 1 : (int)bitRate;
+}
+
 static int openh264_compress(H264_CONTEXT* WINPR_RESTRICT h264,
                              const BYTE** WINPR_RESTRICT pYUVData,
                              const UINT32* WINPR_RESTRICT iStride, BYTE** WINPR_RESTRICT ppDstData,
@@ -216,6 +272,8 @@ static int openh264_compress(H264_CONTEXT* WINPR_RESTRICT h264,
 
 	if (!sys->pEncoder)
 		return -1;
+
+	openh264_measure_frame_rate(sys);
 
 	if (!pYUVData[0] || !pYUVData[1] || !pYUVData[2])
 		return -1;
@@ -262,15 +320,14 @@ static int openh264_compress(H264_CONTEXT* WINPR_RESTRICT h264,
 		sys->EncParamExt.iUsageType = usageType;
 		sys->EncParamExt.iPicWidth = WINPR_ASSERTING_INT_CAST(int, h264->width);
 		sys->EncParamExt.iPicHeight = WINPR_ASSERTING_INT_CAST(int, h264->height);
-		sys->EncParamExt.fMaxFrameRate = WINPR_ASSERTING_INT_CAST(short, h264->FrameRate);
+		sys->EncParamExt.fMaxFrameRate = openh264_frame_rate(h264, sys);
 		sys->EncParamExt.iMaxBitrate = UNSPECIFIED_BIT_RATE;
 		sys->EncParamExt.bEnableDenoise = 0;
 		sys->EncParamExt.bEnableLongTermReference = 0;
 		sys->EncParamExt.iSpatialLayerNum = 1;
 		sys->EncParamExt.iMultipleThreadIdc =
 		    WINPR_ASSERTING_INT_CAST(unsigned short, h264->NumberOfThreads);
-		sys->EncParamExt.sSpatialLayers[0].fFrameRate =
-		    WINPR_ASSERTING_INT_CAST(short, h264->FrameRate);
+		sys->EncParamExt.sSpatialLayers[0].fFrameRate = sys->EncParamExt.fMaxFrameRate;
 		sys->EncParamExt.sSpatialLayers[0].iVideoWidth = sys->EncParamExt.iPicWidth;
 		sys->EncParamExt.sSpatialLayers[0].iVideoHeight = sys->EncParamExt.iPicHeight;
 		sys->EncParamExt.sSpatialLayers[0].iMaxSpatialBitrate = sys->EncParamExt.iMaxBitrate;
@@ -279,7 +336,7 @@ static int openh264_compress(H264_CONTEXT* WINPR_RESTRICT h264,
 		{
 			case H264_RATECONTROL_VBR:
 				sys->EncParamExt.iRCMode = RC_BITRATE_MODE;
-				sys->EncParamExt.iTargetBitrate = (int)h264->BitRate;
+				sys->EncParamExt.iTargetBitrate = openh264_bit_rate(h264, sys);
 				sys->EncParamExt.sSpatialLayers[0].iSpatialBitrate =
 				    sys->EncParamExt.iTargetBitrate;
 				sys->EncParamExt.bEnableFrameSkip = 1;
@@ -330,13 +387,19 @@ static int openh264_compress(H264_CONTEXT* WINPR_RESTRICT h264,
 		switch (h264->RateControlMode)
 		{
 			case H264_RATECONTROL_VBR:
-				if (sys->EncParamExt.iTargetBitrate != (int)h264->BitRate)
+			{
+				/* the configured bit rate at once, a scaled one when it moved by a tenth */
+				const int bitRate = openh264_bit_rate(h264, sys);
+				const int current = sys->EncParamExt.iTargetBitrate;
+				if ((bitRate != current) &&
+				    ((bitRate == (int)h264->BitRate) || (bitRate - current >= current / 10) ||
+				     (current - bitRate >= current / 10)))
 				{
 					SBitrateInfo bitrate = WINPR_C_ARRAY_INIT;
 
-					sys->EncParamExt.iTargetBitrate = (int)h264->BitRate;
+					sys->EncParamExt.iTargetBitrate = bitRate;
 					bitrate.iLayer = SPATIAL_LAYER_ALL;
-					bitrate.iBitrate = (int)h264->BitRate;
+					bitrate.iBitrate = bitRate;
 
 					WINPR_ASSERT((*sys->pEncoder)->SetOption);
 					status = (*sys->pEncoder)
@@ -350,10 +413,12 @@ static int openh264_compress(H264_CONTEXT* WINPR_RESTRICT h264,
 					}
 				}
 
-				if ((uint32_t)sys->EncParamExt.fMaxFrameRate != h264->FrameRate)
+				const float frameRate = openh264_frame_rate(h264, sys);
+				const float change = frameRate - sys->EncParamExt.fMaxFrameRate;
+				if ((change >= sys->EncParamExt.fMaxFrameRate / 10.0f) ||
+				    (-change >= sys->EncParamExt.fMaxFrameRate / 10.0f))
 				{
-					sys->EncParamExt.fMaxFrameRate =
-					    WINPR_ASSERTING_INT_CAST(float, h264->FrameRate);
+					sys->EncParamExt.fMaxFrameRate = frameRate;
 
 					WINPR_ASSERT((*sys->pEncoder)->SetOption);
 					status = (*sys->pEncoder)
@@ -369,6 +434,7 @@ static int openh264_compress(H264_CONTEXT* WINPR_RESTRICT h264,
 				}
 
 				break;
+			}
 
 			case H264_RATECONTROL_CQP:
 				if (sys->EncParamExt.sSpatialLayers[0].iDLayerQp != (int)h264->QP)
