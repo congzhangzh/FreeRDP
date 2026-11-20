@@ -31,6 +31,19 @@
 #include <freerdp/log.h>
 #define TAG CLIENT_TAG("shadow")
 
+/* The encoder's first rate; /framerate (rdpShadowServer::maxFrameRate) replaces the highest,
+ * SHADOW_ENCODER_MAX_FPS, and the first is never above it */
+#define SHADOW_ENCODER_START_FPS 16
+
+static void shadow_encoder_reset_fps(rdpShadowEncoder* encoder)
+{
+	WINPR_ASSERT(encoder);
+
+	const UINT32 maxFrameRate = encoder->server ? encoder->server->maxFrameRate : 0;
+	encoder->maxFps = (maxFrameRate > 0) ? maxFrameRate : SHADOW_ENCODER_MAX_FPS;
+	encoder->fps = MIN(SHADOW_ENCODER_START_FPS, encoder->maxFps);
+}
+
 UINT32 shadow_encoder_preferred_fps(rdpShadowEncoder* encoder)
 {
 	/* Return preferred fps calculated according to the last
@@ -623,8 +636,7 @@ int shadow_encoder_reset(rdpShadowEncoder* encoder)
 	if (status < 0)
 		return -1;
 
-	encoder->fps = 16;
-	encoder->maxFps = SHADOW_ENCODER_MAX_FPS;
+	shadow_encoder_reset_fps(encoder);
 	encoder->frameId = 0;
 	encoder->lastAckframeId = 0;
 	shadow_gfx_stats_forget_frames(&encoder->gfxStats);
@@ -751,8 +763,7 @@ rdpShadowEncoder* shadow_encoder_new(rdpShadowClient* client)
 
 	encoder->client = client;
 	encoder->server = server;
-	encoder->fps = 16;
-	encoder->maxFps = SHADOW_ENCODER_MAX_FPS;
+	shadow_encoder_reset_fps(encoder);
 	encoder->lastAckTick = GetTickCount64();
 	{
 		/* like xrdp's XRDP_GFX_FRAMES_IN_FLIGHT; 0 turns the limit off */

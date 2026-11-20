@@ -153,6 +153,10 @@ int main(int argc, char** argv)
 		  "Encoder settings, bit rates in kbit/s: h264:rate-control:vbr|cqp, h264:bitrate, "
 		  "h264:qp:<0-51>; av1 and av2: rate-control:vbr|cbr|cq|q, bitrate; hevc: "
 		  "rate-control:vbr, bitrate (a codec not built in is refused)" },
+
+		{ "framerate", COMMAND_LINE_VALUE_REQUIRED, "<1-120>", nullptr, nullptr, -1, nullptr,
+		  "The most frames per second the server captures and sends, for every subsystem and "
+		  "codec (default: each its own, e.g. 60 for the encoders, 30 for H.264)" },
 #if defined(WITH_GFX_AZURE)
 		{ "gfx-hevc", COMMAND_LINE_VALUE_OPTIONAL, "[on|off|i420|i444]", BoolValueTrue, nullptr, -1,
 		  nullptr, "Allow GFX pipeline HEVC codec extension" },

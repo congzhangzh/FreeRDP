@@ -1365,10 +1365,14 @@ static int mac_shadow_subsystem_init(rdpShadowSubsystem* subsystem)
 	if (!audio)
 		WLog_WARN(TAG, "sound: no format to offer: no sound");
 
+	/* /framerate, else the subsystem's own */
+	const UINT32 fps = ((subsystem->server != nullptr) && (subsystem->server->maxFrameRate > 0))
+	                       ? subsystem->server->maxFrameRate
+	                       : MAC_SHADOW_FPS;
 	const macCaptureConfig config = { .display = mac->display,
 		                              .width = mac->width,
 		                              .height = mac->height,
-		                              .fps = MAC_SHADOW_FPS,
+		                              .fps = fps,
 		                              /* the clients draw the cursor */
 		                              .showCursor = FALSE,
 		                              .audio = audio,

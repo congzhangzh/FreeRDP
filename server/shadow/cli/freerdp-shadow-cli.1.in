@@ -12,6 +12,7 @@
 [\fB/monitors:\fP\fI<0,1,2,...>\fP]
 [\fB/subsystem:\fP\fI<name>[,<name>...]\fP]
 [\fB/rect:\fP\fI<x,y,w,h>\fP]
+[\fB/framerate:\fP\fI<1-120>\fP]
 [\fB+auth\fP]
 [\fB-may-view\fP]
 [\fB-may-interact\fP]
@@ -43,6 +44,11 @@ selects one, e.g. /subsystem:X11. Without a value the subsystems are listed with
 the monitors each finds; * marks the one that would be used.
 .IP /rect:<x,y,w,h>      
 Select rectangle within monitor to share.
+.IP /framerate:<1-120>
+The most frames per second the server captures and sends, for every subsystem
+and codec, e.g. /framerate:30. Without it each keeps its own: the encoders go
+up to 60, the H.264 encoder is set to 30, the macOS capture asks for 60 and the
+GNOME (Mutter) capture for up to 60. A value outside 1 to 120 is an error.
 .IP -auth
 Disable authentication. If authentication is enabled PAM is used with the
 X11 subsystem. Running as root is not necessary, however if run as user only
