@@ -38,6 +38,8 @@ set(SRCS
     shadow_rfx_dirty.h
     shadow_capture.c
     shadow_capture.h
+    shadow_gfx_stats.c
+    shadow_gfx_stats.h
     shadow_channels.c
     shadow_channels.h
     shadow_encomsp.c
