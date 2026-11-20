@@ -49,11 +49,13 @@ static void gdi_report_decode(RdpgfxClientContext* context, UINT32 codecId, UINT
 	FREERDP_DECODE_RESULT result = WINPR_C_ARRAY_INIT;
 	BOOL valid = FALSE;
 #if defined(WITH_GFX_AV1)
-	if ((codecId == RDPGFX_CODECID_AV1) && (context->CapsVersion == RDPGFX_CAPVERSION_FRDP_1))
+	if ((codecId == RDPGFX_CODECID_AV1) &&
+	    (context->ConfirmedCaps.version == RDPGFX_CAPVERSION_FRDP_1))
 		valid = freerdp_av1_context_get_last_decode(surface->av1, &result);
 #endif
 #if defined(WITH_GFX_AV2)
-	if ((codecId == RDPGFX_CODECID_AV1) && (context->CapsVersion == RDPGFX_CAPVERSION_FRDP_2))
+	if ((codecId == RDPGFX_CODECID_AV1) &&
+	    (context->ConfirmedCaps.version == RDPGFX_CAPVERSION_FRDP_2))
 		valid = freerdp_av2_context_get_last_decode(surface->av2, &result);
 #endif
 #if defined(WITH_GFX_H264)
