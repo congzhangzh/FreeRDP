@@ -22,9 +22,12 @@
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <utility>
 
 #include <freerdp/client.h>
+#include <freerdp/client/rdpgfx.h>
 #include <freerdp/codecs.h>
+#include <freerdp/gdi/gdi.h>
 #include <freerdp/log.h>
 
 #include "sdl_overlay.hpp"
@@ -38,8 +41,9 @@
 static constexpr uint64_t firstIntervalNS = 100ull * 1000ull * 1000ull;
 static constexpr uint64_t intervalNS = 1000ull * 1000ull * 1000ull;
 
-/* What the overlay reads of the libraries, all of it: the client's runtime statistics. Keep
- * it the only place that knows them. */
+/* What the overlay reads of the libraries, all of it: the client's runtime statistics, its
+ * information strings and the graphics channel's decoder backends. Keep it the only place that
+ * knows them. */
 static std::vector<std::string> statsNames()
 {
 	std::vector<std::string> names;
@@ -60,6 +64,33 @@ static void statsRead(rdpContext* context, sdl::overlay::Reading& reading)
 	reading.values.resize(count);
 	for (size_t x = 0; x < count; x++)
 		reading.values.at(x) = freerdp_client_stats_value_for_index(context, x);
+
+	for (size_t x = 0; x < freerdp_client_stats_string_max_index(); x++)
+	{
+		const char* name = freerdp_client_stats_string_name_for_index(x);
+		const char* value = freerdp_client_stats_string_value_for_index(context, x);
+		if (name && value)
+			reading.strings.emplace_back(name, value);
+	}
+
+	RdpgfxClientContext* gfx = context->gdi ? context->gdi->gfx : nullptr;
+	if (!gfx)
+		return;
+	/* AV1's codec ID does not exist in a build without AV1 and AV2 */
+	const std::vector<std::pair<const char*, UINT16>> ids = {
+#if defined(WITH_GFX_AV1) || defined(WITH_GFX_AV2)
+		{ "AV1", RDPGFX_CODECID_AV1 },
+#endif
+		{ "AVC420", RDPGFX_CODECID_AVC420 },
+		{ "AVC444", RDPGFX_CODECID_AVC444 },
+		{ "AVC444v2", RDPGFX_CODECID_AVC444v2 },
+	};
+	for (const auto& [label, codecId] : ids)
+	{
+		const char* backend = rdpgfx_stats_decoder_backend(gfx, codecId);
+		if (backend)
+			reading.backends.emplace_back(label, backend);
+	}
 }
 
 static std::string decodersSupported(rdpContext* context)
@@ -238,6 +269,9 @@ bool SdlOverlay::update(int windowWidth, int windowHeight, const char* rendererN
 	        .count());
 
 	_left = _client;
+	const auto decoders = sdl::overlay::decoderRows(names, *reading);
+	_left.insert(_left.end(), decoders.begin(), decoders.end());
+	_server = sdl::overlay::serverRows(names, *reading);
 	_right = sdl::overlay::realtimeRows(names, *reading, _prev ? &*_prev : nullptr, view);
 	_prev = std::move(reading);
 	_generation++;
@@ -247,6 +281,11 @@ bool SdlOverlay::update(int windowWidth, int windowHeight, const char* rendererN
 const std::vector<sdl::overlay::Row>& SdlOverlay::left() const
 {
 	return _left;
+}
+
+const std::vector<sdl::overlay::Row>& SdlOverlay::server() const
+{
+	return _server;
 }
 
 const std::vector<sdl::overlay::Row>& SdlOverlay::right() const
@@ -277,7 +316,7 @@ SdlOverlayPainter::~SdlOverlayPainter()
 
 void SdlOverlayPainter::clear()
 {
-	for (auto* list : { &_left, &_right })
+	for (auto* list : { &_left, &_server, &_right })
 	{
 		for (auto& cell : *list)
 		{
@@ -338,6 +377,7 @@ bool SdlOverlayPainter::rebuild(const SdlOverlay& overlay, float scale)
 
 	clear();
 	_left = cells(overlay.left());
+	_server = cells(overlay.server());
 	_right = cells(overlay.right());
 	_scale = scale;
 	_generation = overlay.generation();
@@ -412,11 +452,15 @@ void SdlOverlayPainter::draw(const SdlOverlay& overlay, int width, int height, f
 	std::ignore = SDL_SetRenderDrawBlendMode(_renderer, SDL_BLENDMODE_BLEND);
 
 	float labelWidth = 0;
-	const auto left = _left.empty() ? SDL_FPoint{ 0, 0 } : panelSize(_left, labelWidth);
-	const auto right = _right.empty() ? SDL_FPoint{ 0, 0 } : panelSize(_right, labelWidth);
-	const auto where = sdl::overlay::layout(left.x, left.y, right.x, right.y,
+	const auto size = [&](const std::vector<Cell>& list)
+	{
+		const auto s = list.empty() ? SDL_FPoint{ 0, 0 } : panelSize(list, labelWidth);
+		return sdl::overlay::Box{ 0, 0, s.x, s.y };
+	};
+	const auto where = sdl::overlay::layout(size(_left), size(_server), size(_right),
 	                                        static_cast<float>(width), 12.0F * _scale);
 	drawPanel(_left, where.left);
+	drawPanel(_server, where.server);
 	drawPanel(_right, where.right);
 
 	std::ignore = SDL_SetRenderDrawBlendMode(_renderer, mode);

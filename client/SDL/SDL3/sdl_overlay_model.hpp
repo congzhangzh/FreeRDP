@@ -23,6 +23,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 /* Turns readings of the client's runtime statistics into the overlay's rows. Nothing here
@@ -36,6 +37,10 @@ namespace sdl::overlay
 		std::vector<uint64_t> values; /**< by statistic index */
 		uint32_t desktopWidth = 0;
 		uint32_t desktopHeight = 0;
+		/** decoder backend names, by codec label ("AVC420", "AV1"), empty if none decoded */
+		std::vector<std::pair<std::string, std::string>> backends;
+		/** the information strings by name (SERVER_HOSTNAME, ...), only those the session has */
+		std::vector<std::pair<std::string, std::string>> strings;
 	};
 
 	/** The statistics' names, looked up once: an index means nothing from one version to the
@@ -67,10 +72,21 @@ namespace sdl::overlay
 		uint64_t sessionSeconds = 0;
 	};
 
-	/** The real-time part: picture and network, as the web client's Info card shows them.
-	 * prev: the reading before now, or nullptr; a counter that went down gives no rate. */
+	/** The real-time part: picture, decoders, network and sound, as the web client's Info card
+	 * shows them. prev: the reading before now, or nullptr; a counter that went down gives no
+	 * rate. */
 	[[nodiscard]] std::vector<Row> realtimeRows(const Names& names, const Reading& now,
 	                                            const Reading* prev, const View& view);
+
+	/** The server part, under the client part: what the server announced (RDP version, OS,
+	 * the graphics caps it confirmed, its surfaces and their codecs) and where this client
+	 * connected, with the names of the client statistics' name functions, as the web client's
+	 * Info card shows them. A row the server has not told yet is left out. */
+	[[nodiscard]] std::vector<Row> serverRows(const Names& names, const Reading& now);
+
+	/** The client part's decoder rows: per decoder that has worked, its backend and whether it
+	 * runs in hardware (from the decoder's own _HARDWARE counter: 0 unknown, 1 no, 2 yes). */
+	[[nodiscard]] std::vector<Row> decoderRows(const Names& names, const Reading& now);
 
 	struct Box
 	{
@@ -83,15 +99,16 @@ namespace sdl::overlay
 	struct Layout
 	{
 		Box left;
+		Box server;
 		Box right;
 	};
 
-	/** Where the two parts go in a window width pixels wide: the client part at the top left, the
-	 * real-time part at the top right, or under the client part when the two do not fit side by
-	 * side, so they never cover each other. A part that is wider than the window is cut at its
-	 * edge. An empty part has the size 0. */
-	[[nodiscard]] Layout layout(float leftWidth, float leftHeight, float rightWidth,
-	                            float rightHeight, float width, float margin);
+	/** Where the three parts go in a window width pixels wide: the client part at the top left,
+	 * the server part under it, the real-time part at the top right, or under the other two when
+	 * it does not fit beside them, so none covers another. A part that is wider than the window
+	 * is cut at its edge. An empty part has the size 0. */
+	[[nodiscard]] Layout layout(const Box& left, const Box& server, const Box& right, float width,
+	                            float margin);
 
 	/** The build lines of freerdp_get_build_config(): its type, compiler and architecture. */
 	[[nodiscard]] std::string buildSummary(const char* config);

@@ -25,6 +25,8 @@
 #include <sstream>
 
 #include <freerdp/channels/rdpgfx.h>
+#include <freerdp/client.h>
+#include <freerdp/codec/audio.h>
 
 #include "sdl_overlay_model.hpp"
 
@@ -62,12 +64,26 @@ namespace sdl::overlay
 			{ "RDPGFX_CMDID_CACHETOSURFACE", "CacheToSurface" },
 		} };
 
+		/* the decoders that report results, as the Info card names them */
+		constexpr std::array<Label, 4> decoders = { {
+			{ "AV1", "AV1" },
+			{ "AVC420", "H.264 4:2:0" },
+			{ "AVC444", "H.264 4:4:4" },
+			{ "AVC444v2", "H.264 4:4:4 v2" },
+		} };
+
 		constexpr const char* codecPrefix = "RDPGFX_CODECID_";
 	} // namespace
 
 	static bool startsWith(const std::string& s, const char* prefix)
 	{
 		return s.compare(0, strlen(prefix), prefix) == 0;
+	}
+
+	/* a name function's text, "" where it has none */
+	static std::string text(const char* s)
+	{
+		return s ? s : "";
 	}
 
 	static std::string fixed(double v, int precision)
@@ -114,6 +130,55 @@ namespace sdl::overlay
 #endif
 	}
 
+	/* " 4:4:4" from what the AV decoder last learnt of the stream (RDPGFX_CODECID_AV1_CHROMA:
+	 * 420, 422, 444), nothing before it knows */
+	static const char* av1Chroma(const Names& names, const Reading& now)
+	{
+		switch (names.get(now, std::string(codecPrefix) + "AV1_CHROMA").value_or(0))
+		{
+			case 420:
+				return " 4:2:0";
+			case 422:
+				return " 4:2:2";
+			case 444:
+				return " 4:4:4";
+			default:
+				return "";
+		}
+	}
+
+	static std::string decoderLabel(const Names& names, const Reading& now, const Label& d)
+	{
+		if (strcmp(d.id, "AV1") == 0)
+			return av1Label(names, now);
+		return d.label;
+	}
+
+	/* a decoder's _HARDWARE counter: 0 unknown, 1 no, 2 yes */
+	static const char* hardwareText(uint64_t hardware)
+	{
+		switch (hardware)
+		{
+			case 1:
+				return "software";
+			case 2:
+				return "hardware";
+			default:
+				return "";
+		}
+	}
+
+	static std::string audioFormat(uint64_t tag)
+	{
+		if (tag == 0)
+			return "no audio yet";
+		const std::string name = text(audio_format_get_tag_string(static_cast<UINT16>(tag)));
+		if (name.empty())
+			return "unknown";
+		constexpr const char* prefix = "WAVE_FORMAT_";
+		return startsWith(name, prefix) ? name.substr(strlen(prefix)) : name;
+	}
+
 	static void videoRows(std::vector<Row>& rows, const Names& names, const Reading& now,
 	                      const Reading* prev)
 	{
@@ -127,7 +192,10 @@ namespace sdl::overlay
 			const std::string name = std::string(codecPrefix) + c.id;
 			if (names.get(now, name).value_or(0) == 0)
 				continue;
-			const std::string label = (strcmp(c.id, "AV1") == 0) ? av1Label(names, now) : c.label;
+			const std::string label =
+			    (strcmp(c.id, "AV1") == 0)
+			        ? std::string(av1Label(names, now)) + av1Chroma(names, now)
+			        : c.label;
 			const auto bytes = rate(names, now, prev, name + "_BYTES");
 			const auto kbit = bytes ? std::optional<double>(*bytes * 8.0 / 1000.0) : std::nullopt;
 			parts.push_back(label + " " + per(rate(names, now, prev, name), 0) + "/s " +
@@ -148,6 +216,64 @@ namespace sdl::overlay
 		}
 		for (size_t x = 0; x < parts.size(); x++)
 			rows.push_back({ (x == 0) ? "Video codecs" : "", parts.at(x) });
+	}
+
+	static void decoderResultRows(std::vector<Row>& rows, const Names& names, const Reading& now,
+	                              const Reading* prev)
+	{
+		for (const auto& d : decoders)
+		{
+			const std::string p = std::string(codecPrefix) + d.id;
+			if (!names.has(p + "_PICTURES"))
+				continue;
+			const auto get = [&](const char* stat) { return names.get(now, p + stat).value_or(0); };
+			const auto pictures = get("_PICTURES");
+			const auto failed = get("_FAILED");
+			const auto noPicture = get("_NO_PICTURE");
+			const auto tries = pictures + failed + noPicture;
+			if (tries == 0)
+				continue;
+
+			const double avgMs =
+			    static_cast<double>(get("_DECODE_NS_SUM")) / static_cast<double>(tries) / 1e6;
+			const double maxMs = static_cast<double>(get("_DECODE_NS_MAX")) / 1e6;
+
+			std::string second =
+			    fixed(avgMs, 1) + " ms per attempt, " + fixed(maxMs, 1) + " ms max";
+			if (const auto key = names.get(now, p + "_KEY_FRAMES"))
+				second += ", key frames: " + std::to_string(*key);
+			const std::string hw = hardwareText(get("_HARDWARE"));
+			if (!hw.empty())
+				second += ", " + hw;
+			if (const auto fallbacks = get("_FALLBACKS"); fallbacks != 0)
+				second += ", " + std::to_string(fallbacks) + " fallbacks";
+
+			const std::string chroma = (strcmp(d.id, "AV1") == 0) ? av1Chroma(names, now) : "";
+			rows.push_back({ decoderLabel(names, now, d) + chroma + " results",
+			                 "pictures: " + std::to_string(pictures) + " (" +
+			                     per(rate(names, now, prev, p + "_PICTURES")) +
+			                     " /s), failed: " + std::to_string(failed) +
+			                     ", no picture: " + std::to_string(noPicture) });
+			rows.push_back({ "", second });
+		}
+	}
+
+	static void audioRows(std::vector<Row>& rows, const Names& names, const Reading& now,
+	                      const Reading* prev)
+	{
+		if (const auto tag = names.get(now, "AUDIO_FORMAT_TAG"))
+			rows.push_back({ "Audio codec", audioFormat(*tag) });
+
+		const auto waves = names.get(now, "AUDIO_WAVES").value_or(0);
+		if (waves == 0)
+			return;
+		const auto dropped = names.get(now, "AUDIO_WAVES_OVERRUN").value_or(0) +
+		                     names.get(now, "AUDIO_WAVES_UNDECODABLE").value_or(0);
+		const auto delay = names.get(now, "AUDIO_DELAY_MS").value_or(0);
+		rows.push_back({ "Audio received", per(rate(names, now, prev, "AUDIO_WAVES")) + " /s, " +
+		                                       std::to_string(waves) + " total, " +
+		                                       std::to_string(dropped) + " dropped, " +
+		                                       std::to_string(delay) + " ms delay" });
 	}
 
 	static void networkRows(std::vector<Row>& rows, const Names& names, const Reading& now,
@@ -171,14 +297,16 @@ namespace sdl::overlay
 		if (const auto rtt = names.get(now, "NETWORK_RTT_AVERAGE_MS"))
 		{
 			const auto base = names.get(now, "NETWORK_RTT_BASE_MS").value_or(0);
-			rows.push_back({ "Round trip", (*rtt != 0) ? std::to_string(*rtt) + " ms (lowest " +
-			                                                 std::to_string(base) + ")"
-			                                           : "not measured" });
+			rows.push_back(
+			    { "Round trip (measured by the server)",
+			      (*rtt != 0) ? std::to_string(*rtt) + " ms (lowest " + std::to_string(base) + ")"
+			                  : "not measured" });
 		}
 		if (const auto kbps = names.get(now, "NETWORK_BANDWIDTH_KBPS"))
-			rows.push_back(
-			    { "Bandwidth", (*kbps != 0) ? std::to_string(*kbps) + " kbit/s" : "not measured" });
+			rows.push_back({ "Bandwidth (measured by the server)",
+			                 (*kbps != 0) ? std::to_string(*kbps) + " kbit/s" : "not measured" });
 	}
+
 	Names::Names(const std::vector<std::string>& names)
 	{
 		for (size_t x = 0; x < names.size(); x++)
@@ -214,6 +342,8 @@ namespace sdl::overlay
 		                                   std::to_string(view.windowWidth) + " × " +
 		                                   std::to_string(view.windowHeight) });
 		videoRows(rows, names, now, prev);
+		decoderResultRows(rows, names, now, prev);
+		audioRows(rows, names, now, prev);
 		networkRows(rows, names, now, prev);
 
 		std::array<char, 32> session{};
@@ -223,16 +353,116 @@ namespace sdl::overlay
 		return rows;
 	}
 
-	Layout layout(float leftWidth, float leftHeight, float rightWidth, float rightHeight,
-	              float width, float margin)
+	std::vector<Row> serverRows(const Names& names, const Reading& now)
 	{
-		Layout l;
-		l.left = { margin, margin, leftWidth, leftHeight };
-		l.right = { std::max(0.0F, width - margin - rightWidth), margin, rightWidth, rightHeight };
+		std::vector<Row> rows;
+		const auto value = [&](const std::string& name)
+		{ return names.get(now, name).value_or(0); };
+		const auto info = [&](const char* name) -> std::string
+		{
+			for (const auto& [key, v] : now.strings)
+			{
+				if (key == name)
+					return v;
+			}
+			return "";
+		};
 
-		const bool hasLeft = (leftWidth > 0) && (leftHeight > 0);
-		if (hasLeft && (margin + leftWidth + margin + rightWidth + margin > width))
-			l.right.y = margin + leftHeight + margin;
+		if (const auto rdp = value("RDP_VERSION"); rdp != 0)
+		{
+			std::string v = text(freerdp_client_stats_rdp_version_name(rdp));
+			const auto server = value("SERVER_RDP_VERSION");
+			if ((server != 0) && (server != rdp))
+				v += " (server " + text(freerdp_client_stats_rdp_version_name(server)) + ")";
+			rows.push_back({ "RDP version", v });
+		}
+
+		if (const auto major = value("SERVER_OS_MAJOR_TYPE"); major != 0)
+		{
+			std::array<char, 128> buffer{};
+			rows.push_back({ "Server OS",
+			                 text(freerdp_client_stats_os_name(major, value("SERVER_OS_MINOR_TYPE"),
+			                                                   buffer.data(), buffer.size())) });
+		}
+
+		const auto caps = value("GFX_CAPS_VERSION");
+		if (caps != 0)
+		{
+			std::array<char, 256> buffer{};
+			rows.push_back({ "Graphics caps",
+			                 text(freerdp_client_stats_caps_version_name(caps)) + ", flags: " +
+			                     text(freerdp_client_stats_caps_flags_name(
+			                         value("GFX_CAPS_FLAGS"), buffer.data(), buffer.size())) });
+		}
+
+		constexpr uint64_t slots = 4;
+		for (uint64_t slot = 1; slot <= slots; slot++)
+		{
+			const std::string prefix = "RDPGFX_SURFACE" + std::to_string(slot) + "_";
+			const auto width = value(prefix + "WIDTH");
+			if (width == 0)
+				continue;
+			rows.push_back(
+			    { "Surface " + std::to_string(slot),
+			      std::to_string(width) + " × " + std::to_string(value(prefix + "HEIGHT")) + ", " +
+			          text(freerdp_client_stats_codec_name(value(prefix + "CODECID"), caps)) });
+		}
+		if (const auto count = value("RDPGFX_SURFACES"); count > slots)
+			rows.push_back({ "Surfaces", "+" + std::to_string(count - slots) + " more" });
+
+		const auto host = info("SERVER_HOSTNAME");
+		const auto port = value("SERVER_PORT");
+		if (!host.empty() && (port != 0))
+			rows.push_back({ "Host", host + ":" + std::to_string(port) });
+		if (const auto cn = info("SERVER_CERT_CN"); !cn.empty())
+			rows.push_back({ "Certificate", cn });
+		return rows;
+	}
+
+	std::vector<Row> decoderRows(const Names& names, const Reading& now)
+	{
+		std::vector<Row> rows;
+		for (const auto& d : decoders)
+		{
+			const std::string p = std::string(codecPrefix) + d.id;
+			const auto tries = names.get(now, p + "_PICTURES").value_or(0) +
+			                   names.get(now, p + "_FAILED").value_or(0) +
+			                   names.get(now, p + "_NO_PICTURE").value_or(0);
+			if (tries == 0)
+				continue;
+
+			std::string value;
+			for (const auto& [codec, backend] : now.backends)
+			{
+				if (codec == d.id)
+					value = backend;
+			}
+			const std::string hw = hardwareText(names.get(now, p + "_HARDWARE").value_or(0));
+			if (!hw.empty())
+				value += value.empty() ? hw : ", " + hw;
+			rows.push_back(
+			    { decoderLabel(names, now, d) + " decoder", value.empty() ? "unknown" : value });
+		}
+		return rows;
+	}
+
+	Layout layout(const Box& left, const Box& server, const Box& right, float width, float margin)
+	{
+		const auto empty = [](const Box& b) { return (b.w <= 0) || (b.h <= 0); };
+
+		Layout l;
+		l.left = { margin, margin, left.w, left.h };
+		const float serverY = empty(left) ? margin : margin + left.h + margin;
+		l.server = { margin, serverY, server.w, server.h };
+		l.right = { std::max(0.0F, width - margin - right.w), margin, right.w, right.h };
+
+		/* the left column: the client part and the server part under it */
+		const float columnWidth =
+		    std::max(empty(left) ? 0.0F : left.w, empty(server) ? 0.0F : server.w);
+		const float columnBottom =
+		    empty(server) ? (empty(left) ? 0.0F : margin + left.h) : serverY + server.h;
+		if ((columnWidth > 0) && (margin + columnWidth + margin + right.w + margin > width))
+			l.right.y = columnBottom + margin;
 		return l;
 	}
 

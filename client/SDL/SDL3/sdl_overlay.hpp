@@ -64,9 +64,10 @@ class SdlOverlay
 	 * @return true when there is something new to draw */
 	[[nodiscard]] bool update(int windowWidth, int windowHeight, const char* rendererName);
 
-	/** The rows to draw: client info on the left, the real-time part on the right. A new
-	 * generation means the rows changed. */
+	/** The rows to draw: client info on the left, the server under it, the real-time part on
+	 * the right. A new generation means the rows changed. */
 	[[nodiscard]] const std::vector<sdl::overlay::Row>& left() const;
+	[[nodiscard]] const std::vector<sdl::overlay::Row>& server() const;
 	[[nodiscard]] const std::vector<sdl::overlay::Row>& right() const;
 	[[nodiscard]] uint64_t generation() const;
 
@@ -93,6 +94,7 @@ class SdlOverlay
 	std::optional<sdl::overlay::Reading> _prev;
 	std::vector<sdl::overlay::Row> _client;
 	std::vector<sdl::overlay::Row> _left;
+	std::vector<sdl::overlay::Row> _server;
 	std::vector<sdl::overlay::Row> _right;
 	uint64_t _generation = 0;
 };
@@ -131,5 +133,6 @@ class SdlOverlayPainter
 	float _scale = 0.0F;
 	uint64_t _generation = UINT64_MAX;
 	std::vector<Cell> _left;
+	std::vector<Cell> _server;
 	std::vector<Cell> _right;
 };
