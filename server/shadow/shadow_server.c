@@ -216,7 +216,8 @@ WINPR_ATTR_NODISCARD
 static BOOL shadow_server_parse_u32(const char* text, UINT32 min, UINT32 max, UINT32* value)
 {
 	WINPR_ASSERT(value);
-	if (!text)
+	/* strtoull takes "" as 0 */
+	if (!text || (*text == '\0'))
 		return FALSE;
 
 	char* end = nullptr;
@@ -268,9 +269,14 @@ static BOOL shadow_server_parse_av_mode(const char* text, UINT32* mode)
 
 /* /codec:<codec>:<key>:<value>[,<codec>:<key>:<value>...], for the codecs built in:
  *   h264: rate-control:vbr|cqp, bitrate:<kbit/s>, qp:<0-51>
- *   av1, av2: rate-control:vbr|cbr|cq|q, bitrate:<kbit/s>
+ *   av1: rate-control:vbr|cbr|cq|q, bitrate:<kbit/s>, cq-level:<0-63>, threads:<0-64>,
+ *        cpu-used:<0-12>
+ *   av2: rate-control:vbr|cbr|cq|q, bitrate:<kbit/s>, qp:<0-255>, threads:<1-64>,
+ *        cpu-used:<0-10>, tile-columns:<0-6> (log2), dpb-size:<1-16>
  *   hevc: rate-control:vbr, bitrate:<kbit/s>
- * Nothing changes unless the whole value is right. */
+ * The same value comes from FREERDP_SHADOW_CODEC (the environment, the configuration file).
+ * 0 for av1 cq-level and threads and av2 qp is the library's own. Nothing changes unless the
+ * whole value is right. */
 WINPR_ATTR_NODISCARD
 static BOOL shadow_server_parse_codec(rdpShadowServer* server, const char* value)
 {
@@ -282,10 +288,18 @@ static BOOL shadow_server_parse_codec(rdpShadowServer* server, const char* value
 #if defined(WITH_GFX_AV1)
 	UINT32 av1Mode = (UINT32)server->AV1RateControlMode;
 	UINT32 av1BitRate = server->AV1BitRate; /* kbit/s */
+	UINT32 av1CQLevel = server->AV1CQLevel;
+	UINT32 av1Threads = server->AV1Threads;
+	UINT32 av1Speed = server->AV1Speed;
 #endif
 #if defined(WITH_GFX_AV2)
 	UINT32 av2Mode = (UINT32)server->AV2RateControlMode;
 	UINT32 av2BitRate = server->AV2BitRate; /* kbit/s */
+	UINT32 av2QP = server->AV2QP;
+	UINT32 av2Threads = server->AV2Threads;
+	UINT32 av2Speed = server->AV2Speed;
+	UINT32 av2TileColumns = server->AV2TileColumns;
+	UINT32 av2DpbSize = server->AV2DpbSize;
 #endif
 #if defined(WITH_GFX_AZURE)
 	FREERDP_HEVC_RATECONTROL hevcMode = server->HEVCRateControlMode;
@@ -327,6 +341,12 @@ static BOOL shadow_server_parse_codec(rdpShadowServer* server, const char* value
 				ok = shadow_server_parse_av_mode(v, &av1Mode);
 			else if ((v = shadow_server_after(rest, "bitrate:")) != nullptr)
 				ok = shadow_server_parse_bitrate(v, 1, &av1BitRate);
+			else if ((v = shadow_server_after(rest, "cq-level:")) != nullptr)
+				ok = shadow_server_parse_u32(v, 0, 63, &av1CQLevel);
+			else if ((v = shadow_server_after(rest, "threads:")) != nullptr)
+				ok = shadow_server_parse_u32(v, 0, 64, &av1Threads);
+			else if ((v = shadow_server_after(rest, "cpu-used:")) != nullptr)
+				ok = shadow_server_parse_u32(v, 0, 12, &av1Speed);
 			else
 				ok = FALSE;
 		}
@@ -338,6 +358,16 @@ static BOOL shadow_server_parse_codec(rdpShadowServer* server, const char* value
 				ok = shadow_server_parse_av_mode(v, &av2Mode);
 			else if ((v = shadow_server_after(rest, "bitrate:")) != nullptr)
 				ok = shadow_server_parse_bitrate(v, 1, &av2BitRate);
+			else if ((v = shadow_server_after(rest, "qp:")) != nullptr)
+				ok = shadow_server_parse_u32(v, 0, 255, &av2QP);
+			else if ((v = shadow_server_after(rest, "threads:")) != nullptr)
+				ok = shadow_server_parse_u32(v, 1, 64, &av2Threads);
+			else if ((v = shadow_server_after(rest, "cpu-used:")) != nullptr)
+				ok = shadow_server_parse_u32(v, 0, 10, &av2Speed);
+			else if ((v = shadow_server_after(rest, "tile-columns:")) != nullptr)
+				ok = shadow_server_parse_u32(v, 0, 6, &av2TileColumns);
+			else if ((v = shadow_server_after(rest, "dpb-size:")) != nullptr)
+				ok = shadow_server_parse_u32(v, 1, 16, &av2DpbSize);
 			else
 				ok = FALSE;
 		}
@@ -373,10 +403,18 @@ static BOOL shadow_server_parse_codec(rdpShadowServer* server, const char* value
 #if defined(WITH_GFX_AV1)
 	server->AV1RateControlMode = (FREERDP_AV1_RATECONTROL)av1Mode;
 	server->AV1BitRate = av1BitRate;
+	server->AV1CQLevel = av1CQLevel;
+	server->AV1Threads = av1Threads;
+	server->AV1Speed = av1Speed;
 #endif
 #if defined(WITH_GFX_AV2)
 	server->AV2RateControlMode = (FREERDP_AV2_RATECONTROL)av2Mode;
 	server->AV2BitRate = av2BitRate;
+	server->AV2QP = av2QP;
+	server->AV2Threads = av2Threads;
+	server->AV2Speed = av2Speed;
+	server->AV2TileColumns = av2TileColumns;
+	server->AV2DpbSize = av2DpbSize;
 #endif
 #if defined(WITH_GFX_AZURE)
 	server->HEVCRateControlMode = hevcMode;
@@ -1687,66 +1725,6 @@ static UINT32 shadow_server_env_u32(const char* name, UINT32 value, UINT32 min, 
 	return (UINT32)parsed;
 }
 
-/* vbr or cqp: the H.264 encoders have no other mode (H264_RATECONTROL_MODE) */
-WINPR_ATTR_NODISCARD
-static H264_RATECONTROL_MODE shadow_server_env_h264_rate_control(const char* name,
-                                                                 H264_RATECONTROL_MODE mode)
-{
-	const char* text = getenv(name);
-	if (!text || (*text == '\0'))
-		return mode;
-
-	if (_stricmp(text, "vbr") == 0)
-		return H264_RATECONTROL_VBR;
-	if (_stricmp(text, "cqp") == 0)
-		return H264_RATECONTROL_CQP;
-
-	WLog_WARN(TAG, "%s=%s%s is not vbr or cqp (H.264 has no other mode): %s instead", name, text,
-	          shadow_config_origin(name), (mode == H264_RATECONTROL_CQP) ? "cqp" : "vbr");
-	return mode;
-}
-
-#if defined(WITH_GFX_AV1) || defined(WITH_GFX_AV2)
-/* q, cq, cbr or vbr: FREERDP_AV1_RATECONTROL and FREERDP_AV2_RATECONTROL have the same order
- * (VBR, CBR, CQ, Q). Unset: Q without a target bit rate, CQ with one: the quality as long as
- * the picture is cheap, the target as a ceiling when it is busy. Any mode but Q needs a target. */
-WINPR_ATTR_NODISCARD
-static UINT32 shadow_server_env_rate_control(const char* name, UINT32 target)
-{
-	const UINT32 vbr = 0;
-	const UINT32 cbr = 1;
-	const UINT32 cq = 2;
-	const UINT32 q = 3;
-
-	UINT32 mode = (target > 0) ? cq : q;
-	const char* text = getenv(name);
-	if (text && (*text != '\0'))
-	{
-		if (_stricmp(text, "q") == 0)
-			mode = q;
-		else if (_stricmp(text, "cq") == 0)
-			mode = cq;
-		else if (_stricmp(text, "cbr") == 0)
-			mode = cbr;
-		else if (_stricmp(text, "vbr") == 0)
-			mode = vbr;
-		else
-			WLog_WARN(TAG, "%s=%s%s is not q, cq, cbr or vbr: %s instead", name, text,
-			          shadow_config_origin(name), (mode == q) ? "q" : "cq");
-	}
-	if ((mode != q) && (target == 0))
-	{
-		WLog_WARN(TAG, "%s%s: %s needs a target bit rate: q instead", name,
-		          shadow_config_origin(name),
-		          (mode == cq)    ? "cq"
-		          : (mode == cbr) ? "cbr"
-		                          : "vbr");
-		mode = q;
-	}
-	return mode;
-}
-#endif
-
 #if defined(WITH_GFX_AV2)
 WINPR_ATTR_NODISCARD
 static UINT32 shadow_server_cpus(void)
@@ -1763,46 +1741,59 @@ static UINT32 shadow_server_cpus(void)
  * bit rate as a ceiling when it is busy: quality most, limited by the bandwidth (AV1 12 Mbit/s,
  * AV2 10 Mbit/s). Text keeps its quality at any ceiling from 4 Mbit/s up (AV1 47 dB, about 230
  * kbit/s still and 720 scrolling); the ceiling decides video. A busy second went 4 to 6 % over it.
- * Each has an environment variable, read when the server is made: FREERDP_SHADOW_AV1_* and
- * FREERDP_SHADOW_AV2_* RATE_CONTROL (q, cq, cbr, vbr), TARGET_BITRATE (0: q), CQ_LEVEL or QP,
- * THREADS, CPU_USED, and for AV2 TILE_COLUMNS and DPB_SIZE.
- * H.264 (AVC420 and AVC444): FREERDP_SHADOW_H264_RATE_CONTROL (vbr, cqp), BITRATE (kbit/s, for
- * vbr) and QP (0 to 51, for cqp). */
+ * /codec changes them (FREERDP_SHADOW_CODEC in the environment or the configuration file). */
 static void shadow_server_encoder_defaults(rdpShadowServer* server)
 {
 	WINPR_ASSERT(server);
 	/* VBR at 10 Mbit/s and 30 fps */
-	server->h264RateControlMode = shadow_server_env_h264_rate_control(
-	    "FREERDP_SHADOW_H264_RATE_CONTROL", H264_RATECONTROL_VBR);
-	server->h264BitRate =
-	    1000u * shadow_server_env_u32("FREERDP_SHADOW_H264_BITRATE", 10000, 1, 1000000);
+	server->h264RateControlMode = H264_RATECONTROL_VBR;
+	server->h264BitRate = 10000000;
 	server->h264FrameRate = 30;
-	server->h264QP = shadow_server_env_u32("FREERDP_SHADOW_H264_QP", 0, 0, 51);
+	server->h264QP = 0;
 #if defined(WITH_GFX_AV1)
 	/* libaom: cq-level 16 under 12 Mbit/s, cpu-used 10, rows on up to 4 threads (0) */
-	server->AV1BitRate =
-	    shadow_server_env_u32("FREERDP_SHADOW_AV1_TARGET_BITRATE", 12000, 0, 1000000);
-	server->AV1RateControlMode = (FREERDP_AV1_RATECONTROL)shadow_server_env_rate_control(
-	    "FREERDP_SHADOW_AV1_RATE_CONTROL", server->AV1BitRate);
-	server->AV1CQLevel = shadow_server_env_u32("FREERDP_SHADOW_AV1_CQ_LEVEL", 16, 1, 63);
-	server->AV1Threads = shadow_server_env_u32("FREERDP_SHADOW_AV1_THREADS", 0, 0, 64);
-	server->AV1Speed = shadow_server_env_u32("FREERDP_SHADOW_AV1_CPU_USED", 10, 0, 12);
+	server->AV1RateControlMode = FREERDP_AV1_CQ;
+	server->AV1BitRate = 12000;
+	server->AV1CQLevel = 16;
+	server->AV1Threads = 0;
+	server->AV1Speed = 10;
+#endif
+#if defined(WITH_GFX_AZURE)
+	server->HEVCBitRate = 500000;
+	server->HEVCRateControlMode = FREERDP_HEVC_VBR;
 #endif
 #if defined(WITH_GFX_AV2)
 	/* libavm: qp 100 under 10 Mbit/s, cpu-used 10, 4 threads on 2 tile columns, 4 reference
 	 * frames (libavm keeps 8, each a whole frame in 16 bits: 4 saves about 100 MB at 1080p in
 	 * 4:4:4); qp 160 left marks on scrolling text, 100 is 46 dB on it at 21 to 28 fps */
-	server->AV2BitRate =
-	    shadow_server_env_u32("FREERDP_SHADOW_AV2_TARGET_BITRATE", 10000, 0, 1000000);
-	server->AV2RateControlMode = (FREERDP_AV2_RATECONTROL)shadow_server_env_rate_control(
-	    "FREERDP_SHADOW_AV2_RATE_CONTROL", server->AV2BitRate);
-	server->AV2QP = shadow_server_env_u32("FREERDP_SHADOW_AV2_QP", 100, 1, 255);
-	server->AV2Threads =
-	    shadow_server_env_u32("FREERDP_SHADOW_AV2_THREADS", MIN(4, shadow_server_cpus()), 1, 64);
-	server->AV2Speed = shadow_server_env_u32("FREERDP_SHADOW_AV2_CPU_USED", 10, 0, 10);
-	server->AV2TileColumns = shadow_server_env_u32("FREERDP_SHADOW_AV2_TILE_COLUMNS", 1, 0, 6);
-	server->AV2DpbSize = shadow_server_env_u32("FREERDP_SHADOW_AV2_DPB_SIZE", 4, 1, 16);
+	server->AV2RateControlMode = FREERDP_AV2_CQ;
+	server->AV2BitRate = 10000;
+	server->AV2QP = 100;
+	server->AV2Threads = MIN(4, shadow_server_cpus());
+	server->AV2Speed = 10;
+	server->AV2TileColumns = 1;
+	server->AV2DpbSize = 4;
 #endif
+}
+
+/* FREERDP_SHADOW_CODEC, /codec's value: the configuration file's keys first, the environment's
+ * over them (the command line's /codec comes after both). A wrong value changes nothing and is
+ * logged with where it came from. */
+static void shadow_server_env_codec(rdpShadowServer* server)
+{
+	WINPR_ASSERT(server);
+
+	const char* name = "FREERDP_SHADOW_CODEC";
+	const char* origin = "";
+	const char* fileValue = shadow_config_file_value(name, &origin);
+	if (fileValue && !shadow_server_parse_codec(server, fileValue))
+		WLog_WARN(TAG, "%s=%s%s is not a /codec value: passed over", name, fileValue, origin);
+	// NOLINTNEXTLINE(concurrency-mt-unsafe)
+	const char* envValue = getenv(name);
+	/* the file's own value is in the environment too when the environment had none */
+	if (envValue && (*envValue != '\0') && !(fileValue && (strcmp(envValue, fileValue) == 0)) &&
+	    !shadow_server_parse_codec(server, envValue))
+		WLog_WARN(TAG, "%s=%s is not a /codec value: passed over", name, envValue);
 }
 
 /* The settings with an environment variable (and so a line in the configuration file) */
@@ -1810,6 +1801,7 @@ static void shadow_server_env_defaults(rdpShadowServer* server)
 {
 	WINPR_ASSERT(server);
 	shadow_server_encoder_defaults(server);
+	shadow_server_env_codec(server);
 	shadow_server_set_codec_order(server, nullptr, 0);
 
 	/* /gfx-stats-period: write the counters of each client every so many seconds; 0 (the default):
@@ -1844,10 +1836,6 @@ rdpShadowServer* shadow_server_new(void)
 	server->h264HwAccel = FALSE;
 	server->authentication = TRUE;
 	shadow_server_env_defaults(server);
-#if defined(WITH_GFX_AZURE)
-	server->HEVCBitRate = 500000;
-	server->HEVCRateControlMode = FREERDP_HEVC_VBR;
-#endif
 	server->settings = freerdp_settings_new(FREERDP_SETTINGS_SERVER_MODE);
 	/* The graphics pipeline (and with it AV1, AV2, H.264, progressive) unless -gfx: libfreerdp's
 	 * server settings leave it off by default, and a session manager starts the shadow server

@@ -12,6 +12,7 @@
 [\fB/monitors:\fP\fI<0,1,2,...>\fP]
 [\fB/subsystem:\fP\fI<name>[,<name>...]\fP]
 [\fB/rect:\fP\fI<x,y,w,h>\fP]
+[\fB/codec:\fP\fI<codec>:<key>:<value>[,...]\fP]
 [\fB/framerate:\fP\fI<1-120>\fP]
 [\fB/gfx-stats-period:\fP\fI<seconds>\fP]
 [\fB+auth\fP]
@@ -45,6 +46,17 @@ selects one, e.g. /subsystem:X11. Without a value the subsystems are listed with
 the monitors each finds; * marks the one that would be used.
 .IP /rect:<x,y,w,h>      
 Select rectangle within monitor to share.
+.IP /codec:<codec>:<key>:<value>[,<codec>:<key>:<value>...]
+The encoders' settings, for the codecs built in (bit rates in kbit/s):
+h264: rate-control:vbr|cqp, bitrate, qp:<0-51>;
+av1: rate-control:vbr|cbr|cq|q, bitrate, cq-level:<0-63>, threads:<0-64>, cpu-used:<0-12>;
+av2: rate-control:vbr|cbr|cq|q, bitrate, qp:<0-255>, threads:<1-64>, cpu-used:<0-10>,
+tile-columns:<0-6>, dpb-size:<1-16>;
+hevc: rate-control:vbr, bitrate. A key it does not name keeps its default; a wrong key or value
+is an error and changes nothing. The same value can come from FREERDP_SHADOW_CODEC in the
+configuration file and in the environment: the file's keys first, the environment's over them,
+the command line's over both; a wrong value there is logged and passed over. E.g.
+/codec:av1:rate-control:cq,av1:cq-level:26,av1:bitrate:4000,av1:threads:8.
 .IP /framerate:<1-120>
 The most frames per second the server captures and sends, for every subsystem
 and codec, e.g. /framerate:30. Without it each keeps its own: the encoders go

@@ -24,8 +24,9 @@
 
 /* the settings of the shadow servers (FREERDP_SHADOW_*) passed on, at most this many */
 #define SESMAN_ENV_MAX 32
-/* "--setenv=NAME=value" */
-#define SESMAN_ENV_LEN 256
+/* "--setenv=NAME=value": as long as a configuration file line, since FREERDP_SHADOW_CODEC
+ * carries every encoder setting in one value */
+#define SESMAN_ENV_LEN 1024
 
 /* Called for each setting that is not passed on, with why. */
 typedef void (*sesman_env_dropped_fn)(const char* entry, const char* why);
