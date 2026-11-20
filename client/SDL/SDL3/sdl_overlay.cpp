@@ -149,6 +149,12 @@ bool SdlOverlay::visible() const
 
 bool SdlOverlay::show(bool on)
 {
+	if (on && !_visible.exchange(true))
+	{
+		/* nothing was read while hidden: the averages start over, never across the gap */
+		std::scoped_lock lock(_mutex);
+		_restart = true;
+	}
 	_visible = on;
 	if (!on || !_sdl->isConnected())
 		return true;
@@ -253,7 +259,7 @@ bool SdlOverlay::update(int windowWidth, int windowHeight, const char* rendererN
 		_restart = false;
 	}
 	if (restart)
-		_prev.reset();
+		_history.clear();
 	if (!reading || !_visible)
 		return false;
 
@@ -272,8 +278,10 @@ bool SdlOverlay::update(int windowWidth, int windowHeight, const char* rendererN
 	const auto decoders = sdl::overlay::decoderRows(names, *reading);
 	_left.insert(_left.end(), decoders.begin(), decoders.end());
 	_server = sdl::overlay::serverRows(names, *reading);
-	_right = sdl::overlay::realtimeRows(names, *reading, _prev ? &*_prev : nullptr, view);
-	_prev = std::move(reading);
+	_right = sdl::overlay::realtimeRows(names, *reading, _history.latest(), view);
+	_history.add(std::move(*reading));
+	for (auto& row : sdl::overlay::averageRows(names, _history))
+		_right.push_back(std::move(row));
 	_generation++;
 	return true;
 }

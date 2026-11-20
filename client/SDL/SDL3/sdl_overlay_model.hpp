@@ -20,6 +20,7 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -71,6 +72,35 @@ namespace sdl::overlay
 		int windowHeight = 0;
 		uint64_t sessionSeconds = 0;
 	};
+
+	/** The readings of the last five minutes, oldest first, to average the rates over 5 s,
+	 * 1 min and 5 min. It keeps one reading older than five minutes as the base of that
+	 * window and drops the rest. */
+	class History
+	{
+	  public:
+		static constexpr uint64_t longestNs = 300ull * 1000000000ull;
+
+		/** a reading that is not newer than the last one starts the history over */
+		void add(Reading reading);
+		void clear();
+
+		/** @return the newest reading, or nullptr */
+		[[nodiscard]] const Reading* latest() const;
+		/** @return the newest reading at least ageNs older than the newest one, or nullptr
+		 * when the history does not reach that far back */
+		[[nodiscard]] const Reading* before(uint64_t ageNs) const;
+
+		[[nodiscard]] size_t size() const;
+
+	  private:
+		std::deque<Reading> _readings;
+	};
+
+	/** Rates over the last 1 s, 5 s, 1 min and 5 min: frames, network in and out. A window the
+	 * history does not cover yet, or in which a counter went down (a new connection), shows
+	 * "–". Nothing without a reading. */
+	[[nodiscard]] std::vector<Row> averageRows(const Names& names, const History& history);
 
 	/** The real-time part: picture, decoders, network and sound, as the web client's Info card
 	 * shows them. prev: the reading before now, or nullptr; a counter that went down gives no

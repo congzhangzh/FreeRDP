@@ -340,6 +340,58 @@ static sdl::overlay::Box box(float w, float h)
 	return { 0, 0, w, h };
 }
 
+/* frames, bytes in, bytes out: 30 frames and 125000 bytes (1000 kbit/s) in a second */
+static Reading counters(uint64_t seconds, uint64_t frames, uint64_t rx)
+{
+	Reading r;
+	r.ns = seconds * 1000000000ull;
+	r.values = { frames, rx, 0 };
+	return r;
+}
+
+static int checkAverages()
+{
+	const Names n({ "RDPGFX_FRAMES_DECODED", "NETWORK_BYTES_RECEIVED", "NETWORK_BYTES_SENT" });
+	sdl::overlay::History h;
+	CHECK(sdl::overlay::averageRows(n, h).empty());
+
+	h.add(counters(0, 0, 0));
+	auto rows = sdl::overlay::averageRows(n, h);
+	EXPECT(find(rows, "Frames"), "1 s – · 5 s – · 1 min – · 5 min – /s");
+
+	uint64_t frames = 0;
+	uint64_t rx = 0;
+	for (uint64_t t = 1; t <= 6; t++)
+		h.add(counters(t, frames += 30, rx += 125000));
+	rows = sdl::overlay::averageRows(n, h);
+	EXPECT(find(rows, "Frames"), "1 s 30.0 · 5 s 30.0 · 1 min – · 5 min – /s");
+	EXPECT(find(rows, "Network in"), "1 s 1000 · 5 s 1000 · 1 min – · 5 min – kbit/s");
+	EXPECT(find(rows, "Network out"), "1 s 0 · 5 s 0 · 1 min – · 5 min – kbit/s");
+
+	/* five minutes at 30 frames a second, then five seconds at 60 */
+	for (uint64_t t = 7; t <= 300; t++)
+		h.add(counters(t, frames += 30, rx += 125000));
+	for (uint64_t t = 301; t <= 305; t++)
+		h.add(counters(t, frames += 60, rx += 125000));
+	rows = sdl::overlay::averageRows(n, h);
+	/* 1 min: (55 * 30 + 5 * 60) / 60, 5 min: (295 * 30 + 5 * 60) / 300 */
+	EXPECT(find(rows, "Frames"), "1 s 60.0 · 5 s 60.0 · 1 min 32.5 · 5 min 30.5 /s");
+	/* five minutes and the base reading before them, no more */
+	CHECK(h.size() == 301);
+
+	/* a counter that went down is a new connection: no window reaches over it */
+	h.add(counters(306, 10, 0));
+	rows = sdl::overlay::averageRows(n, h);
+	EXPECT(find(rows, "Frames"), "1 s – · 5 s – · 1 min – · 5 min – /s");
+
+	/* a reading that is not newer starts over */
+	h.add(counters(306, 20, 0));
+	CHECK(h.size() == 1);
+	h.clear();
+	CHECK(!h.latest());
+	return 0;
+}
+
 static int checkLayout()
 {
 	const sdl::overlay::Box none{};
@@ -466,7 +518,7 @@ static int checkServer()
 int TestSDLOverlayModel([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
 {
 	for (auto* check : { checkNames, checkRates, checkLabels, checkNetworkAndAudio, checkClient,
-	                     checkLayout, checkServer })
+	                     checkAverages, checkLayout, checkServer })
 	{
 		const int rc = check();
 		if (rc != 0)

@@ -91,7 +91,7 @@ class SdlOverlay
 
 	/* SDL's thread only */
 	std::optional<sdl::overlay::Names> _names;
-	std::optional<sdl::overlay::Reading> _prev;
+	sdl::overlay::History _history;
 	std::vector<sdl::overlay::Row> _client;
 	std::vector<sdl::overlay::Row> _left;
 	std::vector<sdl::overlay::Row> _server;

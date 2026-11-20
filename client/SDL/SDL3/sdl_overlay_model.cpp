@@ -306,6 +306,86 @@ namespace sdl::overlay
 			rows.push_back({ "Bandwidth (measured by the server)",
 			                 (*kbps != 0) ? std::to_string(*kbps) + " kbit/s" : "not measured" });
 	}
+	void History::add(Reading reading)
+	{
+		if (!_readings.empty() && (reading.ns <= _readings.back().ns))
+			_readings.clear();
+		_readings.push_back(std::move(reading));
+
+		/* keep the newest reading that is at least five minutes old: the 5 min window's base */
+		const uint64_t newest = _readings.back().ns;
+		while ((_readings.size() > 1) && (newest - _readings.at(1).ns >= longestNs))
+			_readings.pop_front();
+	}
+
+	void History::clear()
+	{
+		_readings.clear();
+	}
+
+	const Reading* History::latest() const
+	{
+		return _readings.empty() ? nullptr : &_readings.back();
+	}
+
+	const Reading* History::before(uint64_t ageNs) const
+	{
+		if (_readings.empty())
+			return nullptr;
+		const uint64_t newest = _readings.back().ns;
+		for (auto it = _readings.rbegin(); it != _readings.rend(); ++it)
+		{
+			if (newest - it->ns >= ageNs)
+				return &*it;
+		}
+		return nullptr;
+	}
+
+	size_t History::size() const
+	{
+		return _readings.size();
+	}
+
+	std::vector<Row> averageRows(const Names& names, const History& history)
+	{
+		std::vector<Row> rows;
+		const Reading* now = history.latest();
+		if (!now)
+			return rows;
+
+		struct Window
+		{
+			const char* label;
+			uint64_t ns;
+		};
+		constexpr std::array<Window, 4> windows = { {
+			{ "1 s", 1 }, /* the reading before, about a second earlier */
+			{ "5 s", 5000000000ull },
+			{ "1 min", 60000000000ull },
+			{ "5 min", History::longestNs },
+		} };
+
+		const auto averaged =
+		    [&](const char* label, const char* name, double scale, int precision, const char* unit)
+		{
+			if (!names.has(name))
+				return;
+			std::string value;
+			for (const auto& w : windows)
+			{
+				auto r = rate(names, *now, history.before(w.ns), name);
+				if (r)
+					*r *= scale;
+				value +=
+				    (value.empty() ? "" : " · ") + std::string(w.label) + " " + per(r, precision);
+			}
+			rows.push_back({ label, value + " " + unit });
+		};
+		averaged("Frames", "RDPGFX_FRAMES_DECODED", 1.0, 1, "/s");
+		averaged("Network in", "NETWORK_BYTES_RECEIVED", 8.0 / 1000.0, 0, "kbit/s");
+		averaged("Network out", "NETWORK_BYTES_SENT", 8.0 / 1000.0, 0, "kbit/s");
+		return rows;
+	}
 
 	Names::Names(const std::vector<std::string>& names)
 	{
