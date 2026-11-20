@@ -75,6 +75,7 @@ struct S_FREERDP_AV1_CONTEXT
 	bool fullFrameNext;
 	UINT32 cqLevel; /* FREERDP_AV1_CONTEXT_OPTION_CQ_LEVEL, 0: libaom's */
 	UINT32 speed;   /* FREERDP_AV1_CONTEXT_OPTION_SPEED */
+	UINT32 tileColumns; /* FREERDP_AV1_CONTEXT_OPTION_TILE_COLUMNS, log2 */
 	/* encoder statistics, see av1_encoder_stats() */
 	struct
 	{
@@ -206,6 +207,8 @@ static BOOL av1_aom_apply_controls(FREERDP_AV1_CONTEXT* av1)
 		/* screen content tools (palette, intra block copy): sharp text at a lower bit rate */
 		{ AV1E_SET_TUNE_CONTENT, AOM_CONTENT_SCREEN, "AV1E_SET_TUNE_CONTENT" },
 		{ AV1E_SET_ROW_MT, 1, "AV1E_SET_ROW_MT" },
+		/* with one tile the main thread packs the whole bitstream: the serial part of a frame */
+		{ AV1E_SET_TILE_COLUMNS, (int)av1->tileColumns, "AV1E_SET_TILE_COLUMNS" },
 		/* the quality the two quality modes keep; the other modes ignore it */
 		{ AOME_SET_CQ_LEVEL, (int)av1->cqLevel, "AOME_SET_CQ_LEVEL" },
 	};
@@ -324,6 +327,11 @@ BOOL freerdp_av1_context_set_option(FREERDP_AV1_CONTEXT* av1, FREERDP_AV1_CONTEX
 				return FALSE;
 			av1->speed = value;
 			break;
+		case FREERDP_AV1_CONTEXT_OPTION_TILE_COLUMNS:
+			if (!av1->encoder || (value > 6))
+				return FALSE;
+			av1->tileColumns = value;
+			break;
 		default:
 			WLog_Print(av1->log, WLOG_ERROR, "Unknown FREERDP_AV1_CONTEXT_OPTION[0x%08" PRIx32 "]",
 			           option);
@@ -374,6 +382,10 @@ UINT32 freerdp_av1_context_get_option(FREERDP_AV1_CONTEXT* av1, FREERDP_AV1_CONT
 			if (!av1->encoder)
 				return 0;
 			return av1->speed;
+		case FREERDP_AV1_CONTEXT_OPTION_TILE_COLUMNS:
+			if (!av1->encoder)
+				return 0;
+			return av1->tileColumns;
 		default:
 			WLog_Print(av1->log, WLOG_ERROR, "Unknown FREERDP_AV1_CONTEXT_OPTION[0x%08" PRIx32 "]",
 			           option);
@@ -1143,9 +1155,10 @@ BOOL freerdp_av1_context_reset(FREERDP_AV1_CONTEXT* av1, UINT32 width, UINT32 he
 		const UINT32 mode = (UINT32)av1->ecfg.rc_end_usage;
 		WLog_Print(av1->log, WLOG_DEBUG,
 		           "AV1 encoder %" PRIu32 "x%" PRIu32 ": %s, cq-level %" PRIu32 ", %" PRIu32
-		           " kbit/s, cpu-used %" PRIu32 ", %u thread(s)",
+		           " kbit/s, cpu-used %" PRIu32 ", %u thread(s), %u tile column(s)",
 		           width, height, (mode < ARRAYSIZE(modes)) ? modes[mode] : "?", av1->cqLevel,
-		           av1->ecfg.rc_target_bitrate, av1->speed, av1->ecfg.g_threads);
+		           av1->ecfg.rc_target_bitrate, av1->speed, av1->ecfg.g_threads,
+		           1u << av1->tileColumns);
 #else
 		WLog_Print(av1->log, WLOG_ERROR,
 		           "AV1 encoder requires libaom, recompile with '-DWITH_AOM=ON'");

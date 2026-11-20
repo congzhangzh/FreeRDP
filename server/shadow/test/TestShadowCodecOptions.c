@@ -27,6 +27,7 @@ typedef struct
 	UINT32 av1CQLevel;
 	UINT32 av1Threads;
 	UINT32 av1Speed;
+	UINT32 av1TileColumns;
 #endif
 #if defined(WITH_GFX_AV2)
 	FREERDP_AV2_RATECONTROL av2Mode;
@@ -55,6 +56,7 @@ static void get_fields(const rdpShadowServer* server, FIELDS* fields)
 	fields->av1CQLevel = server->AV1CQLevel;
 	fields->av1Threads = server->AV1Threads;
 	fields->av1Speed = server->AV1Speed;
+	fields->av1TileColumns = server->AV1TileColumns;
 #endif
 #if defined(WITH_GFX_AV2)
 	fields->av2Mode = server->AV2RateControlMode;
@@ -97,7 +99,8 @@ static BOOL expect_defaults(void)
 	          (server->h264FrameRate == 30);
 #if defined(WITH_GFX_AV1)
 	ok = ok && (server->AV1RateControlMode == FREERDP_AV1_CQ) && (server->AV1BitRate == 12000) &&
-	     (server->AV1CQLevel == 16) && (server->AV1Threads == 0) && (server->AV1Speed == 10);
+	     (server->AV1CQLevel == 16) && (server->AV1Threads == 0) && (server->AV1Speed == 10) &&
+	     (server->AV1TileColumns == 0);
 #endif
 #if defined(WITH_GFX_AV2)
 	ok = ok && (server->AV2RateControlMode == FREERDP_AV2_CQ) && (server->AV2BitRate == 10000) &&
@@ -201,6 +204,13 @@ static void av1_limits(FIELDS* f)
 	f->av1CQLevel = 63;
 	f->av1Threads = 64;
 	f->av1Speed = 12;
+	f->av1TileColumns = 6;
+}
+
+static void av1_tiles(FIELDS* f)
+{
+	f->av1Threads = 8;
+	f->av1TileColumns = 2;
 }
 
 static void av1_library(FIELDS* f)
@@ -302,12 +312,15 @@ int TestShadowCodecOptions(int argc, char* argv[])
 	            "/codec:av1:rate-control:cq,av1:cq-level:26,av1:bitrate:4000,av1:threads:8", TRUE,
 	            av1_owner) &&
 	     ok;
-	ok = expect("av1 limits", "/codec:av1:cq-level:63,av1:threads:64,av1:cpu-used:12", TRUE,
+	ok = expect("av1 limits",
+	            "/codec:av1:cq-level:63,av1:threads:64,av1:cpu-used:12,av1:tile-columns:6", TRUE,
 	            av1_limits) &&
 	     ok;
 	ok = expect("av1 library's", "/codec:av1:cq-level:0,av1:threads:0,av1:cpu-used:0", TRUE,
 	            av1_library) &&
 	     ok;
+	ok = expect("av1 tiles", "/codec:av1:threads:8,av1:tile-columns:2", TRUE, av1_tiles) && ok;
+	ok = expect("av1 tile-columns 7", "/codec:av1:tile-columns:7", FALSE, nullptr) && ok;
 	ok = expect("av1 cq-level 64", "/codec:av1:cq-level:64", FALSE, nullptr) && ok;
 	ok = expect("av1 threads 65", "/codec:av1:threads:65", FALSE, nullptr) && ok;
 	ok = expect("av1 cpu-used 13", "/codec:av1:cpu-used:13", FALSE, nullptr) && ok;

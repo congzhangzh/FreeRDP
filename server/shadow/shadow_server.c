@@ -270,7 +270,7 @@ static BOOL shadow_server_parse_av_mode(const char* text, UINT32* mode)
 /* /codec:<codec>:<key>:<value>[,<codec>:<key>:<value>...], for the codecs built in:
  *   h264: rate-control:vbr|cqp, bitrate:<kbit/s>, qp:<0-51>
  *   av1: rate-control:vbr|cbr|cq|q, bitrate:<kbit/s>, cq-level:<0-63>, threads:<0-64>,
- *        cpu-used:<0-12>
+ *        cpu-used:<0-12>, tile-columns:<0-6> (log2)
  *   av2: rate-control:vbr|cbr|cq|q, bitrate:<kbit/s>, qp:<0-255>, threads:<1-64>,
  *        cpu-used:<0-10>, tile-columns:<0-6> (log2), dpb-size:<1-16>
  *   hevc: rate-control:vbr, bitrate:<kbit/s>
@@ -291,6 +291,7 @@ static BOOL shadow_server_parse_codec(rdpShadowServer* server, const char* value
 	UINT32 av1CQLevel = server->AV1CQLevel;
 	UINT32 av1Threads = server->AV1Threads;
 	UINT32 av1Speed = server->AV1Speed;
+	UINT32 av1TileColumns = server->AV1TileColumns;
 #endif
 #if defined(WITH_GFX_AV2)
 	UINT32 av2Mode = (UINT32)server->AV2RateControlMode;
@@ -347,6 +348,8 @@ static BOOL shadow_server_parse_codec(rdpShadowServer* server, const char* value
 				ok = shadow_server_parse_u32(v, 0, 64, &av1Threads);
 			else if ((v = shadow_server_after(rest, "cpu-used:")) != nullptr)
 				ok = shadow_server_parse_u32(v, 0, 12, &av1Speed);
+			else if ((v = shadow_server_after(rest, "tile-columns:")) != nullptr)
+				ok = shadow_server_parse_u32(v, 0, 6, &av1TileColumns);
 			else
 				ok = FALSE;
 		}
@@ -406,6 +409,7 @@ static BOOL shadow_server_parse_codec(rdpShadowServer* server, const char* value
 	server->AV1CQLevel = av1CQLevel;
 	server->AV1Threads = av1Threads;
 	server->AV1Speed = av1Speed;
+	server->AV1TileColumns = av1TileColumns;
 #endif
 #if defined(WITH_GFX_AV2)
 	server->AV2RateControlMode = (FREERDP_AV2_RATECONTROL)av2Mode;
@@ -1757,6 +1761,7 @@ static void shadow_server_encoder_defaults(rdpShadowServer* server)
 	server->AV1CQLevel = 16;
 	server->AV1Threads = 0;
 	server->AV1Speed = 10;
+	server->AV1TileColumns = 0;
 #endif
 #if defined(WITH_GFX_AZURE)
 	server->HEVCBitRate = 500000;

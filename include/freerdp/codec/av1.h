@@ -51,7 +51,10 @@ extern "C"
 		FREERDP_AV1_CONTEXT_OPTION_CQ_LEVEL, /**< the quality of FREERDP_AV1_Q and FREERDP_AV1_CQ,
 		                                          1 to 63 (lower is better); 0 leaves libaom's */
 		FREERDP_AV1_CONTEXT_OPTION_THREADS,  /**< encoder threads, 0 for up to 4 */
-		FREERDP_AV1_CONTEXT_OPTION_SPEED     /**< libaom's cpu-used, 0 (slowest) to 12 */
+		FREERDP_AV1_CONTEXT_OPTION_SPEED,    /**< libaom's cpu-used, 0 (slowest) to 12 */
+		FREERDP_AV1_CONTEXT_OPTION_TILE_COLUMNS /**< log2 of the tile columns, 0 (one) to 6;
+		                                             the threads write the tiles' bitstreams
+		                                             side by side */
 	} FREERDP_AV1_CONTEXT_OPTION;
 
 	WINPR_ATTR_NODISCARD

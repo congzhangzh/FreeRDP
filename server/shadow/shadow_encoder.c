@@ -339,7 +339,9 @@ static int shadow_encoder_init_av1(rdpShadowEncoder* encoder, UINT32 codecs)
 	    !freerdp_av1_context_set_option(encoder->av1, FREERDP_AV1_CONTEXT_OPTION_THREADS,
 	                                    server->AV1Threads) ||
 	    !freerdp_av1_context_set_option(encoder->av1, FREERDP_AV1_CONTEXT_OPTION_SPEED,
-	                                    server->AV1Speed))
+	                                    server->AV1Speed) ||
+	    !freerdp_av1_context_set_option(encoder->av1, FREERDP_AV1_CONTEXT_OPTION_TILE_COLUMNS,
+	                                    server->AV1TileColumns))
 		goto fail;
 
 	/* the options first, so the encoder starts once */

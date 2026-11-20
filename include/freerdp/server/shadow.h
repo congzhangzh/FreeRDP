@@ -318,6 +318,9 @@ extern "C"
 		 * either way.
 		 *  @since version 3.34.0 */
 		UINT32 statsPeriod;
+		/** FREERDP_AV1_CONTEXT_OPTION_TILE_COLUMNS (log2; /codec av1:tile-columns), 0 when the
+		 *  build has no AV1 @since version 3.34.0 */
+		UINT32 AV1TileColumns;
 	};
 
 	struct rdp_shadow_surface

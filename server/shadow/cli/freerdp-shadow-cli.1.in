@@ -49,7 +49,8 @@ Select rectangle within monitor to share.
 .IP /codec:<codec>:<key>:<value>[,<codec>:<key>:<value>...]
 The encoders' settings, for the codecs built in (bit rates in kbit/s):
 h264: rate-control:vbr|cqp, bitrate, qp:<0-51>;
-av1: rate-control:vbr|cbr|cq|q, bitrate, cq-level:<0-63>, threads:<0-64>, cpu-used:<0-12>;
+av1: rate-control:vbr|cbr|cq|q, bitrate, cq-level:<0-63>, threads:<0-64>, cpu-used:<0-12>,
+tile-columns:<0-6>;
 av2: rate-control:vbr|cbr|cq|q, bitrate, qp:<0-255>, threads:<1-64>, cpu-used:<0-10>,
 tile-columns:<0-6>, dpb-size:<1-16>;
 hevc: rate-control:vbr, bitrate. A key it does not name keeps its default; a wrong key or value
