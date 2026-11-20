@@ -66,7 +66,8 @@ struct S_FREERDP_AV1_CONTEXT
 #if defined(WITH_LIBAOM)
 	aom_codec_ctx_t ctx;
 	aom_codec_enc_cfg_t ecfg;
-	aom_codec_pts_t framecount;
+	aom_codec_pts_t pts; /* the next frame's time in ms (AV1_AOM_TIMEBASE) */
+	UINT64 lastFrameNS;  /* when the last frame came, 0: none yet */
 	aom_enc_frame_flags_t eflags;
 	aom_codec_flags_t flags;
 	aom_codec_iface_t* iface;
@@ -130,6 +131,30 @@ static void av1_aom_destroy(FREERDP_AV1_CONTEXT* av1)
  * raises it to 7 only for frames of 1080 lines or more, so smaller desktops got the slowest
  * search. */
 #define AV1_AOM_RT_SPEED 10
+
+/* Rate control gives a frame about target bit rate x the frame's duration, and takes the frame
+ * rate from the durations. Frames come on damage, not at a fixed rate, so each frame gets the real
+ * time since the last one, in ms, kept between 1/200 s and 1/10 s: a frame after a pause gets at
+ * most 100 ms of bits, so it is not one big frame that holds up the next ones. The first frame
+ * gets 1/30 s, libaom's own guess. */
+#define AV1_AOM_TIMEBASE 1000
+#define AV1_AOM_FIRST_FRAME_MS 33
+#define AV1_AOM_MIN_FRAME_MS 5
+#define AV1_AOM_MAX_FRAME_MS 100
+
+static unsigned long av1_aom_frame_duration(FREERDP_AV1_CONTEXT* av1)
+{
+	const UINT64 now = winpr_GetTickCount64NS();
+	UINT64 ms = AV1_AOM_FIRST_FRAME_MS;
+	if (av1->lastFrameNS != 0)
+		ms = (now - av1->lastFrameNS) / 1000000ull;
+	av1->lastFrameNS = now;
+	if (ms < AV1_AOM_MIN_FRAME_MS)
+		return AV1_AOM_MIN_FRAME_MS;
+	if (ms > AV1_AOM_MAX_FRAME_MS)
+		return AV1_AOM_MAX_FRAME_MS;
+	return (unsigned long)ms;
+}
 
 /* libaom encodes on one thread by default; more than 4 did not make 1080p faster. */
 #define AV1_AOM_MAX_THREADS 4
@@ -553,8 +578,10 @@ INT32 freerdp_av1_compress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, DWORD
 	img->planes[1] = av1->yuvdata[1];
 	img->planes[2] = av1->yuvdata[2];
 
-	const aom_codec_err_t rc = aom_codec_encode(&av1->ctx, img, ++av1->framecount, 1, av1->eflags);
+	const unsigned long duration = av1_aom_frame_duration(av1);
+	const aom_codec_err_t rc = aom_codec_encode(&av1->ctx, img, av1->pts, duration, av1->eflags);
 	aom_img_free(img);
+	av1->pts += WINPR_ASSERTING_INT_CAST(aom_codec_pts_t, duration);
 
 	if (rc != AOM_CODEC_OK)
 	{
@@ -1103,7 +1130,8 @@ BOOL freerdp_av1_context_reset(FREERDP_AV1_CONTEXT* av1, UINT32 width, UINT32 he
 			return FALSE;
 		}
 
-		av1->framecount = 0;
+		av1->pts = 0;
+		av1->lastFrameNS = 0;
 		av1->eflags = 0; // AOM_EFLAG_FORCE_KF;
 		av1->initialized = true;
 		av1->fullFrameNext = true;
@@ -1270,6 +1298,8 @@ FREERDP_AV1_CONTEXT* freerdp_av1_context_new(BOOL Compressor)
 			goto fail;
 		}
 		ctx->ecfg.g_threads = av1_aom_threads();
+		ctx->ecfg.g_timebase.num = 1;
+		ctx->ecfg.g_timebase.den = AV1_AOM_TIMEBASE;
 		ctx->speed = AV1_AOM_RT_SPEED;
 #else
 		WLog_Print(ctx->log, WLOG_ERROR,
