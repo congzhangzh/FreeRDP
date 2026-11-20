@@ -90,7 +90,7 @@ Environment=FREERDP_SHADOW_CODEC=av1:rate-control:cq,av1:cq-level:26,av1:bitrate
 | `av1:cq-level` | 16 | libaom's quality, 0 (libaom's) to 63, lower is better |
 | `av1:threads` | 0 | 0 for up to 4 |
 | `av1:cpu-used` | 10 | 0 (slowest) to 12 |
-| `av1:tile-columns` | 0 | log2, 0 to 6: 0 is one column, 2 is four |
+| `av1:tile-columns` | 2 | log2, 0 to 6: 2 is four columns, 0 one |
 | `av2:rate-control` | `cq` | as for AV1 |
 | `av2:bitrate` | 10000 | kbit/s, as for AV1 |
 | `av2:qp` | 100 | libavm's quantizer, 0 (libavm's) to 255, lower is better |

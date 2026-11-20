@@ -1755,13 +1755,16 @@ static void shadow_server_encoder_defaults(rdpShadowServer* server)
 	server->h264FrameRate = 30;
 	server->h264QP = 0;
 #if defined(WITH_GFX_AV1)
-	/* libaom: cq-level 16 under 12 Mbit/s, cpu-used 10, rows on up to 4 threads (0) */
+	/* libaom: cq-level 16 under 12 Mbit/s, cpu-used 10, rows on up to 4 threads (0), 4 tile
+	 * columns: the threads write the bitstream side by side (2560x1440 full motion, 8 threads:
+	 * libaom's serial part 18-20 -> 13-13.5 ms a frame, no seams, the same bytes; 8 columns
+	 * were slower again) */
 	server->AV1RateControlMode = FREERDP_AV1_CQ;
 	server->AV1BitRate = 12000;
 	server->AV1CQLevel = 16;
 	server->AV1Threads = 0;
 	server->AV1Speed = 10;
-	server->AV1TileColumns = 0;
+	server->AV1TileColumns = 2;
 #endif
 #if defined(WITH_GFX_AZURE)
 	server->HEVCBitRate = 500000;

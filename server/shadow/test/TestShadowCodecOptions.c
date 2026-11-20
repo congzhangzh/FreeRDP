@@ -100,7 +100,7 @@ static BOOL expect_defaults(void)
 #if defined(WITH_GFX_AV1)
 	ok = ok && (server->AV1RateControlMode == FREERDP_AV1_CQ) && (server->AV1BitRate == 12000) &&
 	     (server->AV1CQLevel == 16) && (server->AV1Threads == 0) && (server->AV1Speed == 10) &&
-	     (server->AV1TileColumns == 0);
+	     (server->AV1TileColumns == 2);
 #endif
 #if defined(WITH_GFX_AV2)
 	ok = ok && (server->AV2RateControlMode == FREERDP_AV2_CQ) && (server->AV2BitRate == 10000) &&
