@@ -167,7 +167,7 @@ fail:
 }
 
 WINPR_ATTR_NODISCARD
-static BOOL checkLastDecode(FREERDP_AV1_CONTEXT* dec, FREERDP_DECODE_STATUS status)
+static BOOL checkLastDecode(FREERDP_AV1_CONTEXT* dec, FREERDP_DECODE_STATUS status, BOOL keyFrame)
 {
 	FREERDP_DECODE_RESULT result = WINPR_C_ARRAY_INIT;
 	if (!freerdp_av1_context_get_last_decode(dec, &result))
@@ -182,10 +182,16 @@ static BOOL checkLastDecode(FREERDP_AV1_CONTEXT* dec, FREERDP_DECODE_STATUS stat
 	if (result.backend && (strcmp(result.backend, "VideoToolbox") == 0))
 		backend = "VideoToolbox";
 #endif
-	if ((result.status != status) || !result.backend || (strcmp(result.backend, backend) != 0))
+	const BOOL hardware = (strcmp(backend, "VideoToolbox") == 0);
+	if ((result.status != status) || (!hardware && (result.keyFrame != keyFrame)) ||
+	    result.fellBack || (!hardware && (result.hardware != FREERDP_DECODE_HARDWARE_NO)) ||
+	    !result.backend || (strcmp(result.backend, backend) != 0))
 	{
-		(void)fprintf(stderr, "[%s] got status %d backend %s, expected status %d backend %s\n",
-		              __func__, result.status, result.backend, status, backend);
+		(void)fprintf(stderr,
+		              "[%s] got status %d keyFrame %d fellBack %d hardware %d backend %s, "
+		              "expected status %d keyFrame %d\n",
+		              __func__, result.status, result.keyFrame, result.fellBack, result.hardware,
+		              result.backend, status, keyFrame);
 		return FALSE;
 	}
 	return TRUE;
@@ -256,26 +262,26 @@ static BOOL testLastDecode(void)
 		headersStatus = FREERDP_DECODE_NO_PICTURE;
 #endif
 	if (((res >= 0) != (headersStatus == FREERDP_DECODE_NO_PICTURE)) ||
-	    !checkLastDecode(dec, headersStatus))
+	    !checkLastDecode(dec, headersStatus, FALSE))
 		goto fail;
 
-	/* cut inside of the frame, the size of its OBU says more: refused */
+	/* cut inside of the frame, the size of its OBU says more: refused, but still the key frame
+	 * it was sent as */
 	if (freerdp_av1_decompress(dec, dst, dstsize / 2, out, format, stride, width, height, &rect,
 	                           1) >= 0)
 		goto fail;
-	if (!checkLastDecode(dec, FREERDP_DECODE_FAILED))
+	if (!checkLastDecode(dec, FREERDP_DECODE_FAILED, TRUE))
 		goto fail;
 
 	/* cut right after the first header byte */
 	if (freerdp_av1_decompress(dec, dst, 1, out, format, stride, width, height, &rect, 1) >= 0)
 		goto fail;
-	if (!checkLastDecode(dec, FREERDP_DECODE_FAILED))
+	if (!checkLastDecode(dec, FREERDP_DECODE_FAILED, FALSE))
 		goto fail;
 
-	/* the whole key frame */
 	if (freerdp_av1_decompress(dec, dst, dstsize, out, format, stride, width, height, &rect, 1) < 0)
 		goto fail;
-	if (!checkLastDecode(dec, FREERDP_DECODE_PICTURE))
+	if (!checkLastDecode(dec, FREERDP_DECODE_PICTURE, TRUE))
 		goto fail;
 
 	/* the next frame is predicted from the first one */
@@ -288,7 +294,7 @@ static BOOL testLastDecode(void)
 		goto fail;
 	if (freerdp_av1_decompress(dec, dst, dstsize, out, format, stride, width, height, &rect, 1) < 0)
 		goto fail;
-	if (!checkLastDecode(dec, FREERDP_DECODE_PICTURE))
+	if (!checkLastDecode(dec, FREERDP_DECODE_PICTURE, FALSE))
 		goto fail;
 
 	rc = TRUE;

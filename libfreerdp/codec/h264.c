@@ -205,11 +205,53 @@ static BOOL yuv444_planes_decode(H264_CONTEXT* h264, DWORD DstFormat, BYTE* pDst
 	return TRUE;
 }
 
+/* The first slice decides, what comes before it (SPS, PPS, SEI) is short, so this costs little.
+ * A recovery point SEI makes a random access point as well, but no key frame.
+ * H.265 has a 2 byte NAL header with the type in bits 1-6: IRAP pictures (16-23) are the key
+ * frames, the other types below 32 are slices as well. */
+WINPR_ATTR_NODISCARD
+static BOOL h264_is_key_frame(const BYTE* data, size_t size, BOOL hevc)
+{
+	if (!data)
+		return FALSE;
+
+	size_t pos = 0;
+	while (pos + 3 < size)
+	{
+		if (data[pos + 2] > 1)
+			pos += 3; /* no start code can begin at any of these three bytes */
+		else if ((data[pos] == 0) && (data[pos + 1] == 0) && (data[pos + 2] == 1))
+		{
+			if (hevc)
+			{
+				const BYTE type = (data[pos + 3] >> 1) & 0x3f;
+				if (type < 32)
+					return (type >= 16) && (type <= 23);
+			}
+			else
+			{
+				const BYTE type = data[pos + 3] & 0x1f;
+				if (type == 5)
+					return TRUE;
+				if ((type >= 1) && (type <= 4))
+					return FALSE;
+			}
+			pos += 3;
+		}
+		else
+			pos++;
+	}
+	return FALSE;
+}
+
 /* A failure is what remains unless the decode gets to its end */
-static void h264_last_decode_begin(H264_CONTEXT* h264)
+static void h264_last_decode_begin(H264_CONTEXT* h264, BOOL keyFrame)
 {
 	WINPR_ASSERT(h264);
 	const FREERDP_DECODE_RESULT result = { .status = FREERDP_DECODE_FAILED,
+		                                   .keyFrame = keyFrame,
+		                                   .fellBack = FALSE,
+		                                   .hardware = h264->decoderHardware,
 		                                   .backend =
 		                                       h264->subsystem ? h264->subsystem->name : nullptr };
 	h264->lastDecode = result;
@@ -242,7 +284,7 @@ INT32 h26X_decompress(H264_CONTEXT* h264, const BYTE* pSrcData, UINT32 SrcSize, 
 	if (!h264)
 		return -1001;
 
-	h264_last_decode_begin(h264);
+	h264_last_decode_begin(h264, h264_is_key_frame(pSrcData, SrcSize, h264->hevc));
 
 	if (h264->Compressor)
 		return -1001;
@@ -856,7 +898,10 @@ INT32 avc444_decompress(H264_CONTEXT* h264, BYTE op, const RECTANGLE_16* regionR
 	if (!h264)
 		return -1001;
 
-	h264_last_decode_begin(h264);
+	/* only op 0 has a second stream */
+	h264_last_decode_begin(h264,
+	                       h264_is_key_frame(pSrcData, SrcSize, FALSE) ||
+	                           ((op == 0) && h264_is_key_frame(pAuxSrcData, AuxSrcSize, FALSE)));
 
 	if (!regionRects || !pSrcData || !pDstData || h264->Compressor)
 		return -1001;
@@ -996,6 +1041,7 @@ static BOOL h264_context_init(H264_CONTEXT* h264)
 
 	h264->subsystem = nullptr;
 	h264->yuv444 = FALSE;
+	h264->decoderHardware = FREERDP_DECODE_HARDWARE_UNKNOWN;
 	if (!InitOnceExecuteOnce(&subsystems_once, h264_register_subsystems, nullptr, nullptr))
 		return FALSE;
 

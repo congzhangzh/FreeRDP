@@ -217,10 +217,12 @@ extern "C"
 	 *
 	 *  Then, for each codec ID and named after it (RDPGFX_CODECID_<codec>_*), what its decoder
 	 *  reported: surface commands that gave a picture (_PICTURES), that the decoder refused
-	 *  (_FAILED), that it took without a picture to show (_NO_PICTURE), the nanoseconds all
-	 *  decodes took (_DECODE_NS_SUM), the longest one (_DECODE_NS_MAX) and the nanoseconds since
-	 *  the last picture, 0 before the first one (_LAST_PICTURE_AGE_NS). A renderer that reports
-	 *  no decode results leaves them at 0.
+	 *  (_FAILED), that it took without a picture to show (_NO_PICTURE), that carried a key frame
+	 *  whatever became of them (_KEY_FRAMES), the nanoseconds all decodes took (_DECODE_NS_SUM),
+	 *  the longest one (_DECODE_NS_MAX), the nanoseconds since the last picture, 0 before the
+	 *  first one (_LAST_PICTURE_AGE_NS), the last FREERDP_DECODE_HARDWARE value (_HARDWARE) and
+	 *  the decoders given up on (_FALLBACKS). A renderer that reports no decode results leaves
+	 *  them at 0.
 	 *
 	 *  @return The number of GFX stats indices that will return a value
 	 *  @since version 3.27.0

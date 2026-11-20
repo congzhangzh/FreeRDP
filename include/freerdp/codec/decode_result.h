@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include <winpr/wtypes.h>
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -34,6 +36,16 @@ extern "C"
 		                                a key frame or buffers. Decoders can not tell which */
 	} FREERDP_DECODE_STATUS;
 
+	/** @brief Whether a decoder runs in hardware
+	 *  @since version 3.34.0
+	 */
+	typedef enum
+	{
+		FREERDP_DECODE_HARDWARE_UNKNOWN = 0, /**< the backend does not say */
+		FREERDP_DECODE_HARDWARE_NO,
+		FREERDP_DECODE_HARDWARE_YES
+	} FREERDP_DECODE_HARDWARE;
+
 	/** @brief The result of the last decode of a decoder context
 	 *
 	 *  The return values of the decompress functions do not tell a picture from none, and
@@ -44,6 +56,9 @@ extern "C"
 	typedef struct
 	{
 		FREERDP_DECODE_STATUS status;
+		BOOL keyFrame; /**< the input carried a key frame, whatever became of it */
+		BOOL fellBack; /**< this decode gave up on the backend used so far */
+		FREERDP_DECODE_HARDWARE hardware;
 		const char* backend; /**< valid for the lifetime of the process, \b nullptr if unknown */
 	} FREERDP_DECODE_RESULT;
 

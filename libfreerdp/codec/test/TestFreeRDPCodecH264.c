@@ -714,26 +714,58 @@ fail:
 #endif
 
 WINPR_ATTR_NODISCARD
-static BOOL checkLastDecode(H264_CONTEXT* h264, FREERDP_DECODE_STATUS status)
+static BOOL checkLastDecode(H264_CONTEXT* h264, FREERDP_DECODE_STATUS status, BOOL keyFrame)
 {
 	FREERDP_DECODE_RESULT result = WINPR_C_ARRAY_INIT;
 	if (!h264_context_get_last_decode(h264, &result))
 		return FALSE;
-	if ((result.status != status) || !result.backend)
+	if ((result.status != status) || (result.keyFrame != keyFrame) || result.fellBack ||
+	    !result.backend)
 	{
-		(void)fprintf(stderr, "[%s] got status %d backend %s, expected status %d\n", __func__,
-		              result.status, result.backend, status);
+		(void)fprintf(stderr,
+		              "[%s] got status %d keyFrame %d fellBack %d backend %s, "
+		              "expected status %d keyFrame %d\n",
+		              __func__, result.status, result.keyFrame, result.fellBack, result.backend,
+		              status, keyFrame);
 		return FALSE;
 	}
 #if defined(TEST_OPENH264_DECODES)
-	if (strcmp(result.backend, "OpenH264") != 0)
+	if ((strcmp(result.backend, "OpenH264") != 0) ||
+	    (result.hardware != FREERDP_DECODE_HARDWARE_NO))
 	{
-		(void)fprintf(stderr, "[%s] got backend %s\n", __func__, result.backend);
+		(void)fprintf(stderr, "[%s] got backend %s hardware %d\n", __func__, result.backend,
+		              result.hardware);
 		return FALSE;
 	}
 #endif
 	return TRUE;
 }
+
+typedef struct
+{
+	const BYTE* data;
+	UINT32 size;
+	BOOL keyFrame;
+} KEY_FRAME_SCAN;
+
+static const KEY_FRAME_SCAN keyFrameScans[] = {
+	{ (const BYTE*)"\x00\x00\x01\x65\x88", 5, TRUE },
+	/* a four byte start code */
+	{ (const BYTE*)"\x00\x00\x00\x01\x65\x88", 6, TRUE },
+	/* the start code at each offset of a step */
+	{ (const BYTE*)"\xff\x00\x00\x01\x65\x88", 6, TRUE },
+	{ (const BYTE*)"\xff\xff\x00\x00\x01\x65\x88", 7, TRUE },
+	{ (const BYTE*)"\xff\xff\xff\x00\x00\x01\x65\x88", 8, TRUE },
+	{ (const BYTE*)"\x00\x00\x02\x00\x00\x01\x65\x88", 8, TRUE },
+	/* after a parameter set */
+	{ (const BYTE*)"\x00\x00\x01\x67\x00\x00\x01\x65\x88", 9, TRUE },
+	/* the first slice decides */
+	{ (const BYTE*)"\x00\x00\x01\x41\x00\x00\x01\x65\x88", 9, FALSE },
+	/* no slice, cut short, no start code */
+	{ (const BYTE*)"\x00\x00\x01\x67\x88", 5, FALSE },
+	{ (const BYTE*)"\x00\x00\x01", 3, FALSE },
+	{ (const BYTE*)"\xff\xff\xff\xff\xff\xff\xff\xff", 8, FALSE }
+};
 
 /* The return value says nothing about pictures, the last decode must: what was decoded, what was
  * only taken and what was refused. */
@@ -768,8 +800,8 @@ static BOOL testLastDecode(void)
 	if (parameters < 0)
 		goto fail;
 #endif
-	if (!checkLastDecode(h264,
-	                     (parameters < 0) ? FREERDP_DECODE_FAILED : FREERDP_DECODE_NO_PICTURE))
+	if (!checkLastDecode(h264, (parameters < 0) ? FREERDP_DECODE_FAILED : FREERDP_DECODE_NO_PICTURE,
+	                     FALSE))
 		goto fail;
 
 	/* an IDR slice whose bits are nonsense: no decoder makes a picture of that without a reset */
@@ -777,15 +809,29 @@ static BOOL testLastDecode(void)
 	memset(&corrupt[40], 0xff, sizeof(corrupt) - 40);
 	const INT32 res = avc420_decompress(h264, corrupt, sizeof(corrupt), dst, format, stride, width,
 	                                    height, &rect, 1);
-	if (!checkLastDecode(h264, (res < 0) ? FREERDP_DECODE_FAILED : FREERDP_DECODE_NO_PICTURE))
+	if (!checkLastDecode(h264, (res < 0) ? FREERDP_DECODE_FAILED : FREERDP_DECODE_NO_PICTURE, TRUE))
 		goto fail;
 
 	/* a rectangle outside of the destination never reaches the decoder */
 	if (avc420_decompress(h264, solid_idr_64x64, sizeof(solid_idr_64x64), dst, format, stride,
 	                      width, height, &outside, 1) >= 0)
 		goto fail;
-	if (!checkLastDecode(h264, FREERDP_DECODE_FAILED))
+	if (!checkLastDecode(h264, FREERDP_DECODE_FAILED, TRUE))
 		goto fail;
+
+	/* the same way out, for the scan for the first slice: what starts a stream, and where */
+	for (size_t x = 0; x < ARRAYSIZE(keyFrameScans); x++)
+	{
+		const KEY_FRAME_SCAN* scan = &keyFrameScans[x];
+		if (avc420_decompress(h264, scan->data, scan->size, dst, format, stride, width, height,
+		                      &outside, 1) >= 0)
+			goto fail;
+		if (!checkLastDecode(h264, FREERDP_DECODE_FAILED, scan->keyFrame))
+		{
+			(void)fprintf(stderr, "[%s] scan %" PRIuz " failed\n", __func__, x);
+			goto fail;
+		}
+	}
 
 	H264_CONTEXT* fresh = h264_context_new(FALSE);
 	if (!fresh)
@@ -793,7 +839,7 @@ static BOOL testLastDecode(void)
 	const BOOL picture = h264_context_reset(fresh, width, height) &&
 	                     (avc420_decompress(fresh, solid_idr_64x64, sizeof(solid_idr_64x64), dst,
 	                                        format, stride, width, height, &rect, 1) >= 0) &&
-	                     checkLastDecode(fresh, FREERDP_DECODE_PICTURE);
+	                     checkLastDecode(fresh, FREERDP_DECODE_PICTURE, TRUE);
 	h264_context_free(fresh);
 	if (!picture)
 		goto fail;
@@ -824,32 +870,32 @@ static BOOL testLastDecodeAvc444(UINT32 codec)
 	if (avc444_decompress(h264, 1, &full, 1, avc444_idr, sizeof(avc444_idr), nullptr, 0, nullptr, 0,
 	                      dst, format, stride, 64, 64, codec) != 0)
 		goto fail;
-	if (!checkLastDecode(h264, FREERDP_DECODE_PICTURE))
+	if (!checkLastDecode(h264, FREERDP_DECODE_PICTURE, TRUE))
 		goto fail;
 
 	if (avc444_decompress(h264, 2, &full, 1, avc444_p, sizeof(avc444_p), nullptr, 0, nullptr, 0,
 	                      dst, format, stride, 64, 64, codec) != 0)
 		goto fail;
-	if (!checkLastDecode(h264, FREERDP_DECODE_PICTURE))
+	if (!checkLastDecode(h264, FREERDP_DECODE_PICTURE, FALSE))
 		goto fail;
 
-	/* an update of both streams, the second one a key frame: what the decoder made of it */
+	/* the auxiliary stream counts in an update of both */
 	if (!h264_context_reset(h264, 64, 64))
 		goto fail;
 	if (avc444_decompress(h264, 0, &full, 1, avc444_p, sizeof(avc444_p), &full, 1, avc444_idr,
 	                      sizeof(avc444_idr), dst, format, stride, 64, 64, codec) >= 0)
 	{
-		if (!checkLastDecode(h264, FREERDP_DECODE_PICTURE))
+		if (!checkLastDecode(h264, FREERDP_DECODE_PICTURE, TRUE))
 			goto fail;
 	}
-	else if (!checkLastDecode(h264, FREERDP_DECODE_FAILED))
+	else if (!checkLastDecode(h264, FREERDP_DECODE_FAILED, TRUE))
 		goto fail;
 
 	/* an op that does not exist */
 	if (avc444_decompress(h264, 3, &full, 1, avc444_p, sizeof(avc444_p), nullptr, 0, nullptr, 0,
 	                      dst, format, stride, 64, 64, codec) >= 0)
 		goto fail;
-	if (!checkLastDecode(h264, FREERDP_DECODE_FAILED))
+	if (!checkLastDecode(h264, FREERDP_DECODE_FAILED, FALSE))
 		goto fail;
 
 	rc = TRUE;
