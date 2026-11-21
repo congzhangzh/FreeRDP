@@ -41,6 +41,19 @@ const char* shadow_config_origin(const char* name);
  * made of keys (FREERDP_SHADOW_CODEC) the file's keys go first and the environment's over them. */
 const char* shadow_config_file_value(const char* name, const char** origin);
 
+/* FREERDP_SHADOW_ENV_<NAME>=<value> (from the file or the environment) names another program's
+ * setting: name gets <NAME> (size bytes at most, with the end), value points at <value>. FALSE
+ * for any other entry, or a <NAME> that is empty, starts with a digit or has more than letters,
+ * digits and _. */
+WINPR_ATTR_NODISCARD
+BOOL shadow_config_env_split(const char* entry, char* name, size_t size, const char** value);
+
+/* Sets <NAME>=<value> for each FREERDP_SHADOW_ENV_<NAME>=<value> of the environment, unless
+ * <NAME> is set already (the environment wins, as over the file), so the libraries the shadow
+ * server loads read it, e.g. FREERDP_SHADOW_ENV_PIPEWIRE_LATENCY=256/48000. Each is logged.
+ * Returns how many were set. */
+size_t shadow_config_pass_env(void);
+
 /* <the FreeRDP config directory>/shadow/shadow.conf, to free; nullptr without one */
 WINPR_ATTR_MALLOC(free, 1)
 char* shadow_config_default_path(void);

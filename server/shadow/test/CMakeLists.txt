@@ -10,6 +10,7 @@ set(${MODULE_PREFIX}_TESTS
     TestShadowCodecOptions.c
     TestShadowGfxCodecOrder.c
     TestShadowConfigLayers.c
+    TestShadowConfigEnv.c
     TestShadowGfxStats.c
     TestShadowFrameRate.c
     TestShadowGfxStatsPeriod.c

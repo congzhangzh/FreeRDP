@@ -104,6 +104,17 @@ Environment=FREERDP_SHADOW_CODEC=av1:rate-control:cq,av1:cq-level:26,av1:bitrate
 
 A value with a wrong key changes nothing and is logged.
 
+The libraries the shadow server loads read settings of their own. `FREERDP_SHADOW_ENV_<NAME>=<value>`
+becomes `<NAME>=<value>` in the shadow server, unless `<NAME>` is set there already, so sesman (and
+`shadow.conf`) can pass them on, e.g. a smaller PipeWire buffer for the sound it captures:
+
+```
+Environment=FREERDP_SHADOW_ENV_PIPEWIRE_LATENCY=256/48000
+```
+
+The shadow server logs each one it sets. It sets them while it reads its settings, before the
+capture starts; settings read before that (`WLOG_*`) do not take effect this way.
+
 ## Test
 
 `TestSesmanEnv` (ctest) checks which settings are passed on. `test/run-e2e.sh` runs it

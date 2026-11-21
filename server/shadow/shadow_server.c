@@ -581,7 +581,10 @@ static BOOL shadow_server_load_config(rdpShadowServer* server, int argc, char** 
 		free(defaultPath);
 	}
 	if (rc)
+	{
+		(void)shadow_config_pass_env();
 		shadow_server_env_defaults(server);
+	}
 	return rc;
 }
 

@@ -37,6 +37,15 @@
 #define TAG SERVER_TAG("shadow")
 
 #define SHADOW_CONFIG_PREFIX "FREERDP_SHADOW_"
+#define SHADOW_CONFIG_ENV_PREFIX "FREERDP_SHADOW_ENV_"
+#define SHADOW_CONFIG_ENV_MAX 64
+
+#if defined(_WIN32)
+#define shadow_config_environ _environ
+#else
+extern char** environ;
+#define shadow_config_environ environ
+#endif
 #define SHADOW_CONFIG_LINE 1024
 #define SHADOW_CONFIG_MAX 64
 
@@ -210,4 +219,75 @@ char* shadow_config_default_path(void)
 	char* path = GetCombinedPath(dir, "shadow.conf");
 	free(dir);
 	return path;
+}
+
+BOOL shadow_config_env_split(const char* entry, char* name, size_t size, const char** value)
+{
+	if (!entry || !name || (size == 0) || !value)
+		return FALSE;
+	if (strncmp(entry, SHADOW_CONFIG_ENV_PREFIX, strlen(SHADOW_CONFIG_ENV_PREFIX)) != 0)
+		return FALSE;
+
+	const char* start = entry + strlen(SHADOW_CONFIG_ENV_PREFIX);
+	const char* equal = strchr(start, '=');
+	if (!equal || (equal == start) || ((size_t)(equal - start) >= size))
+		return FALSE;
+	if (isdigit((unsigned char)*start))
+		return FALSE;
+	for (const char* p = start; p < equal; p++)
+	{
+		if (!isalnum((unsigned char)*p) && (*p != '_'))
+			return FALSE;
+	}
+
+	memcpy(name, start, (size_t)(equal - start));
+	name[equal - start] = '\0';
+	*value = equal + 1;
+	return TRUE;
+}
+
+size_t shadow_config_pass_env(void)
+{
+	/* setenv() may move the environment while it is walked: take the entries first */
+	char* entries[SHADOW_CONFIG_ENV_MAX] = WINPR_C_ARRAY_INIT;
+	size_t count = 0;
+	for (char** e = shadow_config_environ; e && *e; e++)
+	{
+		if (strncmp(*e, SHADOW_CONFIG_ENV_PREFIX, strlen(SHADOW_CONFIG_ENV_PREFIX)) != 0)
+			continue;
+		if (count >= ARRAYSIZE(entries))
+		{
+			WLog_WARN(
+			    TAG, "more than %d " SHADOW_CONFIG_ENV_PREFIX "* settings: the rest is passed over",
+			    SHADOW_CONFIG_ENV_MAX);
+			break;
+		}
+		entries[count] = _strdup(*e);
+		if (entries[count])
+			count++;
+	}
+
+	size_t applied = 0;
+	for (size_t x = 0; x < count; x++)
+	{
+		char name[96] = WINPR_C_ARRAY_INIT;
+		const char* value = nullptr;
+		const char* equal = strchr(entries[x], '=');
+		const int length = equal ? (int)(equal - entries[x]) : (int)strlen(entries[x]);
+
+		if (!shadow_config_env_split(entries[x], name, sizeof(name), &value))
+			WLog_WARN(TAG, "%.*s is not " SHADOW_CONFIG_ENV_PREFIX "<NAME>: passed over", length,
+			          entries[x]);
+		else if (getenv(name))
+			WLog_INFO(TAG, "%.*s: %s is set already, which wins", length, entries[x], name);
+		else if (!shadow_config_setenv(name, value))
+			WLog_WARN(TAG, "%.*s: %s could not be set", length, entries[x], name);
+		else
+		{
+			WLog_INFO(TAG, "%s=%s (from %.*s)", name, value, length, entries[x]);
+			applied++;
+		}
+		free(entries[x]);
+	}
+	return applied;
 }
