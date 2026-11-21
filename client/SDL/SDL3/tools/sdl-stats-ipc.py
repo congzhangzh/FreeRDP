@@ -222,8 +222,8 @@ def join(client_lines, server_lines, wanted=None):
         % (readings[0].get("started_at") or "-", first_server.get("started_at") or "-"),
         "lined up by frame id; the client reads once a second, so its window is the frames received between two of its lines",
         "",
-        "%-4s %-19s | %7s %7s %5s %5s %13s %15s %7s | %-19s %7s %9s %8s | %9s"
-        % ("per", "server frames", "capt/s", "sent/s", "held", "merg", "encode avg/mx", "ack min/avg/mx", "flight",
+        "%-4s %-19s | %7s %7s %5s %5s %9s %13s %9s %15s %7s | %-19s %7s %9s %8s | %9s"
+        % ("per", "server frames", "capt/s", "sent/s", "held", "merg", "capture", "encode avg/mx", "round", "ack min/avg/mx", "flight",
            "client frames", "fps", "decode/f", "kbit/s", "net+queue"),
     ]
     for p in periods[cid]:
@@ -231,10 +231,15 @@ def join(client_lines, server_lines, wanted=None):
         seconds = (p.get("period_ms") or c.get("GFX_PERIOD_MS") or 0) / 1000.0
         per = lambda v: "%.1f" % (v / seconds) if seconds > 0 else "-"
         first, last = c.get("GFX_FRAME_ID_FIRST"), c.get("GFX_FRAME_ID_LAST")
-        server = "%-4s %-19s | %7s %7s %5s %5s %13s %15s %7s" % (
+        def ms(name):
+            return "%.1f ms" % (c[name] / 1000) if name in c else "-"
+
+        server = "%-4s %-19s | %7s %7s %5s %5s %9s %13s %9s %15s %7s" % (
             p["periods"], "%s-%s" % (first, last) if first is not None else "-",
             per(c.get("GFX_CAPTURED", 0)), per(c.get("GFX_SENT", 0)), c.get("GFX_HELD", "-"), c.get("GFX_MERGED", "-"),
+            ms("GFX_CAPTURE_AVG_US"),
             "%.1f/%.1f ms" % (c.get("GFX_ENCODE_AVG_US", 0) / 1000, c.get("GFX_ENCODE_MAX_US", 0) / 1000),
+            ms("GFX_ROUND_AVG_US"),
             "%s/%s/%s ms" % (c.get("GFX_ACK_DELAY_MIN_MS", "-"), c.get("GFX_ACK_DELAY_AVG_MS", "-"), c.get("GFX_ACK_DELAY_MAX_MS", "-")),
             "%s/%s" % (c.get("GFX_IN_FLIGHT_MAX", "-"), c.get("GFX_IN_FLIGHT_LIMIT", "-")))
         if first is None or last is None:
@@ -261,6 +266,7 @@ def join(client_lines, server_lines, wanted=None):
     out.append("")
     out.append("net+queue = the server's mean ack delay minus the client's mean decode time: what the network,")
     out.append("the queues and drawing took (derived, approximate: the two means cover slightly different frames)")
+    out.append("capture, round = the server's mean capture time and capture-to-sent time per frame (\"-\": not reported)")
     return "\n".join(out)
 
 
@@ -280,6 +286,7 @@ def join_self_test():
                            "clients": [{"connection_id": cid, "periods": periods_, "period_ms": 5000,
                                         "started_at": "2026-11-21T15:31:05+00:00",
                                         "counters": {"GFX_CAPTURED": 300, "GFX_SENT": 250, "GFX_FRAME_ID_FIRST": first,
+                                                     **({"GFX_CAPTURE_AVG_US": 15000, "GFX_ROUND_AVG_US": 40000} if periods_ == 2 else {}),
                                                      "GFX_FRAME_ID_LAST": last, "GFX_ACK_DELAY_AVG_MS": 12,
                                                      "GFX_ENCODE_AVG_US": 8000}}]})
 
@@ -296,6 +303,7 @@ def join_self_test():
     for row in rows:
         assert " 50.0 " in row and "2.00 ms" in row and "10.0 ms" in row and " 1000 " in row, row
     assert "start-" in rows[0] and "4294967280-" not in rows[1], rows  # the second window starts after the wrap
+    assert "15.0 ms" in rows[1] and "40.0 ms" in rows[1] and "15.0 ms" not in rows[0], rows  # capture, round when reported
     # no id on the client side: the server's only connection, said so
     text = join([line.replace('"SERVER_CONNECTION_ID": "00ab00cd00ef0012"', "") for line in c], s)
     assert "only connection" in text, text
