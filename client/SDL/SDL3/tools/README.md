@@ -21,9 +21,13 @@ first connection only. For a quick look: `--rows` (what the overlay shows), `--g
 `--rate NAME...`. The script needs only Python 3; `--self-test` checks it without a client.
 Windows' Python has no AF_UNIX sockets: read the socket there with another program.
 
-To join the client's lines with a server's numbers for the same connection, use `time_ms` (the
-reading's wall-clock time, ms since 1970 UTC; `ns` is the monotonic time for rates) and, when the
-server sends one over its statistics channel, `strings.SERVER_CONNECTION_ID` (16 hex digits): a
-FreeRDP shadow server writes the same ID and the end of each of its periods as `time_ms` in its
-own statistics, so a client line belongs to the server period whose window holds its `time_ms`.
-Without that channel there is no ID; join on time only.
+To see which stage is slow, record the client's lines (`--follow > run.jsonl`) and a FreeRDP
+shadow server's own statistics for the same time (`freerdp-shadow-stats` lines, `server.jsonl`),
+then `sdl-stats-ipc.py --join run.jsonl server.jsonl`: per server period it prints what the
+server captured, sent, held and how long it encoded and waited for acknowledgements, beside the
+client's frame rate, decode time per frame and bandwidth for the same frames. The two are lined up
+by the server's frame ids (`GFX_FRAME_ID_FIRST`/`_LAST` there, `RDPGFX_FRAME_ID_LAST` here), never
+by clock time: two machines' clocks differ. The connection is the one in the client's
+`strings.SERVER_CONNECTION_ID` (sent over the server's statistics channel), else the server's only
+connection, else the one given with `--connection`. `time_ms` and `started_at` (each machine's own
+clock) are printed for people only.
