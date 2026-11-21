@@ -1252,11 +1252,16 @@ static void mutter_on_param_changed(void* data, uint32_t id, const struct spa_po
 
 /* Copies one rectangle of an output's frame (in the output's coordinates) to its place in the
  * surface and marks it changed */
-static void mutter_copy_rect(mutterOutput* output, rdpShadowSurface* surface, const BYTE* src,
-                             UINT32 stride, INT32 x, INT32 y, INT32 width, INT32 height)
+/* the part of the output's picture at x, y (output coordinates) into dst, a buffer the surface's
+ * size and layout, and into region */
+static void mutter_copy_rect(mutterOutput* output, const rdpShadowSurface* surface, BYTE* dst,
+                             REGION16* region, const BYTE* src, UINT32 stride, INT32 x, INT32 y,
+                             INT32 width, INT32 height)
 {
 	WINPR_ASSERT(output);
 	WINPR_ASSERT(surface);
+	WINPR_ASSERT(dst);
+	WINPR_ASSERT(region);
 	WINPR_ASSERT(src);
 
 	const INT32 ox = output->x;
@@ -1270,17 +1275,17 @@ static void mutter_copy_rect(mutterOutput* output, rdpShadowSurface* surface, co
 	if ((right <= left) || (bottom <= top))
 		return;
 
-	if (!freerdp_image_copy_no_overlap(
-	        surface->data, surface->format, surface->scanline, (UINT32)(left + ox),
-	        (UINT32)(top + oy), (UINT32)(right - left), (UINT32)(bottom - top), src, output->format,
-	        stride, (UINT32)left, (UINT32)top, nullptr, FREERDP_FLIP_NONE))
+	if (!freerdp_image_copy_no_overlap(dst, surface->format, surface->scanline, (UINT32)(left + ox),
+	                                   (UINT32)(top + oy), (UINT32)(right - left),
+	                                   (UINT32)(bottom - top), src, output->format, stride,
+	                                   (UINT32)left, (UINT32)top, nullptr, FREERDP_FLIP_NONE))
 	{
 		WLog_ERR(TAG, "cannot copy the frame to the surface");
 		return;
 	}
 	const RECTANGLE_16 rect = { (UINT16)(left + ox), (UINT16)(top + oy), (UINT16)(right + ox),
 		                        (UINT16)(bottom + oy) };
-	if (!region16_union_rect(&surface->invalidRegion, &surface->invalidRegion, &rect))
+	if (!region16_union_rect(region, region, &rect))
 		WLog_ERR(TAG, "cannot mark the changed region");
 }
 
@@ -1289,7 +1294,8 @@ static void mutter_copy_rect(mutterOutput* output, rdpShadowSurface* surface, co
  * Compare the buffer with the surface in tiles after the damage was copied, and copy the tiles that
  * still differ. When the damage was right, every tile is equal and nothing is copied. Returns the
  * tiles copied. */
-static UINT32 mutter_repair_missed_damage(mutterOutput* output, rdpShadowSurface* surface,
+static UINT32 mutter_repair_missed_damage(mutterOutput* output, const rdpShadowSurface* surface,
+                                          const BYTE* current, BYTE* dst, REGION16* region,
                                           const BYTE* src, UINT32 stride)
 {
 	WINPR_ASSERT(output);
@@ -1317,8 +1323,7 @@ static UINT32 mutter_repair_missed_damage(mutterOutput* output, rdpShadowSurface
 			for (UINT32 y = ty; (y < ty + th) && !dirty; y++)
 			{
 				const BYTE* a = &src[1ull * y * stride + 4ull * tx];
-				const BYTE* b =
-				    &surface->data[1ull * (oy + y) * surface->scanline + 4ull * (ox + tx)];
+				const BYTE* b = &current[1ull * (oy + y) * surface->scanline + 4ull * (ox + tx)];
 				if (sameFormat)
 					dirty = (memcmp(a, b, 4ull * tw) != 0);
 				else
@@ -1329,8 +1334,8 @@ static UINT32 mutter_repair_missed_damage(mutterOutput* output, rdpShadowSurface
 			}
 			if (dirty)
 			{
-				mutter_copy_rect(output, surface, src, stride, (INT32)tx, (INT32)ty, (INT32)tw,
-				                 (INT32)th);
+				mutter_copy_rect(output, surface, dst, region, src, stride, (INT32)tx, (INT32)ty,
+				                 (INT32)tw, (INT32)th);
 				tiles++;
 			}
 		}
@@ -1367,6 +1372,31 @@ static void mutter_damage_stats(mutterOutput* output, UINT32 tiles)
 	}
 }
 
+/* The staging buffer at the surface's size (its content outside backPending is of no use) */
+WINPR_ATTR_NODISCARD
+static BOOL mutter_back_ready(mutterShadowSubsystem* mutter, const rdpShadowSurface* surface)
+{
+	WINPR_ASSERT(mutter);
+	WINPR_ASSERT(surface);
+
+	if (mutter->back && (mutter->backWidth == surface->width) &&
+	    (mutter->backHeight == surface->height) && (mutter->backScanline == surface->scanline))
+		return TRUE;
+
+	free(mutter->back);
+	mutter->back = calloc(1ull * surface->height + 1, surface->scanline);
+	if (!mutter->back)
+	{
+		mutter->backWidth = 0;
+		return FALSE;
+	}
+	mutter->backWidth = surface->width;
+	mutter->backHeight = surface->height;
+	mutter->backScanline = surface->scanline;
+	region16_clear(&mutter->backPending);
+	return TRUE;
+}
+
 static void mutter_on_process(void* data)
 {
 	const UINT64 captureStart = winpr_GetTickCount64NS();
@@ -1380,6 +1410,7 @@ static void mutter_on_process(void* data)
 		return;
 	rdpShadowSurface* surface = server->surface;
 	BOOL painted = FALSE;
+	BOOL ready = FALSE;
 	struct pw_buffer* pb = nullptr;
 
 	/* every queued buffer: no damage is lost when frames come faster */
@@ -1420,11 +1451,19 @@ static void mutter_on_process(void* data)
 			continue;
 		}
 
-		EnterCriticalSection(&surface->lock);
+		/* staged, no lock: the clients encode the surface meanwhile, which is only read here */
+		if (!ready && !(ready = mutter_back_ready(mutter, surface)))
+		{
+			WLog_ERR(TAG, "no memory for the next frame");
+			(void)pw_stream_queue_buffer(output->stream, pb);
+			continue;
+		}
+		BYTE* dst = mutter->back;
+		REGION16* changed = &mutter->backPending;
 		struct spa_meta* dm = spa_buffer_find_meta(buf, SPA_META_VideoDamage);
 		if (!dm || output->fullPaint)
 		{
-			mutter_copy_rect(output, surface, src, stride, 0, 0, (INT32)output->width,
+			mutter_copy_rect(output, surface, dst, changed, src, stride, 0, 0, (INT32)output->width,
 			                 (INT32)output->height);
 			output->fullPaint = FALSE;
 		}
@@ -1435,15 +1474,15 @@ static void mutter_on_process(void* data)
 			{
 				if (!spa_meta_region_is_valid(r))
 					break;
-				mutter_copy_rect(output, surface, src, stride, r->region.position.x,
+				mutter_copy_rect(output, surface, dst, changed, src, stride, r->region.position.x,
 				                 r->region.position.y, (INT32)r->region.size.width,
 				                 (INT32)r->region.size.height);
 			}
 			if (mutter->damageCheck)
 				mutter_damage_stats(output,
-				                    mutter_repair_missed_damage(output, surface, src, stride));
+				                    mutter_repair_missed_damage(output, surface, surface->data, dst,
+				                                                changed, src, stride));
 		}
-		LeaveCriticalSection(&surface->lock);
 		painted = TRUE;
 		(void)pw_stream_queue_buffer(output->stream, pb);
 	}
@@ -1455,17 +1494,39 @@ static void mutter_on_process(void* data)
 	 * the frame (an AV2 frame takes 40 to 120 ms, a key frame up to 800 ms), and the sound
 	 * thread needs the lock for each chunk it hands to the clients; it stalled, and PipeWire
 	 * dropped the sound. The update has a subscriber list of its own (see win_shadow.c). */
+	/* the clients are done with the surface's frame: the staged rectangles go into it, and only
+	 * they; the surface stays the one picture */
+	const UINT64 waitStart = winpr_GetTickCount64NS();
+	shadow_subsystem_frame_wait(&mutter->common);
+	const UINT64 waited = winpr_GetTickCount64NS() - waitStart;
+	EnterCriticalSection(&surface->lock);
+	UINT32 count = 0;
+	const RECTANGLE_16* rects = region16_rects(&mutter->backPending, &count);
+	for (UINT32 i = 0; i < count; i++)
+	{
+		const RECTANGLE_16* r = &rects[i];
+		const UINT32 right = MIN(r->right, surface->width);
+		const UINT32 bottom = MIN(r->bottom, surface->height);
+		for (UINT32 y = r->top; (y < bottom) && (r->left < right); y++)
+		{
+			const size_t at = 1ull * y * surface->scanline + 4ull * r->left;
+			memcpy(&surface->data[at], &mutter->back[at], 4ull * (right - r->left));
+		}
+	}
+	/* the clients took the region of the round before: this round's is the staged one */
+	if (!region16_copy(&surface->invalidRegion, &mutter->backPending))
+		WLog_ERR(TAG, "cannot mark the changed region");
+	LeaveCriticalSection(&surface->lock);
+	region16_clear(&mutter->backPending);
+
 	if (ArrayList_Count(server->clients) > 0)
 	{
-		/* the capture: from PipeWire's buffer to the copy in the surface */
+		/* the capture: from PipeWire's buffer to the surface, without the wait */
 		mutter->common.captureStartNs = captureStart;
-		mutter->common.captureNs = winpr_GetTickCount64NS() - captureStart;
-		shadow_subsystem_frame_update(&mutter->common);
+		mutter->common.captureNs = winpr_GetTickCount64NS() - captureStart - waited;
+		/* the next frame is copied while they encode this one */
+		shadow_subsystem_frame_publish(&mutter->common);
 	}
-
-	EnterCriticalSection(&surface->lock);
-	region16_clear(&surface->invalidRegion);
-	LeaveCriticalSection(&surface->lock);
 }
 
 static void mutter_on_state_changed(WINPR_ATTR_UNUSED void* data,
@@ -4064,6 +4125,8 @@ static void mutter_shadow_subsystem_free(rdpShadowSubsystem* subsystem)
 	if (mutter->stopEvent)
 		(void)CloseHandle(mutter->stopEvent);
 	free(mutter->cursorPixels);
+	free(mutter->back);
+	region16_uninit(&mutter->backPending);
 	free(mutter);
 }
 
@@ -4073,6 +4136,7 @@ static rdpShadowSubsystem* mutter_shadow_subsystem_new(void)
 	mutterShadowSubsystem* mutter = calloc(1, sizeof(mutterShadowSubsystem));
 	if (!mutter)
 		return nullptr;
+	region16_init(&mutter->backPending);
 
 	for (UINT32 i = 0; i < MUTTER_SHADOW_MAX_MONITORS; i++)
 	{

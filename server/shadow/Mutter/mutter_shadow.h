@@ -139,6 +139,15 @@ struct mutter_shadow_subsystem
 	/* the check for changes Mutter left out of its damage (mutter_repair_missed_damage) */
 	BOOL damageCheck;
 
+	/* The next frame's changes are staged here while the clients encode the surface
+	 * (mutter_on_process), then only those rectangles (backPending) are copied into the surface:
+	 * the surface stays the one picture. The subsystem thread's alone, the surface's size. */
+	BYTE* back;
+	UINT32 backWidth;
+	UINT32 backHeight;
+	UINT32 backScanline;
+	REGION16 backPending;
+
 	/* libei, under eiLock: the client threads post input, the subsystem
 	 * thread reads its events */
 	CRITICAL_SECTION eiLock;
