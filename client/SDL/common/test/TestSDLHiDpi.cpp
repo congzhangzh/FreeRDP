@@ -1,3 +1,4 @@
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -33,6 +34,21 @@ static int checkParse()
 	CHECK(!sdl::hidpi::parse("Points"));
 	CHECK(std::string(sdl::hidpi::name(Mode::Points)) == "points");
 	CHECK(std::string(sdl::hidpi::name(Mode::Pixels)) == "pixels");
+
+	/* scale:N, N from 50 to 400 */
+	const auto s150 = sdl::hidpi::parse("scale:150");
+	CHECK(s150 && (s150->mode == Mode::Scale) && (s150->percent == 150));
+	CHECK(sdl::hidpi::describe(*s150) == "scale:150");
+	CHECK(sdl::hidpi::parse("scale:50") && sdl::hidpi::parse("scale:400"));
+	for (const char* bad : { "scale:", "scale:49", "scale:401", "scale:1500", "scale:-150",
+	                         "scale:1.5", "scale:150%", "scale", "scale:+150" })
+	{
+		if (sdl::hidpi::parse(bad))
+		{
+			(void)fprintf(stderr, "accepted \"%s\"\n", bad);
+			return -1;
+		}
+	}
 	return 0;
 }
 
@@ -52,6 +68,14 @@ static int checkPolicy()
 	p = sdl::hidpi::parsePolicy("1:pixels,3:points");
 	CHECK(p && (p->forDisplay(1) == Mode::Pixels) && (p->forDisplay(3) == Mode::Points) &&
 	      (p->forDisplay(9) == Mode::Points));
+
+	/* scale:N as the default and as a display's own */
+	p = sdl::hidpi::parsePolicy("scale:150");
+	CHECK(p && (p->forDisplay(3).mode == Mode::Scale) && (p->forDisplay(3).percent == 150));
+	p = sdl::hidpi::parsePolicy("points,2:scale:125");
+	CHECK(p && (p->forDisplay(1).mode == Mode::Points) && (p->forDisplay(2).mode == Mode::Scale) &&
+	      (p->forDisplay(2).percent == 125));
+	CHECK(!sdl::hidpi::parsePolicy("points,2:scale:9"));
 
 	/* the last word on a display wins */
 	p = sdl::hidpi::parsePolicy("pixels,4:points,4:pixels");
@@ -87,6 +111,17 @@ static int checkMonitors()
 	CHECK(same(sdl::hidpi::monitorSize(1920, 1080, 2.0f, 1.0f, Mode::Pixels), 3840, 2160, 200));
 	/* a fractional density rounds */
 	CHECK(same(sdl::hidpi::monitorSize(1001, 667, 1.5f, 1.0f, Mode::Pixels), 1502, 1001, 150));
+	/* scale:N: the points times N/100, rounded to even, at scale 100, whatever the density */
+	const sdl::hidpi::Setting s150{ Mode::Scale, 150 };
+	CHECK(same(sdl::hidpi::monitorSize(1280, 832, 2.0f, 1.0f, s150), 1920, 1248, 100));
+	CHECK(same(sdl::hidpi::monitorSize(1280, 832, 1.0f, 1.5f, s150), 1920, 1248, 100));
+	CHECK(same(sdl::hidpi::monitorSize(1001, 667, 2.0f, 1.0f, s150), 1502, 1000, 100));
+	CHECK(same(sdl::hidpi::monitorSize(1280, 833, 2.0f, 1.0f, { Mode::Scale, 125 }), 1600, 1042,
+	           100));
+	CHECK(sdl::hidpi::evenRound(1000.5) == 1000);
+	CHECK(sdl::hidpi::evenRound(1001.0) == 1002);
+	CHECK(sdl::hidpi::evenRound(1249.5) == 1250);
+
 	/* nonsense from the system reads as one */
 	CHECK(same(sdl::hidpi::monitorSize(800, 600, 0.0f, 0.0f, Mode::Pixels), 800, 600, 100));
 	CHECK(same(sdl::hidpi::monitorSize(800, 600, -1.0f, -2.0f, Mode::Points), 800, 600, 100));
@@ -121,11 +156,56 @@ static int checkMixedMac()
 	CHECK(same(size(*p, cinema), 2560, 1440, 100));
 	CHECK(same(size(*p, retina), 2560, 1664, 200));
 
+	/* the Retina at 150 %, drawn into its every pixel; the Cinema Display as it is */
+	p = sdl::hidpi::parsePolicy("points,2:scale:150");
+	CHECK(p);
+	CHECK(same(size(*p, cinema), 2560, 1440, 100));
+	CHECK(same(size(*p, retina), 1920, 1248, 100));
+
 	/* pixels everywhere: the behaviour before /sdl-hidpi */
 	p = sdl::hidpi::parsePolicy("pixels");
 	CHECK(p);
 	CHECK(same(size(*p, cinema), 2560, 1440, 100));
 	CHECK(same(size(*p, retina), 2560, 1664, 200));
+	return 0;
+}
+
+/* scale:N draws (session + offset) x scale and maps the mouse back: a round trip at 150 % */
+static int checkMapping()
+{
+	/* the Retina at scale:150: a 1920x1248 session in 2560x1664 window pixels */
+	sdl::hidpi::Mapping m;
+	m.scaleX = 2560.0f / 1920.0f;
+	m.scaleY = 1664.0f / 1248.0f;
+	for (const auto& [x, y] : { std::pair<float, float>{ 0.0f, 0.0f },
+	                            { 1919.0f, 1247.0f },
+	                            { 960.5f, 624.25f },
+	                            { 1.0f, 1247.0f } })
+	{
+		const auto [wx, wy] = sdl::hidpi::toWindow(x, y, m);
+		const auto [sx, sy] = sdl::hidpi::toSession(wx, wy, m);
+		CHECK((std::fabs(sx - x) < 0.01f) && (std::fabs(sy - y) < 0.01f));
+	}
+	const auto corner = sdl::hidpi::toWindow(1920.0f, 1248.0f, m);
+	CHECK((std::fabs(corner.first - 2560.0f) < 0.01f) &&
+	      (std::fabs(corner.second - 1664.0f) < 0.01f));
+
+	/* with /multimon: the second monitor starts at x 2560 in the session */
+	m.offsetX = -2560;
+	m.offsetY = 0;
+	const auto [wx, wy] = sdl::hidpi::toWindow(2560.0f + 960.0f, 624.0f, m);
+	CHECK((std::fabs(wx - 1280.0f) < 0.01f) && (std::fabs(wy - 832.0f) < 0.01f));
+	const auto [sx, sy] = sdl::hidpi::toSession(1280.0f, 832.0f, m);
+	CHECK((std::fabs(sx - 3520.0f) < 0.01f) && (std::fabs(sy - 624.0f) < 0.01f));
+
+	/* scale 1: only the offset, as before */
+	const sdl::hidpi::Mapping plain{ 1.0f, 1.0f, -100, -50 };
+	const auto p = sdl::hidpi::toWindow(150.0f, 80.0f, plain);
+	CHECK((p.first == 50.0f) && (p.second == 30.0f));
+	/* a broken scale never divides by zero */
+	const sdl::hidpi::Mapping broken{ 0.0f, -1.0f, 0, 0 };
+	const auto q = sdl::hidpi::toSession(10.0f, 20.0f, broken);
+	CHECK((q.first == 10.0f) && (q.second == 20.0f));
 	return 0;
 }
 
@@ -137,12 +217,15 @@ static int checkOverlay()
 	      "pixels (display 2x): every pixel, the server scales its UI");
 	CHECK(sdl::hidpi::overlayText(Mode::Points, 1.0f) == "points (display 1x: every pixel)");
 	CHECK(sdl::hidpi::overlayText(Mode::Pixels, 1.5f).find("display 1.5x") != std::string::npos);
+	CHECK(sdl::hidpi::overlayText({ Mode::Scale, 150 }, 2.0f) ==
+	      "scale:150 (display 2x): the session at the points x 150 %, drawn to fit");
 	return 0;
 }
 
 int TestSDLHiDpi([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
 {
-	for (auto* check : { checkParse, checkPolicy, checkMonitors, checkMixedMac, checkOverlay })
+	for (auto* check :
+	     { checkParse, checkPolicy, checkMonitors, checkMixedMac, checkMapping, checkOverlay })
 	{
 		const int rc = check();
 		if (rc != 0)
