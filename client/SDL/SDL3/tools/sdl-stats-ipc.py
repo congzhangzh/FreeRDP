@@ -15,7 +15,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Read the statistics of a running sdl-freerdp started with /sdl-stats-ipc.
+r"""Read the statistics of a running sdl-freerdp started with /sdl-stats-ipc.
 
   sdl-stats-ipc.py [SOCKET] --once            the newest reading, as JSON
   sdl-stats-ipc.py [SOCKET] --rows            the overlay's rows, as text
@@ -27,14 +27,16 @@
                                               the client's lines beside a FreeRDP shadow server's
                                               statistics, per server period, lined up by frame id
 
-Without SOCKET it takes the one sdl-freerdp-<pid>.stats.sock in $XDG_RUNTIME_DIR or $TMPDIR.
-Only the Python standard library is used. Windows' Python has no AF_UNIX sockets.
+Without SOCKET it takes the one sdl-freerdp-<pid>.stats.sock in $XDG_RUNTIME_DIR or $TMPDIR; on
+Windows SOCKET is the client's named pipe (\\.\pipe\sdl-freerdp-<pid>.stats, a bare name works too),
+by default the one such pipe there is. Only the Python standard library is used.
 """
 
 import argparse
 import glob
 import json
 import os
+import re
 import socket
 import sys
 import tempfile
@@ -46,7 +48,27 @@ SERVER_SCHEMA = "freerdp-shadow-stats"
 SERVER_VERSION = 1
 
 
+PIPE_PREFIX = "\\\\.\\pipe\\"
+WINDOWS = sys.platform == "win32"
+
+
+def pipe_name(path):
+    """On Windows: the full pipe name of path (a bare name gets the prefix)."""
+    return path if path.startswith(PIPE_PREFIX) else PIPE_PREFIX + path
+
+
+def pid_from_name(name):
+    """The pid in a sidecar's default name (sdl-freerdp-<pid>.stats, freerdp-shadow-<pid>.stats), or None."""
+    m = re.search(r"(?:^|[\\/])(?:sdl-freerdp|freerdp-shadow)-(\d+)\.stats(?:\.sock)?$", name)
+    return int(m.group(1)) if m else None
+
+
 def find_socket():
+    if WINDOWS:
+        found = sorted(n for n in os.listdir(PIPE_PREFIX) if re.fullmatch(r"sdl-freerdp-\d+\.stats", n))
+        if len(found) != 1:
+            raise SystemExit("give the pipe: %s" % ("none found" if not found else "several: " + ", ".join(found)))
+        return PIPE_PREFIX + found[0]
     found = []
     for variable in ("XDG_RUNTIME_DIR", "TMPDIR"):
         base = os.environ.get(variable)
@@ -64,16 +86,27 @@ class Reader:
     """One connection: lines as they come."""
 
     def __init__(self, path, timeout):
+        self.buffer = b""
+        self.pipe = None
+        self.sock = None
+        if WINDOWS:
+            # a named pipe: reads block (no timeout); the server must be the pid its name says
+            name = pipe_name(path)
+            self.pipe = open(name, "rb", buffering=0)
+            check_pipe_server(self.pipe, name)
+            return
         if not hasattr(socket, "AF_UNIX"):
             raise SystemExit("this Python has no AF_UNIX sockets")
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.settimeout(timeout)
         self.sock.connect(path)
-        self.buffer = b""
+
+    def _read(self):
+        return self.pipe.read(65536) if self.pipe else self.sock.recv(65536)
 
     def line(self):
         while b"\n" not in self.buffer:
-            data = self.sock.recv(65536)
+            data = self._read()
             if not data:
                 raise EOFError("the client closed the socket")
             self.buffer += data
@@ -86,7 +119,28 @@ class Reader:
         return value
 
     def close(self):
-        self.sock.close()
+        (self.pipe or self.sock).close()
+
+
+def check_pipe_server(pipe, name):
+    """Windows: refuse a pipe whose server is not the process its name says (a squatter)."""
+    pid = pid_from_name(name)
+    if pid is None:
+        print("note: %s has no pid in its name: the server is not checked" % name, file=sys.stderr)
+        return
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get = kernel32.GetNamedPipeServerProcessId
+    get.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.ULONG))
+    get.restype = wintypes.BOOL
+    server = wintypes.ULONG(0)
+    if not get(msvcrt.get_osfhandle(pipe.fileno()), ctypes.byref(server)):
+        raise SystemExit("GetNamedPipeServerProcessId failed: error %d" % ctypes.get_last_error())
+    if server.value != pid:
+        raise SystemExit("%s is served by pid %d, not %d: not the client's pipe" % (name, server.value, pid))
 
 
 def check(reading):
@@ -322,6 +376,13 @@ def join_self_test():
         del idle["clients"][0]["counters"][k]
     assert "(no frames sent)" in join(c, s + [json.dumps(idle)])
     assert frame_diff(5, 0xFFFFFFFE) == 7 and frame_diff(0xFFFFFFFE, 5) == -7
+    # Windows names (pure: tested anywhere)
+    assert pipe_name("x") == PIPE_PREFIX + "x" and pipe_name(PIPE_PREFIX + "x") == PIPE_PREFIX + "x"
+    assert pid_from_name(PIPE_PREFIX + "sdl-freerdp-4242.stats") == 4242
+    assert pid_from_name(PIPE_PREFIX + "freerdp-shadow-17.stats") == 17
+    assert pid_from_name("/run/user/1000/sdl-freerdp-99.stats.sock") == 99
+    assert pid_from_name(PIPE_PREFIX + "my-own-name") is None
+    assert pid_from_name(PIPE_PREFIX + "evil-sdl-freerdp-5.stats") is None
 
 
 def self_test():

@@ -129,8 +129,10 @@ if(NOT WIN32 AND NOT APPLE)
   endif()
 endif()
 
-# /sdl-stats-ipc: a local socket; the web client has none
-if(NOT EMSCRIPTEN)
+# /sdl-stats-ipc: a named pipe on Windows, a local socket elsewhere; the web client has none
+if(WIN32)
+  list(APPEND SRCS sdl_stats_ipc.hpp sdl_stats_ipc_win32.cpp)
+elseif(NOT EMSCRIPTEN)
   list(APPEND SRCS sdl_stats_ipc.hpp sdl_stats_ipc.cpp)
 endif()
 
@@ -149,7 +151,7 @@ list(
 )
 
 if(WIN32)
-  list(APPEND LIBS ws2_32)
+  list(APPEND LIBS advapi32)
 endif()
 
 if(NOT WITH_SDL_LINK_SHARED)
