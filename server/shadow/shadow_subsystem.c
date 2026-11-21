@@ -482,5 +482,18 @@ int shadow_subsystem_pointer_convert_alpha_pointer_data_to_format(
 
 void shadow_subsystem_frame_update(rdpShadowSubsystem* subsystem)
 {
+	/* a frame published without waiting is the clients' until they took it */
+	shadow_multiclient_wait(subsystem->updateEvent);
 	shadow_multiclient_publish_and_wait(subsystem->updateEvent);
+}
+
+void shadow_subsystem_frame_publish(rdpShadowSubsystem* subsystem)
+{
+	shadow_multiclient_wait(subsystem->updateEvent);
+	shadow_multiclient_publish(subsystem->updateEvent);
+}
+
+void shadow_subsystem_frame_wait(rdpShadowSubsystem* subsystem)
+{
+	shadow_multiclient_wait(subsystem->updateEvent);
 }

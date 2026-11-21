@@ -960,13 +960,12 @@ static int x11_shadow_query_cursor(x11ShadowSubsystem* subsystem, BOOL getImage)
 		y = root_y;
 	}
 
-	/* Convert to offset based on current surface */
+	/* Convert to offset based on current surface. No lock: the clients hold it through their
+	 * encode, and this runs between two captures; only this thread moves the surface. */
 	if (surface)
 	{
-		EnterCriticalSection(&surface->lock);
 		x -= surface->x;
 		y -= surface->y;
-		LeaveCriticalSection(&surface->lock);
 	}
 
 	if ((x != (INT64)subsystem->common.pointerX) || (y != (INT64)subsystem->common.pointerY))
@@ -1103,6 +1102,9 @@ static BOOL x11_shadow_check_resize(x11ShadowSubsystem* subsystem)
 	{
 		MONITOR_DEF* virtualScreen = &(subsystem->common.virtualScreen);
 
+		/* the clients must be done with the frame before the surface changes size */
+		shadow_subsystem_frame_wait(&subsystem->common);
+
 		/* Screen size changed. Refresh monitor definitions and trigger screen resize */
 		subsystem->common.numMonitors = x11_shadow_enum_monitors(subsystem->common.monitors, 16);
 		if (!shadow_screen_resize(subsystem->common.server->screen))
@@ -1167,17 +1169,19 @@ static int x11_shadow_screen_grab_disp_locked(x11ShadowSubsystem* subsystem, XIm
 		XCopyArea(subsystem->display, subsystem->root_window, subsystem->fb_pixmap,
 		          subsystem->xshm_gc, 0, 0, subsystem->width, subsystem->height, 0, 0);
 
-		EnterCriticalSection(&surface->lock);
+		/* no lock: see below */
 		status = shadow_capture_compare_with_format(
 		    surface->data, surface->format, surface->scanline, surface->width, surface->height,
 		    (BYTE*)&(image->data[surface->width * 4ull]), subsystem->format,
 		    WINPR_ASSERTING_INT_CAST(UINT32, image->bytes_per_line), invalidRect);
-		LeaveCriticalSection(&surface->lock);
 	}
 	else
 #endif
 	{
-		EnterCriticalSection(&surface->lock);
+		/* No surface lock while capturing and comparing: the clients encode the frame published
+		 * last from the surface meanwhile, under that lock, and only read it, as this does; this
+		 * thread writes it, and changes its size, only after shadow_subsystem_frame_wait(). The
+		 * image is a buffer of its own, so the next frame is captured while they encode. */
 		XImage* image = XGetImage(subsystem->display, subsystem->root_window, surface->x,
 		                          surface->y, surface->width, surface->height, AllPlanes, ZPixmap);
 
@@ -1189,7 +1193,6 @@ static int x11_shadow_screen_grab_disp_locked(x11ShadowSubsystem* subsystem, XIm
 			    WINPR_ASSERTING_INT_CAST(UINT32, image->bytes_per_line), invalidRect);
 		}
 		*ppimage = image;
-		LeaveCriticalSection(&surface->lock);
 	}
 
 	return status;
@@ -1263,12 +1266,10 @@ static int x11_shadow_screen_grab(x11ShadowSubsystem* subsystem)
 
 	const UINT64 captureStart = winpr_GetTickCount64NS();
 
-	{
-		EnterCriticalSection(&surface->lock);
-		surfaceRect.right = WINPR_ASSERTING_INT_CAST(UINT16, surface->width);
-		surfaceRect.bottom = WINPR_ASSERTING_INT_CAST(UINT16, surface->height);
-		LeaveCriticalSection(&surface->lock);
-	}
+	/* No lock: the clients hold it through their encode, and the next capture is to run
+	 * meanwhile; only this thread changes the surface's size (x11_shadow_check_resize()). */
+	surfaceRect.right = WINPR_ASSERTING_INT_CAST(UINT16, surface->width);
+	surfaceRect.bottom = WINPR_ASSERTING_INT_CAST(UINT16, surface->height);
 
 	XImage* image = nullptr;
 	RECTANGLE_16 invalidRect = WINPR_C_ARRAY_INIT;
@@ -1293,6 +1294,15 @@ static int x11_shadow_screen_grab(x11ShadowSubsystem* subsystem)
 
 	if (status)
 	{
+		/* the clients are done with the frame before: the surface is ours to write again, and
+		 * its damage is in their regions now (the wait is not capture time) */
+		const UINT64 waitStart = winpr_GetTickCount64NS();
+		shadow_subsystem_frame_wait(&subsystem->common);
+		const UINT64 waited = winpr_GetTickCount64NS() - waitStart;
+		EnterCriticalSection(&surface->lock);
+		region16_clear(&(surface->invalidRegion));
+		LeaveCriticalSection(&surface->lock);
+
 		const BOOL empty = x11_shadow_surface_update_invalid(surface, &invalidRect, &surfaceRect);
 
 		if (!empty)
@@ -1308,8 +1318,9 @@ static int x11_shadow_screen_grab(x11ShadowSubsystem* subsystem)
 #endif
 			count = ArrayList_Count(server->clients);
 			subsystem->common.captureStartNs = captureStart;
-			subsystem->common.captureNs = winpr_GetTickCount64NS() - captureStart;
-			shadow_subsystem_frame_update(&subsystem->common);
+			subsystem->common.captureNs = winpr_GetTickCount64NS() - captureStart - waited;
+			/* the next frame is captured while they encode this one */
+			shadow_subsystem_frame_publish(&subsystem->common);
 
 			if (count == 1)
 			{
@@ -1319,12 +1330,6 @@ static int x11_shadow_screen_grab(x11ShadowSubsystem* subsystem)
 				if (client)
 					subsystem->common.captureFrameRate =
 					    shadow_encoder_preferred_fps(client->encoder);
-			}
-
-			{
-				EnterCriticalSection(&surface->lock);
-				region16_clear(&(surface->invalidRegion));
-				LeaveCriticalSection(&surface->lock);
 			}
 		}
 	}
@@ -1436,6 +1441,8 @@ static DWORD WINAPI x11_shadow_subsystem_thread(LPVOID arg)
 		}
 	}
 
+	/* no frame of ours left with the clients when the surface goes */
+	shadow_subsystem_frame_wait(&subsystem->common);
 	ExitThread(0);
 	return 0;
 }

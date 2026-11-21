@@ -579,7 +579,19 @@ extern "C"
 	                                                   UINT32 format2, UINT32 nStep2,
 	                                                   RECTANGLE_16* WINPR_RESTRICT rect);
 
+	/** Publishes the surface's frame to the clients and waits until every one has taken it (after a
+	 *  frame published with shadow_subsystem_frame_publish(), it waits for that one first). */
 	FREERDP_API void shadow_subsystem_frame_update(rdpShadowSubsystem* subsystem);
+
+	/** A subsystem that captures the next frame while the clients encode this one: publishes the
+	 *  surface's frame and returns at once. Until shadow_subsystem_frame_wait() returns, the
+	 *  clients read the surface (data, invalid region): the subsystem may only read it, and
+	 *  captures into a buffer of its own. @since version 3.34.0 */
+	FREERDP_API void shadow_subsystem_frame_publish(rdpShadowSubsystem* subsystem);
+
+	/** Waits until every client has taken the frame published last (at once when none is out);
+	 *  then the subsystem may write the surface again. @since version 3.34.0 */
+	FREERDP_API void shadow_subsystem_frame_wait(rdpShadowSubsystem* subsystem);
 
 	WINPR_ATTR_NODISCARD
 	FREERDP_API BOOL shadow_client_post_msg(rdpShadowClient* client, void* context, UINT32 type,
