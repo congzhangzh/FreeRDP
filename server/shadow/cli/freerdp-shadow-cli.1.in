@@ -88,7 +88,8 @@ client also gets over the stats channel, the frame ids of its period (the ids th
 client acknowledges, to join both sides without a clock), its peer address and,
 for people, its start time. Without a path, or with on, it is
 freerdp-shadow-<pid>.stats.sock in XDG_RUNTIME_DIR or TMPDIR
-(%LOCALAPPDATA%\\FreeRDP on Windows); the path is logged at start. Several servers
+(on Windows a named pipe, \\\\.\\pipe\\freerdp-shadow-<pid>.stats, and a bare name gets
+that prefix); the path is logged at start. Several servers
 (a session manager's) need on, not one path: a path that cannot open is logged and
 the server runs without the socket. Off by default: no socket, no thread. The same
 value can come from FREERDP_SHADOW_STATS_IPC in the environment or in the

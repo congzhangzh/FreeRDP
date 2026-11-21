@@ -1,6 +1,7 @@
 /* The stats socket (/stats-ipc): the same cases as the SDL client's TestSDLStatsIpc, and the
- * line with every client's newest period. POSIX only: Wine has no AF_UNIX, a Windows run is
- * the kit's. */
+ * line with every client's newest period. On Windows the named pipe: the first and the newest
+ * line, the ninth reader refused, the name taken, a bare name, the server's process id, the line
+ * with the clients (built stand-alone for a real Windows: Wine's pipes differ). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,11 +13,150 @@
 #include "../shadow_gfx_stats.h"
 
 #if defined(_WIN32)
+#include <windows.h>
+
+#define CHECK(cond)                                                          \
+	do                                                                       \
+	{                                                                        \
+		if (!(cond))                                                         \
+		{                                                                    \
+			(void)fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #cond); \
+			return FALSE;                                                    \
+		}                                                                    \
+	} while (0)
+
+static HANDLE pipe_reader(const char* path)
+{
+	WCHAR name[300] = { 0 };
+	if (MultiByteToWideChar(CP_UTF8, 0, path, -1, name, 299) <= 0)
+		return INVALID_HANDLE_VALUE;
+	for (int x = 0; x < 100; x++)
+	{
+		HANDLE h = CreateFileW(name, GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+		if ((h != INVALID_HANDLE_VALUE) || (GetLastError() != ERROR_PIPE_BUSY))
+			return h;
+		Sleep(10);
+	}
+	return INVALID_HANDLE_VALUE;
+}
+
+/* the next line within ms (polled: a pipe read blocks) */
+static BOOL pipe_line(HANDLE h, char* line, size_t size, DWORD ms)
+{
+	size_t at = 0;
+	const UINT64 end = GetTickCount64() + ms;
+	while ((at + 1 < size) && (GetTickCount64() < end))
+	{
+		DWORD available = 0;
+		if (!PeekNamedPipe(h, nullptr, 0, nullptr, &available, nullptr))
+			return FALSE;
+		if (available == 0)
+		{
+			Sleep(5);
+			continue;
+		}
+		char c = 0;
+		DWORD n = 0;
+		if (!ReadFile(h, &c, 1, &n, nullptr) || (n != 1))
+			return FALSE;
+		if (c == '\n')
+		{
+			line[at] = '\0';
+			return TRUE;
+		}
+		line[at++] = c;
+	}
+	return FALSE;
+}
+
+static BOOL test_pipe(void)
+{
+	char path[300];
+	char error[512] = { 0 };
+	char line[8192];
+	CHECK(shadow_stats_ipc_default_path(path, sizeof(path), error, sizeof(error)));
+	char expected[300];
+	(void)_snprintf(expected, sizeof(expected), "\\\\.\\pipe\\freerdp-shadow-%lu.stats",
+	                (unsigned long)GetCurrentProcessId());
+	CHECK(strcmp(path, expected) == 0);
+
+	SHADOW_STATS_IPC* ipc = shadow_stats_ipc_open(path, error, sizeof(error));
+	if (!ipc)
+		(void)fprintf(stderr, "open: %s\n", error);
+	CHECK(ipc);
+	CHECK(strcmp(shadow_stats_ipc_path(ipc), path) == 0);
+
+	/* the name is taken: a second server is refused */
+	CHECK(!shadow_stats_ipc_open(path, error, sizeof(error)));
+	(void)printf("second open refused: %s\n", error);
+
+	/* the newest line at once, then each new one */
+	shadow_stats_ipc_publish(ipc, "one");
+	HANDLE r = pipe_reader(path);
+	CHECK(r != INVALID_HANDLE_VALUE);
+	ULONG serverPid = 0;
+	CHECK(GetNamedPipeServerProcessId(r, &serverPid) && (serverPid == GetCurrentProcessId()));
+	CHECK(pipe_line(r, line, sizeof(line), 2000));
+	CHECK(strcmp(line, "one") == 0);
+	shadow_stats_ipc_publish(ipc, "two");
+	CHECK(pipe_line(r, line, sizeof(line), 2000));
+	CHECK(strcmp(line, "two") == 0);
+
+	/* eight readers, the ninth finds no instance */
+	HANDLE more[SHADOW_STATS_IPC_MAX_READERS] = { 0 };
+	for (size_t x = 1; x < SHADOW_STATS_IPC_MAX_READERS; x++)
+	{
+		more[x] = pipe_reader(path);
+		CHECK(more[x] != INVALID_HANDLE_VALUE);
+		CHECK(pipe_line(more[x], line, sizeof(line), 2000)); /* each gets the newest at once */
+	}
+	for (int x = 0; (x < 200) && (shadow_stats_ipc_readers(ipc) < SHADOW_STATS_IPC_MAX_READERS);
+	     x++)
+		Sleep(10);
+	CHECK(shadow_stats_ipc_readers(ipc) == SHADOW_STATS_IPC_MAX_READERS);
+	{
+		WCHAR name[300] = { 0 };
+		(void)MultiByteToWideChar(CP_UTF8, 0, path, -1, name, 299);
+		HANDLE ninth = CreateFileW(name, GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+		const DWORD err = GetLastError();
+		if (ninth != INVALID_HANDLE_VALUE)
+			CloseHandle(ninth);
+		CHECK((ninth == INVALID_HANDLE_VALUE) && (err == ERROR_PIPE_BUSY));
+	}
+	for (size_t x = 1; x < SHADOW_STATS_IPC_MAX_READERS; x++)
+		CloseHandle(more[x]);
+
+	/* the line with every client's newest period */
+	shadow_stats_ipc_client_period(ipc, 1, "{\"connection_id\":\"1\",\"periods\":1}");
+	CHECK(pipe_line(r, line, sizeof(line), 2000));
+	{
+		const char prefix[] = "{\"schema\":\"freerdp-shadow-stats\",\"version\":1,";
+		CHECK(strncmp(line, prefix, sizeof(prefix) - 1) == 0);
+	}
+	CHECK(strstr(line, ",\"clients\":[{\"connection_id\":\"1\",\"periods\":1}]}"));
+	CloseHandle(r);
+	shadow_stats_ipc_free(ipc);
+
+	/* the name is free again; a bare name gets the prefix */
+	char bare[64];
+	(void)_snprintf(bare, sizeof(bare), "freerdp-shadow-test-%lu",
+	                (unsigned long)GetCurrentProcessId());
+	ipc = shadow_stats_ipc_open(bare, error, sizeof(error));
+	CHECK(ipc);
+	CHECK(strncmp(shadow_stats_ipc_path(ipc), "\\\\.\\pipe\\", 9) == 0);
+	shadow_stats_ipc_free(ipc);
+	/* a backslash in the name is refused */
+	CHECK(!shadow_stats_ipc_open("\\\\.\\pipe\\a\\b", error, sizeof(error)));
+	return TRUE;
+}
+
 int TestShadowStatsIpc(int argc, char* argv[])
 {
 	WINPR_UNUSED(argc);
 	WINPR_UNUSED(argv);
-	return 0;
+	const BOOL ok = test_pipe();
+	(void)printf("named pipe: %s\n", ok ? "ok" : "FAILED");
+	return ok ? 0 : -1;
 }
 #else
 #include <errno.h>

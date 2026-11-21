@@ -34,14 +34,17 @@
 /* clients a line carries; more are left out of it */
 #define SHADOW_STATS_IPC_MAX_CLIENTS 64u
 
-/** A read-only stream of lines on a local stream socket (AF_UNIX, on Windows too) for a program
- * of the same user that measures the server, the same rules as the SDL client's /sdl-stats-ipc.
+/** A read-only stream of lines for a program of the same user that measures the server, the same
+ * rules as the SDL client's /sdl-stats-ipc: a local stream socket (AF_UNIX) on Linux and macOS,
+ * a named pipe on Windows (byte mode, \\.\pipe\<name>; a reader checks that the pipe's server
+ * process, GetNamedPipeServerProcessId(), is the one in the name).
  *
  * A reader that connects gets the newest line at once, then each new line, until it closes;
  * what it sends is ignored. A reader slower than the lines gets the newest one when it is ready,
  * never a queue. Only the user that runs the server may connect: the socket file is 0600 in a
- * directory only that user (or root) may change, and on Linux and macOS each reader's user is
- * checked too. One thread of its own does the socket work.
+ * directory only that user (or root) may change; the pipe has an access list of this user and
+ * SYSTEM, its first instance claims the name, and remote readers are refused; each reader's
+ * user is checked too. One thread of its own does the work.
  *
  * Each line carries the newest period of every client (shadow_stats_ipc_client_period()), so a
  * reader that misses a line loses no period as long as it reads once a period. */
@@ -53,7 +56,8 @@ extern "C"
 #endif
 
 	/** The path used without one, per user and per process: freerdp-shadow-<pid>.stats.sock in
-	 *  XDG_RUNTIME_DIR or TMPDIR, or in %LOCALAPPDATA%\FreeRDP on Windows.
+	 *  XDG_RUNTIME_DIR or TMPDIR; \\.\pipe\freerdp-shadow-<pid>.stats on Windows (where a
+	 *  bare name gets the \\.\pipe\ prefix).
 	 *  @return FALSE with the reason in error */
 	WINPR_ATTR_NODISCARD FREERDP_LOCAL BOOL shadow_stats_ipc_default_path(char* path, size_t size,
 	                                                                      char* error,

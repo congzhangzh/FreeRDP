@@ -27,8 +27,8 @@
 #if defined(_WIN32)
 #include <winsock2.h>
 #include <windows.h>
-#include <afunix.h>
 #include <ws2tcpip.h>
+#include <sddl.h>
 #else
 #include <errno.h>
 #include <fcntl.h>
@@ -56,18 +56,20 @@
 
 #include "shadow_stats_ipc.h"
 
-#if defined(_WIN32)
-typedef SOCKET NATIVE_SOCKET;
-#define SHADOW_STATS_INVALID INVALID_SOCKET
-typedef WSAPOLLFD SHADOW_POLLFD;
-/* WSAPoll waits on sockets only: the thread looks for new lines this often */
-#define SHADOW_STATS_WAIT_MS 50
-#else
+typedef struct
+{
+	UINT64 connectionId;
+	char* object;
+} SHADOW_STATS_CLIENT;
+
+/* The transport: an AF_UNIX socket on Linux and macOS, a named pipe on Windows (Python's open(),
+ * PowerShell and .NET read a pipe; Python on Windows has no AF_UNIX). The same rules on both:
+ * the newest line, never a queue; at most SHADOW_STATS_IPC_MAX_READERS readers; this user only. */
+#if !defined(_WIN32)
 typedef int NATIVE_SOCKET;
 #define SHADOW_STATS_INVALID (-1)
 typedef struct pollfd SHADOW_POLLFD;
 #define SHADOW_STATS_WAIT_MS (-1)
-#endif
 
 typedef struct
 {
@@ -78,19 +80,11 @@ typedef struct
 	UINT64 seq;
 } SHADOW_STATS_READER;
 
-typedef struct
-{
-	UINT64 connectionId;
-	char* object;
-} SHADOW_STATS_CLIENT;
-
 struct s_shadow_stats_ipc
 {
 	char* path;
 	NATIVE_SOCKET listener;
-#if !defined(_WIN32)
 	int wake[2];
-#endif
 	HANDLE thread;
 	volatile LONG stop;
 	volatile LONG readerCount;
@@ -109,45 +103,27 @@ struct s_shadow_stats_ipc
 
 static void close_socket(NATIVE_SOCKET s)
 {
-#if defined(_WIN32)
-	closesocket(s);
-#else
 	close(s);
-#endif
 }
 
 static BOOL would_block(void)
 {
-#if defined(_WIN32)
-	return WSAGetLastError() == WSAEWOULDBLOCK;
-#else
 	return (errno == EAGAIN) || (errno == EWOULDBLOCK) || (errno == EINTR);
-#endif
 }
 
 static BOOL set_non_blocking(NATIVE_SOCKET s)
 {
-#if defined(_WIN32)
-	u_long on = 1;
-	return ioctlsocket(s, FIONBIO, &on) == 0;
-#else
 	const int flags = fcntl(s, F_GETFL, 0);
 	if (flags < 0)
 		return FALSE;
 	if (fcntl(s, F_SETFL, flags | O_NONBLOCK) != 0)
 		return FALSE;
 	return fcntl(s, F_SETFD, FD_CLOEXEC) == 0;
-#endif
 }
 
 static const char* last_error(char* buffer, size_t size)
 {
-#if defined(_WIN32)
-	(void)_snprintf(buffer, size, "error %d", WSAGetLastError());
-	return buffer;
-#else
 	return winpr_strerror(errno, buffer, size);
-#endif
 }
 
 static void set_error(char* error, size_t size, const char* format, const char* a, const char* b)
@@ -189,32 +165,6 @@ static BOOL listening(const char* path)
 /* Makes room for the socket at path, or says why not. */
 static BOOL prepare(const char* path, char* error, size_t size)
 {
-#if defined(_WIN32)
-	/* the directory is the user's own (%LOCALAPPDATA% by default); its ACL keeps others out */
-	WIN32_FIND_DATAA data = WINPR_C_ARRAY_INIT;
-	HANDLE find = FindFirstFileA(path, &data);
-	if (find == INVALID_HANDLE_VALUE)
-		return TRUE;
-	FindClose(find);
-	const BOOL isSocket = ((data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) &&
-	                      (data.dwReserved0 == IO_REPARSE_TAG_AF_UNIX);
-	if (!isSocket)
-	{
-		set_error(error, size, "not replacing a file that is no socket: %s%s", path, nullptr);
-		return FALSE;
-	}
-	if (listening(path))
-	{
-		set_error(error, size, "another server listens on %s%s", path, nullptr);
-		return FALSE;
-	}
-	if (!DeleteFileA(path))
-	{
-		set_error(error, size, "the old socket could not be removed: %s%s", path, nullptr);
-		return FALSE;
-	}
-	return TRUE;
-#else
 	char reason[128] = WINPR_C_ARRAY_INIT;
 	const uid_t me = geteuid();
 	char* parent = nullptr;
@@ -277,25 +227,17 @@ static BOOL prepare(const char* path, char* error, size_t size)
 		return FALSE;
 	}
 	return TRUE;
-#endif
 }
 
 static void remove_path(const char* path)
 {
-#if defined(_WIN32)
-	(void)DeleteFileA(path);
-#else
 	(void)unlink(path);
-#endif
 }
 
 /* the reader runs as this user */
 static BOOL same_user(NATIVE_SOCKET s)
 {
-#if defined(_WIN32)
-	WINPR_UNUSED(s);
-	return TRUE;
-#elif defined(SO_PEERCRED)
+#if defined(SO_PEERCRED)
 	struct ucred cred = WINPR_C_ARRAY_INIT;
 	socklen_t len = sizeof(cred);
 	if (getsockopt(s, SOL_SOCKET, SO_PEERCRED, &cred, &len) != 0)
@@ -332,7 +274,6 @@ static int send_flags(void)
 
 static void wake(SHADOW_STATS_IPC* ipc)
 {
-#if !defined(_WIN32)
 	if (ipc->wake[1] >= 0)
 	{
 		const char c = 0;
@@ -340,9 +281,6 @@ static void wake(SHADOW_STATS_IPC* ipc)
 		const ssize_t rc = write(ipc->wake[1], &c, 1);
 		WINPR_UNUSED(rc);
 	}
-#else
-	WINPR_UNUSED(ipc);
-#endif
 }
 
 static void drop_reader(SHADOW_STATS_IPC* ipc, size_t index)
@@ -393,13 +331,7 @@ static BOOL serve_reader(SHADOW_STATS_READER* reader, short revents)
 	if (((revents & POLLOUT) != 0) && (reader->sent < reader->length))
 	{
 		const size_t left = reader->length - reader->sent;
-#if defined(_WIN32)
-		/* a line is a few KiB; send() takes an int there */
-		const int chunk = (left > (size_t)INT32_MAX) ? INT32_MAX : (int)left;
-		const int n = send(reader->socket, reader->line + reader->sent, chunk, send_flags());
-#else
 		const ssize_t n = send(reader->socket, reader->line + reader->sent, left, send_flags());
-#endif
 		if (n > 0)
 			reader->sent += (size_t)n;
 		else if (!would_block())
@@ -443,10 +375,8 @@ static DWORD WINAPI shadow_stats_ipc_thread(LPVOID arg)
 		memset(fds, 0, sizeof(fds));
 		fds[count].fd = ipc->listener;
 		fds[count++].events = POLLIN;
-#if !defined(_WIN32)
 		fds[count].fd = ipc->wake[0];
 		fds[count++].events = POLLIN;
-#endif
 		const size_t first = count;
 		for (size_t x = 0; x < ipc->readersUsed; x++)
 		{
@@ -457,11 +387,7 @@ static DWORD WINAPI shadow_stats_ipc_thread(LPVOID arg)
 			count++;
 		}
 
-#if defined(_WIN32)
-		const int rc = WSAPoll(fds, (ULONG)count, SHADOW_STATS_WAIT_MS);
-#else
 		const int rc = poll(fds, (nfds_t)count, SHADOW_STATS_WAIT_MS);
-#endif
 		if (rc < 0)
 		{
 			if (would_block())
@@ -471,7 +397,6 @@ static DWORD WINAPI shadow_stats_ipc_thread(LPVOID arg)
 		if (InterlockedCompareExchange(&ipc->stop, 0, 0) != 0)
 			break;
 
-#if !defined(_WIN32)
 		if ((fds[1].revents & POLLIN) != 0)
 		{
 			char buffer[64];
@@ -479,7 +404,6 @@ static DWORD WINAPI shadow_stats_ipc_thread(LPVOID arg)
 			{
 			}
 		}
-#endif
 
 		/* backwards, so a dropped reader's place taken by the last one was already served */
 		for (size_t x = ipc->readersUsed; x > 0; x--)
@@ -505,24 +429,6 @@ BOOL shadow_stats_ipc_default_path(char* path, size_t size, char* error, size_t 
 	char name[64] = WINPR_C_ARRAY_INIT;
 	(void)_snprintf(name, sizeof(name), "freerdp-shadow-%" PRIu32 ".stats.sock",
 	                (UINT32)GetCurrentProcessId());
-#if defined(_WIN32)
-	const char* base = getenv("LOCALAPPDATA");
-	if (!base || (*base == '\0'))
-	{
-		set_error(error, errorSize, "LOCALAPPDATA is not set: give /stats-ipc a path%s%s",
-		          nullptr, nullptr);
-		return FALSE;
-	}
-	char dir[MAX_PATH] = WINPR_C_ARRAY_INIT;
-	(void)_snprintf(dir, sizeof(dir), "%s\\FreeRDP", base);
-	if (!CreateDirectoryA(dir, nullptr) && (GetLastError() != ERROR_ALREADY_EXISTS))
-	{
-		set_error(error, errorSize, "cannot create %s%s", dir, nullptr);
-		return FALSE;
-	}
-	const int rc = _snprintf(path, size, "%s\\%s", dir, name);
-	return (rc > 0) && ((size_t)rc < size);
-#else
 	/* XDG_RUNTIME_DIR is the user's own (0700); macOS has none, its TMPDIR is per user */
 	const char* variables[] = { "XDG_RUNTIME_DIR", "TMPDIR" };
 	for (size_t x = 0; x < ARRAYSIZE(variables); x++)
@@ -541,19 +447,10 @@ BOOL shadow_stats_ipc_default_path(char* path, size_t size, char* error, size_t 
 	          "neither XDG_RUNTIME_DIR nor TMPDIR is set: give /stats-ipc a path%s%s", nullptr,
 	          nullptr);
 	return FALSE;
-#endif
 }
 
 SHADOW_STATS_IPC* shadow_stats_ipc_open(const char* path, char* error, size_t errorSize)
 {
-#if defined(_WIN32)
-	WSADATA wsa = WINPR_C_ARRAY_INIT;
-	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
-	{
-		set_error(error, errorSize, "WSAStartup failed%s%s", nullptr, nullptr);
-		return nullptr;
-	}
-#endif
 	char reason[128] = WINPR_C_ARRAY_INIT;
 	struct sockaddr_un address;
 	SHADOW_STATS_IPC* ipc = nullptr;
@@ -575,14 +472,12 @@ SHADOW_STATS_IPC* shadow_stats_ipc_open(const char* path, char* error, size_t er
 		goto fail;
 	}
 	bound = TRUE;
-#if !defined(_WIN32)
 	if (chmod(path, S_IRUSR | S_IWUSR) != 0)
 	{
 		set_error(error, errorSize, "cannot make %s private: %s", path,
 		          last_error(reason, sizeof(reason)));
 		goto fail;
 	}
-#endif
 	if (listen(s, (int)SHADOW_STATS_IPC_MAX_READERS) != 0)
 	{
 		set_error(error, errorSize, "cannot listen on %s: %s", path,
@@ -595,10 +490,8 @@ SHADOW_STATS_IPC* shadow_stats_ipc_open(const char* path, char* error, size_t er
 		goto fail;
 	ipc->listener = s;
 	s = SHADOW_STATS_INVALID;
-#if !defined(_WIN32)
 	ipc->wake[0] = -1;
 	ipc->wake[1] = -1;
-#endif
 	ipc->path = _strdup(path);
 	if (!ipc->path || !InitializeCriticalSectionAndSpinCount(&ipc->lock, 0))
 	{
@@ -609,7 +502,6 @@ SHADOW_STATS_IPC* shadow_stats_ipc_open(const char* path, char* error, size_t er
 		set_error(error, errorSize, "out of memory%s%s", nullptr, nullptr);
 		goto fail;
 	}
-#if !defined(_WIN32)
 	if ((pipe(ipc->wake) != 0) || !set_non_blocking(ipc->wake[0]) ||
 	    !set_non_blocking(ipc->wake[1]))
 	{
@@ -617,7 +509,6 @@ SHADOW_STATS_IPC* shadow_stats_ipc_open(const char* path, char* error, size_t er
 		shadow_stats_ipc_free(ipc); /* closes and removes what is open */
 		return nullptr;
 	}
-#endif
 	ipc->thread = CreateThread(nullptr, 0, shadow_stats_ipc_thread, ipc, 0, nullptr);
 	if (!ipc->thread)
 	{
@@ -632,9 +523,6 @@ fail:
 		close_socket(s);
 	if (bound)
 		remove_path(path);
-#if defined(_WIN32)
-	WSACleanup();
-#endif
 	return nullptr;
 }
 
@@ -656,15 +544,11 @@ void shadow_stats_ipc_free(SHADOW_STATS_IPC* ipc)
 		drop_reader(ipc, ipc->readersUsed - 1);
 	close_socket(ipc->listener);
 	remove_path(ipc->path);
-#if defined(_WIN32)
-	WSACleanup();
-#else
 	for (size_t x = 0; x < ARRAYSIZE(ipc->wake); x++)
 	{
 		if (ipc->wake[x] >= 0)
 			close(ipc->wake[x]);
 	}
-#endif
 	for (size_t x = 0; x < ipc->clientCount; x++)
 		free(ipc->clients[x].object);
 	DeleteCriticalSection(&ipc->lock);
@@ -672,6 +556,399 @@ void shadow_stats_ipc_free(SHADOW_STATS_IPC* ipc)
 	free(ipc->path);
 	free(ipc);
 }
+#else /* _WIN32: a named pipe */
+
+#define SHADOW_STATS_PIPE_PREFIX "\\\\.\\pipe\\"
+#define SHADOW_STATS_PIPE_BUFFER (64u * 1024u)
+
+/* One instance of the pipe. It never moves while an operation is under way: the system writes
+ * into its OVERLAPPED until the operation ends (each is malloc'd on its own; only pointers move).
+ */
+typedef struct
+{
+	HANDLE pipe;
+	OVERLAPPED ov;
+	BOOL pending; /* a ConnectNamedPipe or a WriteFile is under way */
+	char* line;
+	size_t length;
+	UINT64 seq;
+} SHADOW_STATS_INSTANCE;
+
+struct s_shadow_stats_ipc
+{
+	char* path;
+	WCHAR* name;
+	BYTE user[256]; /* TOKEN_USER of this process */
+	PSECURITY_DESCRIPTOR sd;
+	SECURITY_ATTRIBUTES sa;
+	HANDLE wake;
+	SHADOW_STATS_INSTANCE* listening; /* waits for the next reader, nullptr when none */
+	SHADOW_STATS_INSTANCE* readers[SHADOW_STATS_IPC_MAX_READERS];
+	size_t readersUsed; /* the pipe thread's */
+
+	HANDLE thread;
+	volatile LONG stop;
+	volatile LONG readerCount;
+
+	CRITICAL_SECTION lock; /* latest, latestLength, latestSeq, clients, lineSeq */
+	char* latest;          /* with its line end, nullptr before the first */
+	size_t latestLength;
+	UINT64 latestSeq;
+	SHADOW_STATS_CLIENT clients[SHADOW_STATS_IPC_MAX_CLIENTS];
+	size_t clientCount;
+	UINT64 lineSeq;
+};
+
+static void set_error(char* error, size_t size, const char* format, const char* a, const char* b)
+{
+	if (error && (size > 0))
+		(void)_snprintf(error, size, format, a ? a : "", b ? b : "");
+}
+
+static void set_last_error(char* error, size_t size, const char* what)
+{
+	char code[32] = WINPR_C_ARRAY_INIT;
+	(void)_snprintf(code, sizeof(code), "%lu", (unsigned long)GetLastError());
+	set_error(error, size, "%s: error %s", what, code);
+}
+
+/* the user of a process, as TOKEN_USER in buffer */
+static PSID process_user(HANDLE process, BYTE* buffer, DWORD size)
+{
+	HANDLE token = nullptr;
+	if (!OpenProcessToken(process, TOKEN_QUERY, &token))
+		return nullptr;
+	DWORD length = 0;
+	const BOOL ok = GetTokenInformation(token, TokenUser, buffer, size, &length);
+	(void)CloseHandle(token);
+	return ok ? ((TOKEN_USER*)buffer)->User.Sid : nullptr;
+}
+
+/* the process at the other end of the pipe runs as this user */
+static BOOL same_user(SHADOW_STATS_IPC* ipc, HANDLE pipe)
+{
+	ULONG pid = 0;
+	if (!GetNamedPipeClientProcessId(pipe, &pid))
+		return FALSE;
+	HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+	if (!process)
+		return FALSE;
+	BYTE buffer[256] = WINPR_C_ARRAY_INIT;
+	PSID peer = process_user(process, buffer, sizeof(buffer));
+	const BOOL same = peer && EqualSid(peer, ((TOKEN_USER*)ipc->user)->User.Sid);
+	(void)CloseHandle(process);
+	return same;
+}
+
+static void close_instance(SHADOW_STATS_INSTANCE* instance)
+{
+	if (!instance)
+		return;
+	if (instance->pipe != INVALID_HANDLE_VALUE)
+	{
+		if (instance->pending)
+		{
+			/* the buffers of a cancelled operation are free only once it has ended */
+			(void)CancelIoEx(instance->pipe, &instance->ov);
+			DWORD n = 0;
+			(void)GetOverlappedResult(instance->pipe, &instance->ov, &n, TRUE);
+		}
+		(void)DisconnectNamedPipe(instance->pipe);
+		(void)CloseHandle(instance->pipe);
+	}
+	if (instance->ov.hEvent)
+		(void)CloseHandle(instance->ov.hEvent);
+	free(instance->line);
+	free(instance);
+}
+
+/* a new instance of the pipe, waiting for a reader */
+static BOOL pipe_listen(SHADOW_STATS_IPC* ipc, BOOL first, char* error, size_t size)
+{
+	SHADOW_STATS_INSTANCE* instance = calloc(1, sizeof(*instance));
+	if (!instance)
+	{
+		set_error(error, size, "out of memory%s%s", nullptr, nullptr);
+		return FALSE;
+	}
+	instance->pipe = INVALID_HANDLE_VALUE;
+	instance->ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+	if (!instance->ov.hEvent)
+	{
+		set_last_error(error, size, "CreateEvent");
+		close_instance(instance);
+		return FALSE;
+	}
+	const DWORD open =
+	    PIPE_ACCESS_OUTBOUND | FILE_FLAG_OVERLAPPED | (first ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0);
+	SetLastError(ERROR_SUCCESS);
+	instance->pipe = CreateNamedPipeW(
+	    ipc->name, open,
+	    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+	    SHADOW_STATS_IPC_MAX_READERS, SHADOW_STATS_PIPE_BUFFER, 0, 0, &ipc->sa);
+	/* Windows refuses a first instance of a name that exists (ERROR_ACCESS_DENIED); Wine 11
+	 * creates it and only says ERROR_ALREADY_EXISTS: refuse that too */
+	if (first && (instance->pipe != INVALID_HANDLE_VALUE) &&
+	    (GetLastError() == ERROR_ALREADY_EXISTS))
+	{
+		(void)CloseHandle(instance->pipe);
+		instance->pipe = INVALID_HANDLE_VALUE;
+		SetLastError(ERROR_ACCESS_DENIED);
+	}
+	if (instance->pipe == INVALID_HANDLE_VALUE)
+	{
+		if (first && (GetLastError() == ERROR_ACCESS_DENIED))
+			set_error(error, size, "another program has the pipe name %s%s", ipc->path, nullptr);
+		else
+			set_last_error(error, size, "CreateNamedPipe");
+		close_instance(instance);
+		return FALSE;
+	}
+	if (ConnectNamedPipe(instance->pipe, &instance->ov))
+		instance->pending = TRUE; /* overlapped: never TRUE, but if so the event tells */
+	else
+	{
+		switch (GetLastError())
+		{
+			case ERROR_IO_PENDING:
+				instance->pending = TRUE;
+				break;
+			case ERROR_PIPE_CONNECTED: /* a reader came between create and connect */
+				(void)SetEvent(instance->ov.hEvent);
+				break;
+			default:
+				set_last_error(error, size, "ConnectNamedPipe");
+				close_instance(instance);
+				return FALSE;
+		}
+	}
+	ipc->listening = instance;
+	return TRUE;
+}
+
+static void drop_reader(SHADOW_STATS_IPC* ipc, size_t index)
+{
+	close_instance(ipc->readers[index]);
+	ipc->readersUsed--;
+	ipc->readers[index] = ipc->readers[ipc->readersUsed];
+	ipc->readers[ipc->readersUsed] = nullptr;
+}
+
+static void wake(SHADOW_STATS_IPC* ipc)
+{
+	if (ipc->wake)
+		(void)SetEvent(ipc->wake);
+}
+
+static DWORD WINAPI shadow_stats_ipc_thread(LPVOID arg)
+{
+	SHADOW_STATS_IPC* ipc = arg;
+	WINPR_ASSERT(ipc);
+
+	while (InterlockedCompareExchange(&ipc->stop, 0, 0) == 0)
+	{
+		/* one instance waits for the next reader while there is room */
+		if (!ipc->listening && (ipc->readersUsed < SHADOW_STATS_IPC_MAX_READERS))
+			(void)pipe_listen(ipc, FALSE, nullptr, 0); /* tried again on the next round */
+
+		/* each reader that is done with its line gets the newest one */
+		EnterCriticalSection(&ipc->lock);
+		for (size_t x = ipc->readersUsed; x > 0; x--)
+		{
+			SHADOW_STATS_INSTANCE* reader = ipc->readers[x - 1];
+			if (reader->pending || (reader->seq >= ipc->latestSeq) || !ipc->latest)
+				continue;
+			char* copy = malloc(ipc->latestLength);
+			if (!copy)
+				continue;
+			memcpy(copy, ipc->latest, ipc->latestLength);
+			free(reader->line);
+			reader->line = copy;
+			reader->length = ipc->latestLength;
+			reader->seq = ipc->latestSeq;
+			(void)ResetEvent(reader->ov.hEvent);
+			if (WriteFile(reader->pipe, reader->line, (DWORD)reader->length, nullptr,
+			              &reader->ov) ||
+			    (GetLastError() == ERROR_IO_PENDING))
+				reader->pending = TRUE; /* done at once or not: the event tells */
+			else
+				drop_reader(ipc, x - 1); /* ERROR_NO_DATA, ERROR_BROKEN_PIPE: the reader left */
+		}
+		LeaveCriticalSection(&ipc->lock);
+		{
+			const LONG previous = InterlockedExchange(&ipc->readerCount, (LONG)ipc->readersUsed);
+			WINPR_UNUSED(previous);
+		}
+
+		HANDLE handles[2 + SHADOW_STATS_IPC_MAX_READERS] = WINPR_C_ARRAY_INIT;
+		DWORD count = 0;
+		handles[count++] = ipc->wake;
+		if (ipc->listening)
+			handles[count++] = ipc->listening->ov.hEvent;
+		for (size_t x = 0; x < ipc->readersUsed; x++)
+		{
+			if (ipc->readers[x]->pending)
+				handles[count++] = ipc->readers[x]->ov.hEvent;
+		}
+		/* without a listening instance (it failed) look again soon */
+		const DWORD timeout =
+		    (ipc->listening || (ipc->readersUsed >= SHADOW_STATS_IPC_MAX_READERS)) ? INFINITE : 100;
+		if (WaitForMultipleObjects(count, handles, FALSE, timeout) == WAIT_FAILED)
+			break;
+		if (InterlockedCompareExchange(&ipc->stop, 0, 0) != 0)
+			break;
+
+		/* finished writes; a reader that left fails its write (no POLLHUP on a pipe: it is seen
+		 * gone at its next line) */
+		for (size_t x = ipc->readersUsed; x > 0; x--)
+		{
+			SHADOW_STATS_INSTANCE* reader = ipc->readers[x - 1];
+			if (!reader->pending || (WaitForSingleObject(reader->ov.hEvent, 0) != WAIT_OBJECT_0))
+				continue;
+			DWORD n = 0;
+			const BOOL ok = GetOverlappedResult(reader->pipe, &reader->ov, &n, FALSE);
+			reader->pending = FALSE;
+			(void)ResetEvent(reader->ov.hEvent);
+			if (!ok || (n != reader->length))
+				drop_reader(ipc, x - 1);
+		}
+
+		/* a reader connected: of this user, and there is room, or closed at once */
+		SHADOW_STATS_INSTANCE* listening = ipc->listening;
+		if (listening && (WaitForSingleObject(listening->ov.hEvent, 0) == WAIT_OBJECT_0))
+		{
+			DWORD n = 0;
+			const BOOL ok = !listening->pending ||
+			                GetOverlappedResult(listening->pipe, &listening->ov, &n, FALSE);
+			listening->pending = FALSE;
+			(void)ResetEvent(listening->ov.hEvent);
+			ipc->listening = nullptr;
+			if (ok && (ipc->readersUsed < SHADOW_STATS_IPC_MAX_READERS) &&
+			    same_user(ipc, listening->pipe))
+				ipc->readers[ipc->readersUsed++] = listening;
+			else
+				close_instance(listening);
+		}
+	}
+	return 0;
+}
+
+BOOL shadow_stats_ipc_default_path(char* path, size_t size, char* error, size_t errorSize)
+{
+	WINPR_UNUSED(error);
+	WINPR_UNUSED(errorSize);
+	if (!path || (size == 0))
+		return FALSE;
+	const int rc =
+	    _snprintf(path, size, SHADOW_STATS_PIPE_PREFIX "freerdp-shadow-%" PRIu32 ".stats",
+	              (UINT32)GetCurrentProcessId());
+	return (rc > 0) && ((size_t)rc < size);
+}
+
+SHADOW_STATS_IPC* shadow_stats_ipc_open(const char* path, char* error, size_t errorSize)
+{
+	if (!path || (*path == '\0'))
+	{
+		set_error(error, errorSize, "no pipe name%s%s", nullptr, nullptr);
+		return nullptr;
+	}
+	/* a bare name gets the prefix; the name after it: 1 to 256 characters, no backslash */
+	const size_t prefix = strlen(SHADOW_STATS_PIPE_PREFIX);
+	const BOOL full = (_strnicmp(path, SHADOW_STATS_PIPE_PREFIX, prefix) == 0);
+	const char* rest = full ? path + prefix : path;
+	if ((*rest == '\0') || (strlen(rest) > 256) || strchr(rest, '\\'))
+	{
+		set_error(error, errorSize, "a pipe name needs 1 to 256 characters and no backslash: %s%s",
+		          path, nullptr);
+		return nullptr;
+	}
+
+	SHADOW_STATS_IPC* ipc = calloc(1, sizeof(*ipc));
+	if (!ipc)
+		return nullptr;
+	if (!InitializeCriticalSectionAndSpinCount(&ipc->lock, 0))
+	{
+		free(ipc);
+		return nullptr;
+	}
+	const size_t length = prefix + strlen(rest) + 1;
+	ipc->path = malloc(length);
+	if (!ipc->path)
+		goto fail;
+	(void)_snprintf(ipc->path, length, "%s%s", SHADOW_STATS_PIPE_PREFIX, rest);
+	ipc->name = ConvertUtf8ToWCharAlloc(ipc->path, nullptr);
+	if (!ipc->name)
+		goto fail;
+
+	/* only this user (and SYSTEM) may open the pipe or create an instance of its name */
+	PSID me = process_user(GetCurrentProcess(), ipc->user, sizeof(ipc->user));
+	LPWSTR sid = nullptr;
+	if (!me || !ConvertSidToStringSidW(me, &sid))
+	{
+		set_last_error(error, errorSize, "the user of this process");
+		goto fail;
+	}
+	WCHAR sddl[256] = WINPR_C_ARRAY_INIT;
+	(void)_snwprintf(sddl, ARRAYSIZE(sddl) - 1, L"D:P(A;;GA;;;%s)(A;;GA;;;SY)", sid);
+	LocalFree(sid);
+	if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, &ipc->sd,
+	                                                          nullptr))
+	{
+		set_last_error(error, errorSize, "the pipe's access list");
+		goto fail;
+	}
+	ipc->sa.nLength = sizeof(ipc->sa);
+	ipc->sa.lpSecurityDescriptor = ipc->sd;
+	ipc->sa.bInheritHandle = FALSE;
+	ipc->wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+	if (!ipc->wake)
+	{
+		set_last_error(error, errorSize, "CreateEvent");
+		goto fail;
+	}
+	if (!pipe_listen(ipc, TRUE, error, errorSize))
+		goto fail;
+	ipc->thread = CreateThread(nullptr, 0, shadow_stats_ipc_thread, ipc, 0, nullptr);
+	if (!ipc->thread)
+	{
+		set_error(error, errorSize, "no thread for %s%s", ipc->path, nullptr);
+		goto fail;
+	}
+	return ipc;
+
+fail:
+	shadow_stats_ipc_free(ipc);
+	return nullptr;
+}
+
+void shadow_stats_ipc_free(SHADOW_STATS_IPC* ipc)
+{
+	if (!ipc)
+		return;
+	(void)InterlockedExchange(&ipc->stop, 1);
+	wake(ipc);
+	if (ipc->thread)
+	{
+		(void)WaitForSingleObject(ipc->thread, INFINITE);
+		(void)CloseHandle(ipc->thread);
+	}
+	while (ipc->readersUsed > 0)
+		drop_reader(ipc, ipc->readersUsed - 1);
+	close_instance(ipc->listening);
+	if (ipc->wake)
+		(void)CloseHandle(ipc->wake);
+	if (ipc->sd)
+		LocalFree(ipc->sd);
+	for (size_t x = 0; x < ipc->clientCount; x++)
+		free(ipc->clients[x].object);
+	DeleteCriticalSection(&ipc->lock);
+	free(ipc->latest);
+	free(ipc->name);
+	free(ipc->path);
+	free(ipc);
+}
+
+#endif /* _WIN32 */
 
 /* the lock is held */
 static void publish_locked(SHADOW_STATS_IPC* ipc, char* lineWithEnd, size_t length)
@@ -798,7 +1075,11 @@ BOOL shadow_stats_ipc_peer_name(int sockfd, char* buffer, size_t size)
 	buffer[0] = '\0';
 	struct sockaddr_storage address = WINPR_C_ARRAY_INIT;
 	socklen_t length = sizeof(address);
-	if (getpeername((NATIVE_SOCKET)sockfd, (struct sockaddr*)&address, &length) != 0)
+#if defined(_WIN32)
+	if (getpeername((SOCKET)sockfd, (struct sockaddr*)&address, &length) != 0)
+#else
+	if (getpeername(sockfd, (struct sockaddr*)&address, &length) != 0)
+#endif
 		return FALSE;
 
 	char ip[INET6_ADDRSTRLEN] = WINPR_C_ARRAY_INIT;
