@@ -68,6 +68,60 @@ UINT32 shadow_encoder_inflight_frames(rdpShadowEncoder* encoder)
 	return encoder->frameId - encoder->lastAckframeId;
 }
 
+/* Sizes the frames in flight to the link, once a second (shadow_gfx_window_next()): it grows
+ * while the window is reached and the acknowledgements come as fast as without a queue (a long
+ * link: the window, not the link, holds the rate), and drops to what the link carries when they
+ * come later (a slow link: more frames would only queue up). The round trip without a queue is
+ * the lowest acknowledgement delay of the last one to two minutes. */
+#define SHADOW_GFX_ACK_SPAN_MS 60000u
+#define SHADOW_GFX_ACK_RATE_MS 1000u
+
+void shadow_encoder_ack_delay(rdpShadowEncoder* encoder, UINT64 delayNs)
+{
+	WINPR_ASSERT(encoder);
+	if (encoder->fixedInFlight)
+		return;
+
+	const UINT64 now = GetTickCount64();
+	if (delayNs > 0)
+	{
+		if (now - encoder->ackDelaySpanStart >= SHADOW_GFX_ACK_SPAN_MS)
+		{
+			encoder->ackDelayPrevMinNs = encoder->ackDelayMinNs;
+			encoder->ackDelayMinNs = 0;
+			encoder->ackDelaySpanStart = now;
+		}
+		if ((encoder->ackDelayMinNs == 0) || (delayNs < encoder->ackDelayMinNs))
+			encoder->ackDelayMinNs = delayNs;
+		encoder->acksDelaySumNs += MIN(delayNs, 10000000000ull);
+		encoder->acksDelays++;
+	}
+
+	encoder->acksCounted++;
+	const UINT64 elapsed = now - encoder->acksSecondStart;
+	if (elapsed < SHADOW_GFX_ACK_RATE_MS)
+		return;
+
+	const BOOL seen = (encoder->acksSecondStart != 0) && (elapsed < 2 * SHADOW_GFX_ACK_RATE_MS);
+	const UINT64 rate = (1000ull * encoder->acksCounted) / elapsed;
+	const UINT64 avg = encoder->acksDelays ? encoder->acksDelaySumNs / encoder->acksDelays : 0;
+	const UINT32 peak = encoder->inFlightPeak;
+	encoder->acksCounted = 0;
+	encoder->acksDelaySumNs = 0;
+	encoder->acksDelays = 0;
+	encoder->inFlightPeak = 0;
+	encoder->acksSecondStart = now;
+	/* after a pause (no frames, so no acknowledgements) the second says nothing about the link */
+	if (!seen)
+		return;
+
+	UINT64 base = encoder->ackDelayMinNs;
+	if ((encoder->ackDelayPrevMinNs != 0) && ((base == 0) || (encoder->ackDelayPrevMinNs < base)))
+		base = encoder->ackDelayPrevMinNs;
+	encoder->maxInFlight = shadow_gfx_window_next(encoder->maxInFlight, peak, base, avg,
+	                                              (UINT32)MIN(rate, UINT32_MAX));
+}
+
 UINT32 shadow_encoder_create_frame_id(rdpShadowEncoder* encoder)
 {
 	const UINT64 inFlightFrames = shadow_encoder_inflight_frames(encoder);
@@ -775,17 +829,21 @@ rdpShadowEncoder* shadow_encoder_new(rdpShadowClient* client)
 	shadow_encoder_reset_fps(encoder);
 	encoder->lastAckTick = GetTickCount64();
 	{
-		/* like xrdp's XRDP_GFX_FRAMES_IN_FLIGHT; 0 turns the limit off */
+		/* like xrdp's XRDP_GFX_FRAMES_IN_FLIGHT, but sized to the link by default; the
+		 * variable fixes it, 0 turns the limit off */
 		// NOLINTNEXTLINE(concurrency-mt-unsafe)
 		const char* env = getenv("FREERDP_SHADOW_GFX_FRAMES_IN_FLIGHT");
-		encoder->maxInFlight = SHADOW_GFX_FRAMES_IN_FLIGHT;
+		encoder->maxInFlight = SHADOW_GFX_WINDOW_MIN;
 		if (env && *env)
 		{
 			char* end = nullptr;
 			errno = 0;
 			const unsigned long value = strtoul(env, &end, 10);
 			if ((errno == 0) && end && (*end == '\0') && (value <= 1000))
+			{
 				encoder->maxInFlight = (UINT32)value;
+				encoder->fixedInFlight = TRUE;
+			}
 			else
 				WLog_WARN(TAG, "FREERDP_SHADOW_GFX_FRAMES_IN_FLIGHT=%s ignored: 0 to 1000", env);
 		}

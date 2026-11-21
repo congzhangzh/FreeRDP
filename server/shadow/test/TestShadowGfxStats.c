@@ -3,6 +3,7 @@
 
 #include <winpr/wtypes.h>
 #include <winpr/wlog.h>
+#include <winpr/winpr.h>
 
 #include "../shadow_gfx_stats.h"
 
@@ -201,6 +202,82 @@ static BOOL test_limits(void)
 	return TRUE;
 }
 
+/* the frames in flight from the round trip without a queue and the rate acknowledged */
+static BOOL test_window(void)
+{
+	const struct
+	{
+		UINT64 ackNs;
+		UINT32 rate;
+		UINT32 window;
+	} cases[] = {
+		{ 0, 60, SHADOW_GFX_WINDOW_MIN },                /* no delay known yet */
+		{ 10000000ull, 60, SHADOW_GFX_WINDOW_MIN },      /* a LAN: 1 + 2 */
+		{ 100000000ull, 60, SHADOW_GFX_WINDOW_MIN },     /* 6 + 2 */
+		{ 101000000ull, 60, 9 },                         /* 6.06 -> 7 + 2 */
+		{ 170000000ull, 60, 13 },                        /* 10.2 -> 11 + 2 */
+		{ 1000000000ull, 60, SHADOW_GFX_WINDOW_MAX },    /* 60 + 2: the cap */
+		{ 3600000000000ull, 60, SHADOW_GFX_WINDOW_MAX }, /* an hour: no overflow */
+		{ 170000000ull, 0, SHADOW_GFX_WINDOW_MIN },      /* no rate */
+		{ 250000000ull, 120, SHADOW_GFX_WINDOW_MAX },    /* 30 + 2 */
+	};
+	BOOL ok = TRUE;
+	for (size_t x = 0; x < ARRAYSIZE(cases); x++)
+	{
+		const UINT32 got = shadow_gfx_window(cases[x].ackNs, cases[x].rate);
+		if (got != cases[x].window)
+		{
+			(void)fprintf(stderr,
+			              "window %" PRIu64 " ns at %" PRIu32 " a second: %" PRIu32
+			              ", expected %" PRIu32 "\n",
+			              cases[x].ackNs, cases[x].rate, got, cases[x].window);
+			ok = FALSE;
+		}
+	}
+	return ok;
+}
+
+/* the next second's window: grow without a queue at the window, drop to the link with one */
+static BOOL test_window_next(void)
+{
+	const struct
+	{
+		UINT32 window;
+		UINT32 peak;
+		UINT64 baseMs;
+		UINT64 avgMs;
+		UINT32 rate;
+		UINT32 next;
+	} cases[] = {
+		{ 8, 7, 300, 315, 15, 10 },   /* a long link held at window - 1: grow */
+		{ 8, 5, 300, 315, 15, 8 },    /* not reached: the capture holds the rate, keep */
+		{ 31, 31, 300, 310, 60, 32 }, /* the cap */
+		{ 32, 31, 300, 310, 60, 32 }, /* at the cap */
+		{ 8, 7, 200, 975, 7, 8 },     /* a slow link with a queue: what it carries, the floor */
+		{ 20, 19, 100, 400, 30, 8 },  /* a queue built up: 30 a second x 100 ms + 2 -> the floor */
+		{ 20, 19, 300, 600, 30, 11 }, /* 30 a second x 300 ms + 2 */
+		{ 12, 11, 300, 420, 30, 12 }, /* between 5/4 and 3/2: keep */
+		{ 12, 11, 0, 420, 30, 12 },   /* no base yet: keep */
+		{ 12, 11, 300, 0, 30, 12 },   /* no delay this second: keep */
+		{ 0, 0, 300, 310, 30, 8 },    /* below the floor: the floor, not reached */
+	};
+	BOOL ok = TRUE;
+	for (size_t x = 0; x < ARRAYSIZE(cases); x++)
+	{
+		const UINT32 got =
+		    shadow_gfx_window_next(cases[x].window, cases[x].peak, cases[x].baseMs * 1000000ull,
+		                           cases[x].avgMs * 1000000ull, cases[x].rate);
+		if (got != cases[x].next)
+		{
+			(void)fprintf(stderr,
+			              "window_next case %" PRIuz ": %" PRIu32 ", expected %" PRIu32 "\n", x,
+			              got, cases[x].next);
+			ok = FALSE;
+		}
+	}
+	return ok;
+}
+
 /* without /gfx-stats-period the line is written only when its logger is at DEBUG or TRACE */
 static BOOL test_debug_switch(void)
 {
@@ -223,7 +300,8 @@ int TestShadowGfxStats(int argc, char* argv[])
 	WINPR_UNUSED(argv);
 
 	if (!test_normal() || !test_zero_sent() || !test_elapsed_zero() || !test_ring_wrap() ||
-	    !test_suspended_and_periods() || !test_limits() || !test_debug_switch())
+	    !test_suspended_and_periods() || !test_limits() || !test_debug_switch() || !test_window() ||
+	    !test_window_next())
 		return -1;
 	return 0;
 }

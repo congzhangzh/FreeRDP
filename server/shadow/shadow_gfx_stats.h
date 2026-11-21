@@ -29,6 +29,12 @@
 /* the logger of the line: its own, so a log filter can keep it or leave it out by name */
 #define SHADOW_GFX_STATS_TAG "com.freerdp.server.shadow.gfx"
 
+/* The frames in flight (shadow_gfx_window()): at least what xrdp keeps, at most what a slow link
+ * may queue (32 frames are half a second at 60 fps), and two more than one delay's worth */
+#define SHADOW_GFX_WINDOW_MIN 8u
+#define SHADOW_GFX_WINDOW_MAX 32u
+#define SHADOW_GFX_WINDOW_SPARE 2u
+
 /* the period of the counters when no /gfx-stats-period is given */
 #define SHADOW_GFX_STATS_DEFAULT_SECONDS 5u
 
@@ -66,9 +72,26 @@ extern "C"
 	FREERDP_LOCAL void shadow_gfx_stats_frame_sent(SHADOW_GFX_STATS* stats, UINT32 frameId,
 	                                               UINT64 startNs, UINT64 endNs);
 
-	/** counts an acknowledgement and, if the frame's send time is in the ring, its delay */
-	FREERDP_LOCAL void shadow_gfx_stats_frame_acked(SHADOW_GFX_STATS* stats, UINT32 frameId,
-	                                                UINT64 ackNs);
+	/** counts an acknowledgement and, if the frame's send time is in the ring, its delay
+	 *  @return that delay in ns, 0 when the send time was not in the ring */
+	FREERDP_LOCAL UINT64 shadow_gfx_stats_frame_acked(SHADOW_GFX_STATS* stats, UINT32 frameId,
+	                                                  UINT64 ackNs);
+
+	/** The frames in flight the link carries without a queue: the frames acknowledged per second
+	 *  (rate) times the round trip without a queue (baseAckNs), rounded up, and
+	 *  SHADOW_GFX_WINDOW_SPARE more, from SHADOW_GFX_WINDOW_MIN to SHADOW_GFX_WINDOW_MAX;
+	 *  SHADOW_GFX_WINDOW_MIN while either is not known (0). */
+	WINPR_ATTR_NODISCARD FREERDP_LOCAL UINT32 shadow_gfx_window(UINT64 baseAckNs, UINT32 rate);
+
+	/** The next second's frames in flight from this second's: window frames were allowed, at most
+	 *  peak were out, the acknowledgements took avgAckNs on average and rate came a second.
+	 *  No queue (avgAckNs at most 5/4 of baseAckNs) and the window reached (the encoder slows
+	 *  down at window - 1): SHADOW_GFX_WINDOW_SPARE more. A queue (above 3/2): what the link
+	 *  carries (shadow_gfx_window()). Else, or nothing known: unchanged. Always within
+	 *  SHADOW_GFX_WINDOW_MIN to SHADOW_GFX_WINDOW_MAX. */
+	WINPR_ATTR_NODISCARD FREERDP_LOCAL UINT32 shadow_gfx_window_next(UINT32 window, UINT32 peak,
+	                                                                 UINT64 baseAckNs,
+	                                                                 UINT64 avgAckNs, UINT32 rate);
 
 	/** starts the next period: the counters are zeroed, the send times of frames in flight kept */
 	FREERDP_LOCAL void shadow_gfx_stats_next_period(SHADOW_GFX_STATS* stats);

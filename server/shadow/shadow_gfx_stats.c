@@ -63,7 +63,7 @@ void shadow_gfx_stats_frame_sent(SHADOW_GFX_STATS* stats, UINT32 frameId, UINT64
 	slot->sentNs = endNs;
 }
 
-void shadow_gfx_stats_frame_acked(SHADOW_GFX_STATS* stats, UINT32 frameId, UINT64 ackNs)
+UINT64 shadow_gfx_stats_frame_acked(SHADOW_GFX_STATS* stats, UINT32 frameId, UINT64 ackNs)
 {
 	WINPR_ASSERT(stats);
 
@@ -73,16 +73,44 @@ void shadow_gfx_stats_frame_acked(SHADOW_GFX_STATS* stats, UINT32 frameId, UINT6
 	 * twice, or a frame id that was never sent has no delay */
 	SHADOW_GFX_SENT_FRAME* slot = &stats->ring[frameId & (SHADOW_GFX_STATS_RING - 1)];
 	if ((slot->sentNs == 0) || (slot->frameId != frameId))
-		return;
+		return 0;
 	const UINT64 sentNs = slot->sentNs;
 	slot->sentNs = 0;
 	if (ackNs < sentNs)
-		return;
+		return 0;
 
 	const UINT64 delayNs = ackNs - sentNs;
 	stats->ackDelays++;
 	stats->ackDelaySumNs = add_saturated(stats->ackDelaySumNs, delayNs);
 	stats->ackDelayMaxNs = MAX(stats->ackDelayMaxNs, delayNs);
+	return delayNs;
+}
+
+UINT32 shadow_gfx_window(UINT64 baseAckNs, UINT32 rate)
+{
+	if ((baseAckNs == 0) || (rate == 0))
+		return SHADOW_GFX_WINDOW_MIN;
+	/* the frames acknowledged during one round trip, rounded up; a delay of seconds or a rate
+	 * of thousands caps first, so the product stays far below UINT64_MAX */
+	const UINT64 perDelay =
+	    (MIN(baseAckNs, 10000000000ull) * MIN(rate, 1000u) + 999999999ull) / 1000000000ull;
+	const UINT64 window = perDelay + SHADOW_GFX_WINDOW_SPARE;
+	return (UINT32)MIN(MAX(window, SHADOW_GFX_WINDOW_MIN), SHADOW_GFX_WINDOW_MAX);
+}
+
+UINT32 shadow_gfx_window_next(UINT32 window, UINT32 peak, UINT64 baseAckNs, UINT64 avgAckNs,
+                              UINT32 rate)
+{
+	UINT32 next = MIN(MAX(window, SHADOW_GFX_WINDOW_MIN), SHADOW_GFX_WINDOW_MAX);
+	if ((baseAckNs == 0) || (avgAckNs == 0))
+		return next;
+	const UINT64 base = MIN(baseAckNs, 10000000000ull);
+	const UINT64 avg = MIN(avgAckNs, 10000000000ull);
+	if ((avg * 4 <= base * 5) && (peak + 1 >= next))
+		next = MIN(next + SHADOW_GFX_WINDOW_SPARE, SHADOW_GFX_WINDOW_MAX);
+	else if (avg * 2 > base * 3)
+		next = shadow_gfx_window(base, rate);
+	return next;
 }
 
 void shadow_gfx_stats_next_period(SHADOW_GFX_STATS* stats)

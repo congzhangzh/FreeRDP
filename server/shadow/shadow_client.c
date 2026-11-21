@@ -901,7 +901,9 @@ static inline void shadow_client_common_frame_acknowledge(rdpShadowClient* clien
 	client->encoder->lastAckframeId = frameId;
 	client->encoder->lastAckTick = GetTickCount64();
 	client->encoder->everAcked = TRUE;
-	shadow_gfx_stats_frame_acked(&client->encoder->gfxStats, frameId, winpr_GetTickCount64NS());
+	shadow_encoder_ack_delay(client->encoder,
+	                         shadow_gfx_stats_frame_acked(&client->encoder->gfxStats, frameId,
+	                                                      winpr_GetTickCount64NS()));
 }
 
 WINPR_ATTR_NODISCARD
@@ -3323,6 +3325,7 @@ static BOOL shadow_client_gfx_must_wait(rdpShadowClient* client, const SHADOW_GF
 	/* 0 when the client suspended its acknowledgements */
 	const UINT32 inFlight = shadow_encoder_inflight_frames(encoder);
 	encoder->gfxStats.maxInFlight = MAX(encoder->gfxStats.maxInFlight, inFlight);
+	encoder->inFlightPeak = MAX(encoder->inFlightPeak, inFlight);
 	if (inFlight < encoder->maxInFlight)
 		return FALSE;
 

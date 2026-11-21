@@ -29,10 +29,6 @@
 
 #include "shadow_gfx_stats.h"
 
-/* GFX frames a client may have unacknowledged before it gets no new one, like xrdp's
- * XRDP_GFX_FRAMES_IN_FLIGHT=8; FREERDP_SHADOW_GFX_FRAMES_IN_FLIGHT overrides it */
-#define SHADOW_GFX_FRAMES_IN_FLIGHT 8
-
 /* the most frames per second a subsystem that paces its capture by
  * shadow_encoder_preferred_fps() is asked for (X11, Windows) */
 #define SHADOW_ENCODER_MAX_FPS 60
@@ -78,8 +74,19 @@ struct rdp_shadow_encoder
 	UINT32 queueDepth;
 
 	/* GFX flow control (shadow_client.c): no new frame while maxInFlight frames are not
-	 * acknowledged (0: no limit). gfxHeld: a round's damage waits in the client's region. */
+	 * acknowledged (0: no limit). gfxHeld: a round's damage waits in the client's region.
+	 * maxInFlight follows the link (shadow_encoder_ack_delay()) unless
+	 * FREERDP_SHADOW_GFX_FRAMES_IN_FLIGHT fixes it (fixedInFlight). */
 	UINT32 maxInFlight;
+	BOOL fixedInFlight;
+	UINT64 ackDelayMinNs;     /* the lowest acknowledgement delay of this span, 0: none */
+	UINT64 ackDelayPrevMinNs; /* of the span before */
+	UINT64 ackDelaySpanStart; /* ms */
+	UINT32 acksCounted;       /* acknowledgements in this second */
+	UINT64 acksSecondStart;   /* ms */
+	UINT64 acksDelaySumNs;    /* their delays, and how many had one */
+	UINT32 acksDelays;
+	UINT32 inFlightPeak; /* the most frames out in this second (shadow_client_gfx_must_wait) */
 	UINT64 lastAckTick;
 	BOOL gfxHeld;
 	BOOL everAcked; /* the client acknowledged a frame at least once */
@@ -108,6 +115,8 @@ extern "C"
 	WINPR_ATTR_NODISCARD int shadow_encoder_reset(rdpShadowEncoder* encoder);
 	WINPR_ATTR_NODISCARD int shadow_encoder_prepare(rdpShadowEncoder* encoder, UINT32 codecs);
 	WINPR_ATTR_NODISCARD UINT32 shadow_encoder_create_frame_id(rdpShadowEncoder* encoder);
+	/** an acknowledgement's delay (send to acknowledgement, ns): sizes the frames in flight */
+	void shadow_encoder_ack_delay(rdpShadowEncoder* encoder, UINT64 delayNs);
 
 	void shadow_encoder_free(rdpShadowEncoder* encoder);
 
