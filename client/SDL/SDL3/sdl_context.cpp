@@ -88,9 +88,10 @@ SdlContext::SdlContext(rdpContext* context)
 	_args.push_back({ sdl_stats_ipc, COMMAND_LINE_VALUE_OPTIONAL, "<path>", nullptr, nullptr, -1,
 	                  nullptr,
 	                  "Send the overlay's numbers once a second as one line of JSON to a local "
-	                  "socket that only this user can read (default path: in XDG_RUNTIME_DIR, "
-	                  "TMPDIR or %LOCALAPPDATA%\\FreeRDP, logged at start), whether the overlay "
-	                  "shows or not" });
+	                  "socket that only this user can read, on Windows a named pipe (default: "
+	                  "sdl-freerdp-<pid>.stats.sock in XDG_RUNTIME_DIR or TMPDIR, on Windows "
+	                  "\\\\.\\pipe\\sdl-freerdp-<pid>.stats; logged at start), whether the "
+	                  "overlay shows or not" });
 #endif
 
 	/* Push a null element used as abort when iterating the array */

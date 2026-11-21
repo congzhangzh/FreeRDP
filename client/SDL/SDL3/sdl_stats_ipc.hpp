@@ -27,21 +27,24 @@
 #include <string>
 #include <thread>
 
-/** A read-only stream of lines on a local stream socket (AF_UNIX, on Windows too), for a
- * program of the same user that measures the client.
+/** A read-only stream of lines for a program of the same user that measures the client: a local
+ * stream socket (AF_UNIX) on Linux and macOS (sdl_stats_ipc.cpp), a named pipe on Windows
+ * (sdl_stats_ipc_win32.cpp), with the same rules.
  *
  * A reader that connects gets the newest line at once, then each new line, until it closes.
  * What it sends is ignored. A reader that reads slower than lines come gets the newest one when
- * it is ready, never a queue. Only the user that runs the client may connect: the socket file
- * is 0600 in a directory only that user may change, and on Linux and macOS each reader's user is
- * checked too. One thread of its own does all the socket work; publish() only hands it a line. */
+ * it is ready, never a queue. Only the user that runs the client may connect: the socket file is
+ * 0600 in a directory only that user may change and each reader's user is checked; the pipe has a
+ * DACL of this user and SYSTEM, rejects remote clients, and each reader's process token is checked.
+ * One thread of its own does all the work; publish() only hands it a line. */
 class SdlStatsIpc
 {
   public:
 	static constexpr size_t maxReaders = 8;
 
-	/** Open the socket at path. An existing file there is replaced only when it is a socket of
-	 * this user that nobody listens on.
+	/** Open the socket at path (on Windows: the pipe "\\.\pipe\<name>", a bare name gets
+	 * that prefix). An existing socket file is replaced only when it is a socket of this user that
+	 * nobody listens on; a pipe name in use is refused.
 	 * @return the server, or nullptr with the reason in error */
 	[[nodiscard]] static std::unique_ptr<SdlStatsIpc> open(const std::string& path,
 	                                                       std::string& error);
@@ -63,21 +66,18 @@ class SdlStatsIpc
 
 	[[nodiscard]] const std::string& path() const;
 
-	/** @return the readers connected now */
+	/** @return the readers connected now (on Windows a reader that left is noticed at the next
+	 * line: a pipe tells nothing before a write) */
 	[[nodiscard]] size_t readers() const;
-
-	/* the platform's socket, wide enough for both */
-	using Socket = intptr_t;
 
   private:
 	struct Impl;
 
-	SdlStatsIpc(std::string path, Socket listener);
+	explicit SdlStatsIpc(std::string path);
 	void run();
 	void wake();
 
 	std::string _path;
-	Socket _listener;
 	std::unique_ptr<Impl> _impl;
 	std::atomic<bool> _stop = false;
 	std::atomic<size_t> _readers = 0;
