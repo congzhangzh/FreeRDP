@@ -48,6 +48,8 @@ set(SRCS
     sdl_overlay.cpp
     sdl_overlay_model.hpp
     sdl_overlay_model.cpp
+    sdl_stats_json.hpp
+    sdl_stats_json.cpp
     sdl_clip.hpp
     sdl_clip.cpp
     sdl_web_clip_offers.hpp
@@ -127,6 +129,11 @@ if(NOT WIN32 AND NOT APPLE)
   endif()
 endif()
 
+# /sdl-stats-ipc: a local socket; the web client has none
+if(NOT EMSCRIPTEN)
+  list(APPEND SRCS sdl_stats_ipc.hpp sdl_stats_ipc.cpp)
+endif()
+
 add_win_console_manifest(SRCS)
 
 list(
@@ -140,6 +147,10 @@ list(
   sdl3-dialogs
   sdl-common-prefs
 )
+
+if(WIN32)
+  list(APPEND LIBS ws2_32)
+endif()
 
 if(NOT WITH_SDL_LINK_SHARED)
   list(APPEND LIBS SDL3::SDL3-static)

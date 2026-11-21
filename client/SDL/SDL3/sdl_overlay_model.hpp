@@ -55,6 +55,9 @@ namespace sdl::overlay
 		[[nodiscard]] std::optional<uint64_t> get(const Reading& r, const std::string& name) const;
 		[[nodiscard]] bool has(const std::string& name) const;
 
+		/** @return false for a name that is no statistic: empty, or an unused slot */
+		[[nodiscard]] static bool used(const std::string& name);
+
 	  private:
 		std::unordered_map<std::string, size_t> _index;
 	};

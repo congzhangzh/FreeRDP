@@ -34,14 +34,22 @@
 #include <freerdp/timer.h>
 
 #include "sdl_overlay_model.hpp"
+#if !defined(__EMSCRIPTEN__)
+#include "sdl_stats_ipc.hpp"
+#endif
 
 class SdlContext;
 
 /** The stats and info overlay: off by default, a hotkey shows and hides it.
  *
  * The client's runtime statistics are read once a second on the session thread, by a FreeRDP
- * timer that runs only while the overlay shows, and drawn on SDL's thread over the picture,
- * never into it: the session's size and picture do not change. Off, nothing runs. */
+ * timer that runs only while the overlay shows (or /sdl-stats-ipc is on), and drawn on SDL's
+ * thread over the picture, never into it: the session's size and picture do not change. Off,
+ * nothing runs.
+ *
+ * With /sdl-stats-ipc the same rows, and the statistics they come from, also go to a local
+ * socket as one line of JSON per reading (sdl_stats_json.hpp), whether the overlay shows or not:
+ * a program measures the real client the way the overlay shows it. */
 class SdlOverlay
 {
   public:
@@ -54,13 +62,18 @@ class SdlOverlay
 
 	[[nodiscard]] bool visible() const;
 
+	/** Before the session starts: send every reading to a socket at path (nullptr or empty:
+	 * the default path). @return false when the socket could not open, the reason logged */
+	[[nodiscard]] bool openIpc(const char* path);
+
 	/** SDL's thread: show or hide. Shown before the session connects, it starts with it. */
 	[[nodiscard]] bool show(bool on);
 
 	/** The session thread, when a connection (or a reconnect) is up: rows start again. */
 	[[nodiscard]] bool connected();
 
-	/** SDL's thread, on SDL_EVENT_USER_OVERLAY: take the newest reading, build the rows.
+	/** SDL's thread, on SDL_EVENT_USER_OVERLAY: take the newest reading, build the rows and
+	 * send them to the socket, if any. rendererName may be nullptr (no window).
 	 * @return true when there is something new to draw */
 	[[nodiscard]] bool update(int windowWidth, int windowHeight, const char* rendererName);
 
@@ -72,7 +85,10 @@ class SdlOverlay
 	[[nodiscard]] uint64_t generation() const;
 
   private:
+	[[nodiscard]] bool ipcOn() const;
+	[[nodiscard]] bool wanted() const;
 	[[nodiscard]] bool arm();
+	void publish(const sdl::overlay::View& view, const sdl::overlay::Reading& reading);
 	[[nodiscard]] static uint64_t onTimer(rdpContext* context, void* userdata,
 	                                      FreeRDP_TimerID timerID, uint64_t timestamp,
 	                                      uint64_t interval);
@@ -88,9 +104,17 @@ class SdlOverlay
 	std::optional<sdl::overlay::Reading> _pending;
 	std::chrono::steady_clock::time_point _since;
 	bool _restart = false;
+	uint64_t _connection = 0;
+
+#if !defined(__EMSCRIPTEN__)
+	/* opened before the session starts, closed with the overlay */
+	std::unique_ptr<SdlStatsIpc> _ipc;
+#endif
 
 	/* SDL's thread only */
+	std::vector<std::string> _statNames;
 	std::optional<sdl::overlay::Names> _names;
+	uint64_t _ipcSeq = 0;
 	sdl::overlay::History _history;
 	std::vector<sdl::overlay::Row> _client;
 	std::vector<sdl::overlay::Row> _left;

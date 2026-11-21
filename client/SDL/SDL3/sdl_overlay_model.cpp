@@ -392,12 +392,17 @@ namespace sdl::overlay
 		for (size_t x = 0; x < names.size(); x++)
 		{
 			const auto& name = names.at(x);
-			if (name.empty() || (name == "FREERDP_CLIENT_STATS_UNUSED") ||
-			    startsWith(name, "RDPGFX_CODECID_UNKNOWN") ||
-			    startsWith(name, "RDPGFX_STATS_UNUSED"))
+			if (!used(name))
 				continue;
 			_index.emplace(name, x);
 		}
+	}
+
+	bool Names::used(const std::string& name)
+	{
+		return !name.empty() && (name != "FREERDP_CLIENT_STATS_UNUSED") &&
+		       !startsWith(name, "RDPGFX_CODECID_UNKNOWN") &&
+		       !startsWith(name, "RDPGFX_STATS_UNUSED");
 	}
 
 	std::optional<uint64_t> Names::get(const Reading& r, const std::string& name) const

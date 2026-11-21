@@ -31,6 +31,7 @@
 #include <freerdp/log.h>
 
 #include "sdl_overlay.hpp"
+#include "sdl_stats_json.hpp"
 #include "sdl_context.hpp"
 #include "sdl_utils.hpp"
 #include "dialogs/res/sdl3_resource_manager.hpp"
@@ -147,11 +148,51 @@ bool SdlOverlay::visible() const
 	return _visible;
 }
 
+bool SdlOverlay::openIpc(const char* path)
+{
+#if defined(__EMSCRIPTEN__)
+	WINPR_UNUSED(path);
+	WLog_Print(_sdl->getWLog(), WLOG_ERROR, "the web client has no /sdl-stats-ipc");
+	return false;
+#else
+	std::string error;
+	std::string where = path ? path : "";
+	if (where.empty())
+		where = SdlStatsIpc::defaultPath(error);
+	if (!where.empty())
+		_ipc = SdlStatsIpc::open(where, error);
+	if (!_ipc)
+	{
+		WLog_Print(_sdl->getWLog(), WLOG_ERROR, "/sdl-stats-ipc: %s", error.c_str());
+		return false;
+	}
+	WLog_Print(_sdl->getWLog(), WLOG_INFO, "/sdl-stats-ipc: the statistics go to %s",
+	           _ipc->path().c_str());
+	return true;
+#endif
+}
+
+bool SdlOverlay::ipcOn() const
+{
+#if defined(__EMSCRIPTEN__)
+	return false;
+#else
+	return _ipc != nullptr;
+#endif
+}
+
+/* the timer runs for the overlay or the socket */
+bool SdlOverlay::wanted() const
+{
+	return _visible || ipcOn();
+}
+
 bool SdlOverlay::show(bool on)
 {
-	if (on && !_visible.exchange(true))
+	if (on && !_visible.exchange(true) && !ipcOn())
 	{
-		/* nothing was read while hidden: the averages start over, never across the gap */
+		/* nothing was read while hidden: the averages start over, never across the gap (with
+		 * the socket on, the readings went on) */
 		std::scoped_lock lock(_mutex);
 		_restart = true;
 	}
@@ -168,8 +209,9 @@ bool SdlOverlay::connected()
 		_since = std::chrono::steady_clock::now();
 		_pending.reset();
 		_restart = true;
+		_connection++;
 	}
-	if (!_visible)
+	if (!wanted())
 		return true;
 	return arm();
 }
@@ -197,12 +239,12 @@ uint64_t SdlOverlay::onTimer(rdpContext* context, void* userdata,
 	auto overlay = static_cast<SdlOverlay*>(userdata);
 	WINPR_ASSERT(overlay);
 
-	if (!overlay->_visible)
+	if (!overlay->wanted())
 	{
 		/* Stop, unless it was shown again meanwhile: then this timer goes on, or the one a
 		 * show added does (the compare exchange lets only one go on). */
 		overlay->_armed = false;
-		if (!overlay->_visible)
+		if (!overlay->wanted())
 			return 0;
 		bool expected = false;
 		if (!overlay->_armed.compare_exchange_strong(expected, true))
@@ -260,11 +302,17 @@ bool SdlOverlay::update(int windowWidth, int windowHeight, const char* rendererN
 	}
 	if (restart)
 		_history.clear();
-	if (!reading || !_visible)
+	if (!reading || !wanted())
 		return false;
 
-	const auto& names = _names ? *_names : _names.emplace(statsNames());
-	if (_client.empty())
+	if (!_names)
+	{
+		_statNames = statsNames();
+		_names.emplace(_statNames);
+	}
+	const auto& names = *_names;
+	/* without a window there is no renderer to name yet */
+	if (_client.empty() || !rendererName)
 		clientRows(rendererName);
 
 	sdl::overlay::View view;
@@ -280,10 +328,39 @@ bool SdlOverlay::update(int windowWidth, int windowHeight, const char* rendererN
 	_server = sdl::overlay::serverRows(names, *reading);
 	_right = sdl::overlay::realtimeRows(names, *reading, _history.latest(), view);
 	_history.add(std::move(*reading));
+	const sdl::overlay::Reading* latest = _history.latest();
 	for (auto& row : sdl::overlay::averageRows(names, _history))
 		_right.push_back(std::move(row));
 	_generation++;
-	return true;
+	if (latest)
+		publish(view, *latest);
+	return _visible;
+}
+
+void SdlOverlay::publish(const sdl::overlay::View& view, const sdl::overlay::Reading& reading)
+{
+#if defined(__EMSCRIPTEN__)
+	WINPR_UNUSED(view);
+	WINPR_UNUSED(reading);
+#else
+	if (!_ipc)
+		return;
+	sdl::stats::Snapshot snapshot;
+	snapshot.seq = ++_ipcSeq;
+	{
+		std::scoped_lock lock(_mutex);
+		snapshot.connection = _connection;
+	}
+	snapshot.sessionSeconds = view.sessionSeconds;
+	snapshot.windowWidth = view.windowWidth;
+	snapshot.windowHeight = view.windowHeight;
+	snapshot.names = &_statNames;
+	snapshot.reading = &reading;
+	snapshot.client = &_left;
+	snapshot.server = &_server;
+	snapshot.realtime = &_right;
+	_ipc->publish(sdl::stats::toJson(snapshot));
+#endif
 }
 
 const std::vector<sdl::overlay::Row>& SdlOverlay::left() const

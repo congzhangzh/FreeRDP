@@ -6,8 +6,11 @@ set(${MODULE_PREFIX}_DRIVER ${MODULE_NAME}.cpp)
 set(${MODULE_PREFIX}_TESTS TestSDLPrefs.cpp TestSDLAadHelper.cpp)
 if(WITH_CLIENT_SDL3)
   list(APPEND ${MODULE_PREFIX}_TESTS TestSDLRailWindowStyle.cpp TestSDLWebClipOffers.cpp TestSDLWheel.cpp
-       TestSDLOverlayModel.cpp
+       TestSDLOverlayModel.cpp TestSDLStatsJson.cpp
   )
+  if(NOT EMSCRIPTEN)
+    list(APPEND ${MODULE_PREFIX}_TESTS TestSDLStatsIpc.cpp)
+  endif()
 endif()
 
 disable_warnings_for_directory(${CMAKE_CURRENT_BINARY_DIR})
@@ -23,7 +26,15 @@ set(${MODULE_PREFIX}_LIBS freerdp-client sdl-common-prefs freerdp-cxx-filesystem
 
 target_link_libraries(${MODULE_NAME} PRIVATE ${${MODULE_PREFIX}_LIBS})
 if(WITH_CLIENT_SDL3)
-  target_sources(${MODULE_NAME} PRIVATE ../../SDL3/sdl_overlay_model.cpp)
+  target_sources(${MODULE_NAME} PRIVATE ../../SDL3/sdl_overlay_model.cpp ../../SDL3/sdl_stats_json.cpp)
+  if(NOT EMSCRIPTEN)
+    find_package(Threads REQUIRED)
+    target_sources(${MODULE_NAME} PRIVATE ../../SDL3/sdl_stats_ipc.cpp)
+    target_link_libraries(${MODULE_NAME} PRIVATE Threads::Threads)
+    if(WIN32)
+      target_link_libraries(${MODULE_NAME} PRIVATE ws2_32)
+    endif()
+  endif()
 endif()
 
 set_target_properties(${MODULE_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TESTING_OUTPUT_DIRECTORY}")

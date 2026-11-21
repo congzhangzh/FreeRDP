@@ -44,6 +44,9 @@
 static constexpr auto sdl_allow_screensaver = "sdl-allow-screensaver";
 static constexpr auto sdl_connection_dialog = "sdl-connection-dialog";
 static constexpr auto sdl_info = "sdl-info";
+#if !defined(__EMSCRIPTEN__)
+static constexpr auto sdl_stats_ipc = "sdl-stats-ipc";
+#endif
 
 SdlContext::SdlContext(rdpContext* context)
     : _context(context), _log(WLog_Get(CLIENT_TAG("SDL"))), _cursor(nullptr, sdl_Pointer_FreeCopy),
@@ -81,6 +84,14 @@ SdlContext::SdlContext(rdpContext* context)
 	                  nullptr,
 	                  "the stats and info overlay from the start (its hotkey SDL_Info, default "
 	                  "<modifier>+I, shows and hides it)" });
+#if !defined(__EMSCRIPTEN__)
+	_args.push_back({ sdl_stats_ipc, COMMAND_LINE_VALUE_OPTIONAL, "<path>", nullptr, nullptr, -1,
+	                  nullptr,
+	                  "Send the overlay's numbers once a second as one line of JSON to a local "
+	                  "socket that only this user can read (default path: in XDG_RUNTIME_DIR, "
+	                  "TMPDIR or %LOCALAPPDATA%\\FreeRDP, logged at start), whether the overlay "
+	                  "shows or not" });
+#endif
 
 	/* Push a null element used as abort when iterating the array */
 	_args.push_back({ nullptr, 0, nullptr, nullptr, nullptr, -1, nullptr, nullptr });
@@ -1089,15 +1100,16 @@ bool SdlContext::showOverlay(bool on)
 
 bool SdlContext::updateOverlay()
 {
-	auto window = overlayWindow();
-	if (!window || !isConnected())
+	if (!isConnected())
 		return true;
 
+	/* without a window (RemoteApp) the rows still go to /sdl-stats-ipc */
+	auto window = overlayWindow();
 	int w = 0;
 	int h = 0;
-	if (!SDL_GetWindowSizeInPixels(window->window(), &w, &h))
+	if (window && !SDL_GetWindowSizeInPixels(window->window(), &w, &h))
 		return true;
-	if (_overlay.update(w, h, window->rendererName()))
+	if (_overlay.update(w, h, window ? window->rendererName() : nullptr) && window)
 		window->updateSurface(&_overlay);
 	return true;
 }
@@ -1813,6 +1825,13 @@ int SdlContext::argumentHandler(const COMMAND_LINE_ARGUMENT_A* arg, void* custom
 			if (!sdl->_overlay.show(arg->Value != nullptr))
 				return -2;
 		}
+#if !defined(__EMSCRIPTEN__)
+		else if (strcmp(arg->Name, sdl_stats_ipc) == 0)
+		{
+			if (!sdl->_overlay.openIpc(arg->Value))
+				return -2;
+		}
+#endif
 	}
 	return 0;
 }
