@@ -104,6 +104,17 @@ Environment=FREERDP_SHADOW_CODEC=av1:rate-control:cq,av1:cq-level:26,av1:bitrate
 
 A value with a wrong key changes nothing and is logged.
 
+The sound has settings of its own:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FREERDP_SHADOW_SOUND_PACKET_MS` | 50 | the milliseconds of sound in one wave, 10 to 200 |
+| `FREERDP_SHADOW_SOUND_DELAY_LOG` | 30 | seconds between the `sound delay:` lines of each client, 0 for none |
+
+A `sound delay:` line tells how long a wave took from the capture to the client and back (the
+client answers each wave when it arrives), and how long the client keeps a wave before it plays it
+(its second answer); a client with a sound delay shows it there.
+
 The libraries the shadow server loads read settings of their own. `FREERDP_SHADOW_ENV_<NAME>=<value>`
 becomes `<NAME>=<value>` in the shadow server, unless `<NAME>` is set there already, so sesman (and
 `shadow.conf`) can pass them on, e.g. a smaller PipeWire buffer for the sound it captures:
