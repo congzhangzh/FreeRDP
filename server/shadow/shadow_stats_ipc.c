@@ -394,8 +394,9 @@ static BOOL serve_reader(SHADOW_STATS_READER* reader, short revents)
 	{
 		const size_t left = reader->length - reader->sent;
 #if defined(_WIN32)
-		const int n = send(reader->socket, reader->line + reader->sent, (int)MIN(left, INT32_MAX),
-		                   send_flags());
+		/* a line is a few KiB; send() takes an int there */
+		const int chunk = (left > (size_t)INT32_MAX) ? INT32_MAX : (int)left;
+		const int n = send(reader->socket, reader->line + reader->sent, chunk, send_flags());
 #else
 		const ssize_t n = send(reader->socket, reader->line + reader->sent, left, send_flags());
 #endif
