@@ -99,6 +99,10 @@ typedef struct
 	UINT64 rounds; /* 0: no round times */
 	UINT64 roundAvgUs;
 	UINT64 roundMaxUs;
+	BOOL hasProcessCpu; /* the process's CPU time in the period, all its threads */
+	UINT64 processCpuMs;
+	BOOL hasHostLoad; /* the host's 1-minute load average x 100 at the period's end */
+	UINT64 hostLoadX100;
 } SHADOW_GFX_VALUES;
 
 /* Who and when a period is (the stats socket): the connection's id, which the client also gets
@@ -144,6 +148,14 @@ extern "C"
 	 *  @return FALSE when buffer is too small */
 	WINPR_ATTR_NODISCARD FREERDP_LOCAL BOOL shadow_gfx_stats_local_time(UINT64 unixMs, char* buffer,
 	                                                                    size_t size);
+
+	/** the process's CPU time so far, all threads, in ns
+	 *  @return FALSE when the system does not tell */
+	WINPR_ATTR_NODISCARD FREERDP_LOCAL BOOL shadow_gfx_stats_process_cpu(UINT64* ns);
+
+	/** the host's 1-minute load average x 100 (Linux: /proc/loadavg)
+	 *  @return FALSE elsewhere, or when it cannot be read */
+	WINPR_ATTR_NODISCARD FREERDP_LOCAL BOOL shadow_gfx_stats_host_load(UINT64* loadX100);
 
 	/** fills values from one period's counters of elapsedMs with inFlightLimit allowed */
 	FREERDP_LOCAL void shadow_gfx_stats_values(const SHADOW_GFX_STATS* stats, UINT32 inFlightLimit,

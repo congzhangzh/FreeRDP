@@ -21,6 +21,7 @@
 #include <time.h>
 
 #include <winpr/assert.h>
+#include <winpr/windows.h>
 #include <winpr/wlog.h>
 #include <freerdp/types.h>
 
@@ -138,6 +139,53 @@ UINT32 shadow_gfx_window_next(UINT32 window, UINT32 peak, UINT64 baseAckNs, UINT
 	return next;
 }
 
+BOOL shadow_gfx_stats_process_cpu(UINT64* ns)
+{
+	if (!ns)
+		return FALSE;
+#if defined(_WIN32)
+	FILETIME created = WINPR_C_ARRAY_INIT;
+	FILETIME exited = WINPR_C_ARRAY_INIT;
+	FILETIME kernel = WINPR_C_ARRAY_INIT;
+	FILETIME user = WINPR_C_ARRAY_INIT;
+	if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user))
+		return FALSE;
+	const UINT64 k = ((UINT64)kernel.dwHighDateTime << 32) | kernel.dwLowDateTime;
+	const UINT64 u = ((UINT64)user.dwHighDateTime << 32) | user.dwLowDateTime;
+	*ns = (k + u) * 100ull; /* 100 ns units */
+	return TRUE;
+#elif defined(CLOCK_PROCESS_CPUTIME_ID)
+	struct timespec t = WINPR_C_ARRAY_INIT;
+	if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t) != 0)
+		return FALSE;
+	*ns = (UINT64)t.tv_sec * 1000000000ull + (UINT64)t.tv_nsec;
+	return TRUE;
+#else
+	return FALSE;
+#endif
+}
+
+BOOL shadow_gfx_stats_host_load(UINT64* loadX100)
+{
+	if (!loadX100)
+		return FALSE;
+#if defined(__linux__)
+	FILE* f = fopen("/proc/loadavg", "r");
+	if (!f)
+		return FALSE;
+	unsigned whole = 0;
+	unsigned hundredths = 0;
+	const int n = fscanf(f, "%u.%2u", &whole, &hundredths);
+	(void)fclose(f);
+	if (n != 2)
+		return FALSE;
+	*loadX100 = 100ull * whole + hundredths;
+	return TRUE;
+#else
+	return FALSE;
+#endif
+}
+
 BOOL shadow_gfx_stats_local_time(UINT64 unixMs, char* buffer, size_t size)
 {
 	if (!buffer || (size == 0))
@@ -213,6 +261,14 @@ BOOL shadow_gfx_stats_json(const SHADOW_GFX_VALUES* values, const SHADOW_GFX_PER
 		(void)snprintf(frames, sizeof(frames),
 		               ",\"GFX_FRAME_ID_FIRST\":%" PRIu64 ",\"GFX_FRAME_ID_LAST\":%" PRIu64,
 		               values->frameIdFirst, values->frameIdLast);
+	/* the process's CPU and the host's load, when known */
+	char cpu[96] = WINPR_C_ARRAY_INIT;
+	int used = 0;
+	if (values->hasProcessCpu)
+		used = snprintf(cpu, sizeof(cpu), ",\"GFX_PROCESS_CPU_MS\":%" PRIu64, values->processCpuMs);
+	if (values->hasHostLoad && (used >= 0) && ((size_t)used < sizeof(cpu)))
+		(void)snprintf(&cpu[used], sizeof(cpu) - (size_t)used, ",\"GFX_HOST_LOAD_X100\":%" PRIu64,
+		               values->hostLoadX100);
 	/* the capture and the round times, when the subsystem tells them */
 	char times[160] = WINPR_C_ARRAY_INIT;
 	int at = 0;
@@ -240,14 +296,14 @@ BOOL shadow_gfx_stats_json(const SHADOW_GFX_VALUES* values, const SHADOW_GFX_PER
 	    ",\"GFX_ACK_DELAY_MAX_MS\":%" PRIu64 ",\"GFX_ACK_DELAY_MIN_MS\":%" PRIu64
 	    ",\"GFX_ENCODE_AVG_US\":%" PRIu64 ",\"GFX_ENCODE_MAX_US\":%" PRIu64
 	    ",\"GFX_IN_FLIGHT_MAX\":%" PRIu64 ",\"GFX_IN_FLIGHT_LIMIT\":%" PRIu64
-	    "%s%s,\"GFX_FRAME_ID_ACKED_LAST\":%" PRIu64 "}}",
+	    "%s%s%s,\"GFX_FRAME_ID_ACKED_LAST\":%" PRIu64 "}}",
 	    info->connectionId, peer ? "\"" : "", peer ? peer : "null", peer ? "\"" : "",
 	    info->connectedMs, startedAt ? "\"" : "", startedAt ? startedAt : "null",
 	    startedAt ? "\"" : "", info->periods, info->timeMs, info->ns, values->periodMs,
 	    info->acksSuspended ? "true" : "false", info->fps, info->maxFps, values->periodMs,
 	    values->captured, values->sent, values->held, values->merged, values->acks,
 	    values->ackDelayAvgMs, values->ackDelayMaxMs, values->ackDelayMinMs, values->encodeAvgUs,
-	    values->encodeMaxUs, values->inFlightMax, values->inFlightLimit, frames, times,
+	    values->encodeMaxUs, values->inFlightMax, values->inFlightLimit, frames, times, cpu,
 	    values->frameIdAckedLast);
 	return (rc > 0) && ((size_t)rc < size);
 }
@@ -299,6 +355,10 @@ size_t shadow_gfx_stats_report(const SHADOW_GFX_VALUES* values, UINT64 period, A
 		ASTATS_ADD(ASTATS_ID_ROUND_MAX_US, values->roundMaxUs);
 	}
 	ASTATS_ADD(ASTATS_ID_PERIOD_NUMBER, period);
+	if (values->hasProcessCpu)
+		ASTATS_ADD(ASTATS_ID_PROCESS_CPU_MS, values->processCpuMs);
+	if (values->hasHostLoad)
+		ASTATS_ADD(ASTATS_ID_HOST_LOAD_X100, values->hostLoadX100);
 #undef ASTATS_ADD
 	return count;
 }

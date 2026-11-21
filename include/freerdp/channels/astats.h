@@ -73,8 +73,10 @@ typedef enum
 	ASTATS_ID_CAPTURE_MAX_US = 18,
 	ASTATS_ID_ROUND_AVG_US = 19,
 	ASTATS_ID_ROUND_MAX_US = 20,
-	ASTATS_ID_PERIOD_NUMBER = 21, /* the server's count of this connection's periods */
-	ASTATS_ID_LAST = ASTATS_ID_PERIOD_NUMBER
+	ASTATS_ID_PERIOD_NUMBER = 21,  /* the server's count of this connection's periods */
+	ASTATS_ID_PROCESS_CPU_MS = 22, /* the server process's CPU time in the period, all threads */
+	ASTATS_ID_HOST_LOAD_X100 = 23, /* the host's 1-minute load average x 100 (Linux only) */
+	ASTATS_ID_LAST = ASTATS_ID_HOST_LOAD_X100
 } ASTATS_ID;
 
 /* the most values one report carries */

@@ -3394,6 +3394,19 @@ static void shadow_client_gfx_stats(rdpShadowClient* client)
 		shadow_gfx_stats_values(&encoder->gfxStats, encoder->maxInFlight,
 		                        now - encoder->statsLogged, encoder->lastAckframeId, &values);
 		encoder->statsPeriods++;
+		/* the whole process (every client, the capture), so a reader sees whether the server had
+		 * the CPU it needed; the host's load beside it */
+		UINT64 cpuNs = 0;
+		if (shadow_gfx_stats_process_cpu(&cpuNs))
+		{
+			if ((encoder->statsCpuNs != 0) && (cpuNs >= encoder->statsCpuNs))
+			{
+				values.hasProcessCpu = TRUE;
+				values.processCpuMs = (cpuNs - encoder->statsCpuNs) / 1000000ull;
+			}
+			encoder->statsCpuNs = cpuNs;
+		}
+		values.hasHostLoad = shadow_gfx_stats_host_load(&values.hostLoadX100);
 		if (toSocket)
 		{
 			const UINT64 nowNs = winpr_GetTickCount64NS();

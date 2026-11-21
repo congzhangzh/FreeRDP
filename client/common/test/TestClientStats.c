@@ -64,7 +64,7 @@
 #include <unistd.h>
 #endif
 
-#define SESSION_STATS 56
+#define SESSION_STATS 58
 
 /* The default settings need rdpdr, which brings rdpsnd along: without it no connection starts.
  * Emscripten has no plain TCP server sockets (setsockopt is not implemented, listen is a
@@ -164,6 +164,8 @@ static BOOL check_names(void)
 		"SERVER_GFX_ROUND_AVG_US",
 		"SERVER_GFX_ROUND_MAX_US",
 		"SERVER_GFX_PERIOD_NUMBER",
+		"SERVER_GFX_PROCESS_CPU_MS",
+		"SERVER_GFX_HOST_LOAD_X100",
 	};
 
 	const size_t max = freerdp_client_stats_max_index();

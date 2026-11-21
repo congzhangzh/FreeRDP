@@ -102,6 +102,7 @@ struct rdp_shadow_encoder
 	char peer[64];      /* the client's address, "ip:port"; "" when not known */
 	UINT64 statsPeriods;
 	UINT64 roundStartNs;       /* this round's capture start (rdpShadowSubsystem::captureStartNs) */
+	UINT64 statsCpuNs;         /* the process's CPU time at the last period's end, 0: none yet */
 	astats_server_context* astats; /* FreeRDP::Advanced::Stats, nullptr without */
 	BOOL gfxFrameOut;          /* the frame being encoded went out */
 

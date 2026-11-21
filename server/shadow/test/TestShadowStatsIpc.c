@@ -400,7 +400,7 @@ static BOOL test_json(void)
 	{
 		ASTATS_VALUE report[ASTATS_ID_LAST] = { 0 };
 		const size_t count = shadow_gfx_stats_report(&values, 3, report, ARRAYSIZE(report));
-		CHECK(count == ASTATS_ID_LAST);
+		CHECK(count == ASTATS_ID_LAST - 2); /* no process CPU, no host load */
 		CHECK((report[2].id == ASTATS_ID_SENT) && (report[2].value == 290));
 		CHECK((report[count - 1].id == ASTATS_ID_PERIOD_NUMBER) && (report[count - 1].value == 3));
 		BOOL first = FALSE;
@@ -410,6 +410,27 @@ static BOOL test_json(void)
 		CHECK(first);
 		/* a smaller array takes what fits */
 		CHECK(shadow_gfx_stats_report(&values, 3, report, 4) == 4);
+	}
+	/* the process's CPU and the host's load, when known: in the JSON and the report */
+	{
+		SHADOW_GFX_VALUES cpu = values;
+		cpu.hasProcessCpu = TRUE;
+		cpu.processCpuMs = 4321;
+		cpu.hasHostLoad = TRUE;
+		cpu.hostLoadX100 = 975;
+		char text[1200];
+		CHECK(shadow_gfx_stats_json(&cpu, &info, text, sizeof(text)));
+		CHECK(strstr(text, ",\"GFX_PROCESS_CPU_MS\":4321,\"GFX_HOST_LOAD_X100\":975,"));
+		ASTATS_VALUE report[ASTATS_ID_LAST] = { 0 };
+		CHECK(shadow_gfx_stats_report(&cpu, 3, report, ARRAYSIZE(report)) == ASTATS_ID_LAST);
+		CHECK((report[ASTATS_ID_LAST - 1].id == ASTATS_ID_HOST_LOAD_X100) &&
+		      (report[ASTATS_ID_LAST - 1].value == 975));
+		UINT64 ns = 0;
+		CHECK(shadow_gfx_stats_process_cpu(&ns) && (ns > 0));
+#if defined(__linux__)
+		UINT64 load = 0;
+		CHECK(shadow_gfx_stats_host_load(&load));
+#endif
 	}
 	/* too small a buffer is refused, not cut */
 	CHECK(!shadow_gfx_stats_json(&values, &info, object, 100));
@@ -427,7 +448,7 @@ static BOOL test_json(void)
 		/* no frame ids, capture or round times in the report either */
 		ASTATS_VALUE report[ASTATS_ID_LAST] = { 0 };
 		const size_t count = shadow_gfx_stats_report(&values, 1, report, ARRAYSIZE(report));
-		CHECK(count == ASTATS_ID_LAST - 6);
+		CHECK(count == ASTATS_ID_LAST - 8);
 		for (size_t x = 0; x < count; x++)
 			CHECK((report[x].id != ASTATS_ID_FRAME_ID_FIRST) &&
 			      (report[x].id != ASTATS_ID_CAPTURE_AVG_US) &&
