@@ -27,6 +27,26 @@
 
 #include <freerdp/utils/string.h>
 
+/* /sdl-hidpi: points unless the user asks for pixels; set while the command line is parsed */
+static sdl::hidpi::Policy hiDpi;
+
+void SdlWindow::setHiDpi(const sdl::hidpi::Policy& policy)
+{
+	hiDpi = policy;
+}
+
+sdl::hidpi::Mode SdlWindow::hiDpiMode(SDL_DisplayID id)
+{
+	return hiDpi.forDisplay(id);
+}
+
+/* every pixel of a high density display only in pixels mode: without it SDL gives the window one
+ * pixel per point and reports its size, scale and mouse in points, which the system scales */
+static bool highPixelDensity(SDL_DisplayID id)
+{
+	return hiDpi.forDisplay(id) == sdl::hidpi::Mode::Pixels;
+}
+
 SdlWindow::SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect& rect,
                      [[maybe_unused]] Uint32 flags)
     : _initialW(rect.w), _initialH(rect.h), _displayID(id)
@@ -45,7 +65,7 @@ SdlWindow::SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect&
 	SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, createH);
 	SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN, true);
 
-	if (flags & SDL_WINDOW_HIGH_PIXEL_DENSITY)
+	if ((flags & SDL_WINDOW_HIGH_PIXEL_DENSITY) && highPixelDensity(id))
 		SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIGH_PIXEL_DENSITY_BOOLEAN, true);
 
 	if (flags & SDL_WINDOW_FULLSCREEN)
@@ -496,9 +516,12 @@ static rdpMonitor queryDisplay(SDL_DisplayID id, bool forceAsPrimary)
 		r.x = 0;
 		r.y = 0;
 	}
-	r.w = static_cast<int>(std::roundf(static_cast<float>(r.w) * mode->pixel_density));
-	r.h = static_cast<int>(std::roundf(static_cast<float>(r.h) * mode->pixel_density));
-	return makeMonitor(id, r, mode->pixel_density * SDL_GetDisplayContentScale(id), forceAsPrimary);
+	/* the bounds are in points */
+	const auto size = sdl::hidpi::monitorSize(r.w, r.h, mode->pixel_density,
+	                                          SDL_GetDisplayContentScale(id), hiDpi.forDisplay(id));
+	r.w = size.width;
+	r.h = size.height;
+	return makeMonitor(id, r, static_cast<float>(size.scale) / 100.0f, forceAsPrimary);
 }
 
 SDL_Rect SdlWindow::rect(SDL_Window* window, bool forceAsPrimary)
@@ -547,7 +570,8 @@ SDL_Rect SdlWindow::rect(SDL_Window* window, bool forceAsPrimary)
 			float factor = 1.0f;
 			const auto mode = SDL_GetCurrentDisplayMode(displayID);
 			if (mode && (mode->pixel_density > 1.0f))
-				factor = mode->pixel_density;
+				factor =
+				    highPixelDensity(displayID) ? mode->pixel_density : 1.0f; /* points: as is */
 			else
 			{
 				const float contentScale = SDL_GetDisplayContentScale(displayID);
@@ -948,7 +972,8 @@ static SDL_Window* createDummy(SDL_DisplayID id)
 	SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, w);
 	SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, h);
 
-	SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIGH_PIXEL_DENSITY_BOOLEAN, true);
+	SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIGH_PIXEL_DENSITY_BOOLEAN,
+	                       highPixelDensity(id));
 	SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN, false);
 	SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_BORDERLESS_BOOLEAN, true);
 	SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIDDEN_BOOLEAN, false);

@@ -50,6 +50,8 @@ set(SRCS
     sdl_overlay_model.cpp
     sdl_stats_json.hpp
     sdl_stats_json.cpp
+    sdl_hidpi.hpp
+    sdl_hidpi.cpp
     sdl_clip.hpp
     sdl_clip.cpp
     sdl_web_clip_offers.hpp
