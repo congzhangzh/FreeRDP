@@ -10,7 +10,8 @@ the client by name, as exact integers (frames, bytes, decode time sums, RTT, aud
 connect; what a reader sends is ignored. Without a path the socket is
 `$XDG_RUNTIME_DIR/sdl-freerdp-<pid>.stats.sock` (`$TMPDIR` on macOS) and on Windows the pipe
 `\\.\pipe\sdl-freerdp-<pid>.stats` (a bare name given on Windows gets the `\\.\pipe\` prefix); the
-client logs it at start.
+client logs it at start. A socket path has at most 107 bytes on Linux (103 on macOS), the length of an
+AF_UNIX address: the default directories are short, and a longer path given with the option is refused with that reason.
 
 To measure a change A/B, run the same session the same way twice, once per build or setting,
 and record a fixed stretch of each: `sdl-stats-ipc.py <socket> --follow --count 60 > a.jsonl`,
