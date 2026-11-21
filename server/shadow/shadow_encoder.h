@@ -28,6 +28,7 @@
 #include <freerdp/server/shadow.h>
 
 #include "shadow_gfx_stats.h"
+#include <freerdp/server/astats.h>
 
 /* the most frames per second a subsystem that paces its capture by
  * shadow_encoder_preferred_fps() is asked for (X11, Windows) */
@@ -101,6 +102,7 @@ struct rdp_shadow_encoder
 	char peer[64];      /* the client's address, "ip:port"; "" when not known */
 	UINT64 statsPeriods;
 	UINT64 roundStartNs;       /* this round's capture start (rdpShadowSubsystem::captureStartNs) */
+	astats_server_context* astats; /* FreeRDP::Advanced::Stats, nullptr without */
 	BOOL gfxFrameOut;          /* the frame being encoded went out */
 
 	/* GFX RFX dirty tile skipping (shadow_rfx_dirty.c): snapshot of the last

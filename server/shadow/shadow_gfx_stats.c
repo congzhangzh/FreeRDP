@@ -252,6 +252,57 @@ BOOL shadow_gfx_stats_json(const SHADOW_GFX_VALUES* values, const SHADOW_GFX_PER
 	return (rc > 0) && ((size_t)rc < size);
 }
 
+size_t shadow_gfx_stats_report(const SHADOW_GFX_VALUES* values, UINT64 period, ASTATS_VALUE* report,
+                               size_t size)
+{
+	WINPR_ASSERT(values);
+	if (!report)
+		return 0;
+	size_t count = 0;
+#define ASTATS_ADD(id_, value_)             \
+	do                                      \
+	{                                       \
+		if (count < size)                   \
+		{                                   \
+			report[count].id = (id_);       \
+			report[count].value = (value_); \
+			count++;                        \
+		}                                   \
+	} while (0)
+	ASTATS_ADD(ASTATS_ID_PERIOD_MS, values->periodMs);
+	ASTATS_ADD(ASTATS_ID_CAPTURED, values->captured);
+	ASTATS_ADD(ASTATS_ID_SENT, values->sent);
+	ASTATS_ADD(ASTATS_ID_HELD, values->held);
+	ASTATS_ADD(ASTATS_ID_MERGED, values->merged);
+	ASTATS_ADD(ASTATS_ID_ACKS, values->acks);
+	ASTATS_ADD(ASTATS_ID_ACK_DELAY_AVG_MS, values->ackDelayAvgMs);
+	ASTATS_ADD(ASTATS_ID_ACK_DELAY_MAX_MS, values->ackDelayMaxMs);
+	ASTATS_ADD(ASTATS_ID_ACK_DELAY_MIN_MS, values->ackDelayMinMs);
+	ASTATS_ADD(ASTATS_ID_ENCODE_AVG_US, values->encodeAvgUs);
+	ASTATS_ADD(ASTATS_ID_ENCODE_MAX_US, values->encodeMaxUs);
+	ASTATS_ADD(ASTATS_ID_IN_FLIGHT_MAX, values->inFlightMax);
+	ASTATS_ADD(ASTATS_ID_IN_FLIGHT_LIMIT, values->inFlightLimit);
+	if (values->sent > 0)
+	{
+		ASTATS_ADD(ASTATS_ID_FRAME_ID_FIRST, values->frameIdFirst);
+		ASTATS_ADD(ASTATS_ID_FRAME_ID_LAST, values->frameIdLast);
+	}
+	ASTATS_ADD(ASTATS_ID_FRAME_ID_ACKED_LAST, values->frameIdAckedLast);
+	if (values->captures > 0)
+	{
+		ASTATS_ADD(ASTATS_ID_CAPTURE_AVG_US, values->captureAvgUs);
+		ASTATS_ADD(ASTATS_ID_CAPTURE_MAX_US, values->captureMaxUs);
+	}
+	if (values->rounds > 0)
+	{
+		ASTATS_ADD(ASTATS_ID_ROUND_AVG_US, values->roundAvgUs);
+		ASTATS_ADD(ASTATS_ID_ROUND_MAX_US, values->roundMaxUs);
+	}
+	ASTATS_ADD(ASTATS_ID_PERIOD_NUMBER, period);
+#undef ASTATS_ADD
+	return count;
+}
+
 void shadow_gfx_stats_next_period(SHADOW_GFX_STATS* stats)
 {
 	WINPR_ASSERT(stats);

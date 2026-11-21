@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+#include <freerdp/metrics.h>
+#include <freerdp/channels/astats.h>
 #include <freerdp/config.h>
 
 #include <stdio.h>
@@ -62,7 +64,7 @@
 #include <unistd.h>
 #endif
 
-#define SESSION_STATS 34
+#define SESSION_STATS 56
 
 /* The default settings need rdpdr, which brings rdpsnd along: without it no connection starts.
  * Emscripten has no plain TCP server sockets (setsockopt is not implemented, listen is a
@@ -106,23 +108,62 @@ static uint64_t stat_value(const rdpContext* context, const char* name)
 static BOOL check_names(void)
 {
 	static const char* const session[SESSION_STATS] = {
-		"NETWORK_BYTES_RECEIVED",   "NETWORK_BYTES_SENT",
-		"NETWORK_PACKETS_RECEIVED", "NETWORK_PACKETS_SENT",
-		"NETWORK_BANDWIDTH_KBPS",   "NETWORK_RTT_BASE_MS",
-		"NETWORK_RTT_AVERAGE_MS",   "AUDIO_WAVES",
-		"AUDIO_WAVE_BYTES",         "AUDIO_WAVES_OVERRUN",
-		"AUDIO_WAVES_UNDECODABLE",  "AUDIO_DEVICE_OPENS",
-		"AUDIO_FORMAT_TAG",         "AUDIO_DELAY_MS",
-		"GFX_CAPS_VERSION",         "RDP_VERSION",
-		"SERVER_RDP_VERSION",       "SERVER_OS_MAJOR_TYPE",
-		"SERVER_OS_MINOR_TYPE",     "SERVER_PORT",
-		"GFX_CAPS_FLAGS",           "RDPGFX_SURFACES",
-		"RDPGFX_SURFACE1_CODECID",  "RDPGFX_SURFACE1_WIDTH",
-		"RDPGFX_SURFACE1_HEIGHT",   "RDPGFX_SURFACE2_CODECID",
-		"RDPGFX_SURFACE2_WIDTH",    "RDPGFX_SURFACE2_HEIGHT",
-		"RDPGFX_SURFACE3_CODECID",  "RDPGFX_SURFACE3_WIDTH",
-		"RDPGFX_SURFACE3_HEIGHT",   "RDPGFX_SURFACE4_CODECID",
-		"RDPGFX_SURFACE4_WIDTH",    "RDPGFX_SURFACE4_HEIGHT"
+		"NETWORK_BYTES_RECEIVED",
+		"NETWORK_BYTES_SENT",
+		"NETWORK_PACKETS_RECEIVED",
+		"NETWORK_PACKETS_SENT",
+		"NETWORK_BANDWIDTH_KBPS",
+		"NETWORK_RTT_BASE_MS",
+		"NETWORK_RTT_AVERAGE_MS",
+		"AUDIO_WAVES",
+		"AUDIO_WAVE_BYTES",
+		"AUDIO_WAVES_OVERRUN",
+		"AUDIO_WAVES_UNDECODABLE",
+		"AUDIO_DEVICE_OPENS",
+		"AUDIO_FORMAT_TAG",
+		"AUDIO_DELAY_MS",
+		"GFX_CAPS_VERSION",
+		"RDP_VERSION",
+		"SERVER_RDP_VERSION",
+		"SERVER_OS_MAJOR_TYPE",
+		"SERVER_OS_MINOR_TYPE",
+		"SERVER_PORT",
+		"GFX_CAPS_FLAGS",
+		"RDPGFX_SURFACES",
+		"RDPGFX_SURFACE1_CODECID",
+		"RDPGFX_SURFACE1_WIDTH",
+		"RDPGFX_SURFACE1_HEIGHT",
+		"RDPGFX_SURFACE2_CODECID",
+		"RDPGFX_SURFACE2_WIDTH",
+		"RDPGFX_SURFACE2_HEIGHT",
+		"RDPGFX_SURFACE3_CODECID",
+		"RDPGFX_SURFACE3_WIDTH",
+		"RDPGFX_SURFACE3_HEIGHT",
+		"RDPGFX_SURFACE4_CODECID",
+		"RDPGFX_SURFACE4_WIDTH",
+		"RDPGFX_SURFACE4_HEIGHT",
+		"SERVER_GFX_PERIODS",
+		"SERVER_GFX_PERIOD_MS",
+		"SERVER_GFX_CAPTURED",
+		"SERVER_GFX_SENT",
+		"SERVER_GFX_HELD",
+		"SERVER_GFX_MERGED",
+		"SERVER_GFX_ACKS",
+		"SERVER_GFX_ACK_DELAY_AVG_MS",
+		"SERVER_GFX_ACK_DELAY_MAX_MS",
+		"SERVER_GFX_ACK_DELAY_MIN_MS",
+		"SERVER_GFX_ENCODE_AVG_US",
+		"SERVER_GFX_ENCODE_MAX_US",
+		"SERVER_GFX_IN_FLIGHT_MAX",
+		"SERVER_GFX_IN_FLIGHT_LIMIT",
+		"SERVER_GFX_FRAME_ID_FIRST",
+		"SERVER_GFX_FRAME_ID_LAST",
+		"SERVER_GFX_FRAME_ID_ACKED_LAST",
+		"SERVER_GFX_CAPTURE_AVG_US",
+		"SERVER_GFX_CAPTURE_MAX_US",
+		"SERVER_GFX_ROUND_AVG_US",
+		"SERVER_GFX_ROUND_MAX_US",
+		"SERVER_GFX_PERIOD_NUMBER",
 	};
 
 	const size_t max = freerdp_client_stats_max_index();
@@ -170,11 +211,12 @@ static const char* string_value(const rdpContext* context, const char* name)
 
 static BOOL check_string_names(void)
 {
-	TEST_CHECK(freerdp_client_stats_string_max_index() == 2);
+	TEST_CHECK(freerdp_client_stats_string_max_index() == 3);
 	TEST_CHECK(strcmp(freerdp_client_stats_string_name_for_index(0), "SERVER_HOSTNAME") == 0);
 	TEST_CHECK(strcmp(freerdp_client_stats_string_name_for_index(1), "SERVER_CERT_CN") == 0);
+	TEST_CHECK(strcmp(freerdp_client_stats_string_name_for_index(2), "SERVER_CONNECTION_ID") == 0);
 	TEST_CHECK(
-	    strcmp(freerdp_client_stats_string_name_for_index(2), "FREERDP_CLIENT_STATS_UNUSED") == 0);
+	    strcmp(freerdp_client_stats_string_name_for_index(3), "FREERDP_CLIENT_STATS_UNUSED") == 0);
 	TEST_CHECK(!freerdp_client_stats_string_value_for_index(nullptr, 0));
 	return TRUE;
 }
@@ -268,6 +310,34 @@ static BOOL check_all_zero(const rdpContext* context)
 {
 	for (size_t x = 0; x <= freerdp_client_stats_max_index(); x++)
 		TEST_CHECK(freerdp_client_stats_value_for_index(context, x) == 0);
+	return TRUE;
+}
+
+/* what the server tells over FreeRDP::Advanced::Stats lands in rdpMetrics, read by name */
+static BOOL check_server_gfx(rdpContext* context)
+{
+	TEST_CHECK(context->metrics);
+	TEST_CHECK(check_all_zero(context));
+	TEST_CHECK(!string_value(context, "SERVER_CONNECTION_ID"));
+
+	context->metrics->ServerStats[ASTATS_ID_PERIOD_MS] = 5003;
+	context->metrics->ServerStats[ASTATS_ID_SENT] = 290;
+	context->metrics->ServerStats[ASTATS_ID_ROUND_MAX_US] = 50001;
+	context->metrics->ServerStats[ASTATS_ID_PERIOD_NUMBER] = 3;
+	context->metrics->ServerStatsReports = 2;
+	(void)strcpy(context->metrics->ServerConnectionId, "00ab00cd00ef0012");
+	TEST_CHECK(stat_value(context, "SERVER_GFX_PERIODS") == 2);
+	TEST_CHECK(stat_value(context, "SERVER_GFX_PERIOD_MS") == 5003);
+	TEST_CHECK(stat_value(context, "SERVER_GFX_SENT") == 290);
+	TEST_CHECK(stat_value(context, "SERVER_GFX_ROUND_MAX_US") == 50001);
+	TEST_CHECK(stat_value(context, "SERVER_GFX_PERIOD_NUMBER") == 3);
+	TEST_CHECK(stat_value(context, "SERVER_GFX_CAPTURED") == 0);
+	TEST_CHECK(strcmp(string_value(context, "SERVER_CONNECTION_ID"), "00ab00cd00ef0012") == 0);
+
+	memset(context->metrics->ServerStats, 0, sizeof(context->metrics->ServerStats));
+	context->metrics->ServerStatsReports = 0;
+	context->metrics->ServerConnectionId[0] = '\0';
+	TEST_CHECK(check_all_zero(context));
 	return TRUE;
 }
 
@@ -1084,7 +1154,7 @@ int TestClientStats(WINPR_ATTR_UNUSED int argc, WINPR_ATTR_UNUSED char* argv[])
 	if (!context)
 		return -1;
 
-	BOOL rc = check_autodetect(context) && check_server(context);
+	BOOL rc = check_autodetect(context) && check_server(context) && check_server_gfx(context);
 #if defined(CHANNEL_RDPGFX_CLIENT)
 	rc = rc && check_gfx(context);
 #endif

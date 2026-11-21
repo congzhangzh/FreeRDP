@@ -253,6 +253,13 @@ static void shadow_client_context_free(freerdp_peer* peer, rdpContext* context)
 	shadow_client_autodetect_uninit(client);
 	if (client->encoder && client->server)
 		shadow_stats_ipc_client_gone(client->server->statsIpc, client->encoder->connectionId);
+#if defined(CHANNEL_ASTATS_SERVER)
+	if (client->encoder)
+	{
+		astats_server_context_free(client->encoder->astats);
+		client->encoder->astats = nullptr;
+	}
+#endif
 	shadow_encoder_free(client->encoder);
 
 	/* Clear queued messages and free resource */
@@ -372,6 +379,10 @@ static BOOL shadow_client_context_new(freerdp_peer* peer, rdpContext* context)
 
 	if (!(client->encoder = shadow_encoder_new(client)))
 		goto fail;
+#if defined(CHANNEL_ASTATS_SERVER)
+	/* without it (no memory) the client gets no server statistics, nothing else changes */
+	client->encoder->astats = astats_server_context_new(client->vcm, client->encoder->connectionId);
+#endif
 
 	if (!shadow_client_autodetect_init(client))
 		goto fail;
@@ -3371,28 +3382,50 @@ static void shadow_client_gfx_stats(rdpShadowClient* client)
 		shadow_gfx_stats_write(&encoder->gfxStats, encoder->maxInFlight,
 		                       encoder->queueDepth == SUSPEND_FRAME_ACKNOWLEDGEMENT,
 		                       now - encoder->statsLogged);
-	if ((encoder->statsLogged != 0) && client->server && client->server->statsIpc)
+	const BOOL toSocket = client->server && client->server->statsIpc;
+#if defined(CHANNEL_ASTATS_SERVER)
+	const BOOL toChannel = astats_server_context_is_open(encoder->astats);
+#else
+	const BOOL toChannel = FALSE;
+#endif
+	if ((encoder->statsLogged != 0) && (toSocket || toChannel))
 	{
 		SHADOW_GFX_VALUES values = WINPR_C_ARRAY_INIT;
 		shadow_gfx_stats_values(&encoder->gfxStats, encoder->maxInFlight,
 		                        now - encoder->statsLogged, encoder->lastAckframeId, &values);
-		const UINT64 nowNs = winpr_GetTickCount64NS();
-		const UINT64 nowMs = winpr_GetUnixTimeNS() / 1000000ull;
-		const SHADOW_GFX_PERIOD_INFO info = {
-			.connectionId = encoder->connectionId,
-			.peer = encoder->peer,
-			.startedAt = encoder->startedAt,
-			.connectedMs = encoder->connectedMs,
-			.periods = ++encoder->statsPeriods,
-			.timeMs = nowMs,
-			.ns = nowNs,
-			.acksSuspended = encoder->queueDepth == SUSPEND_FRAME_ACKNOWLEDGEMENT,
-			.fps = encoder->fps,
-			.maxFps = encoder->maxFps,
-		};
-		char object[1024] = WINPR_C_ARRAY_INIT;
-		if (shadow_gfx_stats_json(&values, &info, object, sizeof(object)))
-			shadow_stats_ipc_client_period(client->server->statsIpc, encoder->connectionId, object);
+		encoder->statsPeriods++;
+		if (toSocket)
+		{
+			const UINT64 nowNs = winpr_GetTickCount64NS();
+			const UINT64 nowMs = winpr_GetUnixTimeNS() / 1000000ull;
+			const SHADOW_GFX_PERIOD_INFO info = {
+				.connectionId = encoder->connectionId,
+				.peer = encoder->peer,
+				.startedAt = encoder->startedAt,
+				.connectedMs = encoder->connectedMs,
+				.periods = encoder->statsPeriods,
+				.timeMs = nowMs,
+				.ns = nowNs,
+				.acksSuspended = encoder->queueDepth == SUSPEND_FRAME_ACKNOWLEDGEMENT,
+				.fps = encoder->fps,
+				.maxFps = encoder->maxFps,
+			};
+			char object[1024] = WINPR_C_ARRAY_INIT;
+			if (shadow_gfx_stats_json(&values, &info, object, sizeof(object)))
+				shadow_stats_ipc_client_period(client->server->statsIpc, encoder->connectionId,
+				                               object);
+		}
+#if defined(CHANNEL_ASTATS_SERVER)
+		if (toChannel)
+		{
+			ASTATS_VALUE report[ASTATS_ID_LAST] = WINPR_C_ARRAY_INIT;
+			const size_t count =
+			    shadow_gfx_stats_report(&values, encoder->statsPeriods, report, ARRAYSIZE(report));
+			EnterCriticalSection(&client->vcmLock);
+			(void)astats_server_context_report(encoder->astats, report, count);
+			LeaveCriticalSection(&client->vcmLock);
+		}
+#endif
 	}
 	shadow_gfx_stats_next_period(&encoder->gfxStats);
 	encoder->statsLogged = now;
@@ -3675,6 +3708,16 @@ static DWORD WINAPI shadow_client_thread(LPVOID arg)
 					break;
 
 				case DRDYNVC_STATE_READY:
+#if defined(CHANNEL_ASTATS_SERVER)
+					/* asked for once; open or refused, it costs nothing more */
+					if (client->encoder->astats &&
+					    !astats_server_context_is_open(client->encoder->astats))
+					{
+						EnterCriticalSection(&client->vcmLock);
+						astats_server_context_check(client->encoder->astats);
+						LeaveCriticalSection(&client->vcmLock);
+					}
+#endif
 #if defined(CHANNEL_AUDIN_SERVER)
 					if (client->audin && !IFCALLRESULT(TRUE, client->audin->IsOpen, client->audin))
 					{

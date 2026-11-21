@@ -62,6 +62,7 @@
 
 #if defined(CHANNEL_AINPUT_CLIENT)
 #include <freerdp/channels/ainput.h>
+#include <freerdp/channels/astats.h>
 #endif
 
 #include <freerdp/channels/audin.h>
@@ -1311,6 +1312,14 @@ static int freerdp_client_command_line_post_filter_int(void* context, COMMAND_LI
 		if (status)
 			return fail_at(arg, status);
 	}
+#if defined(CHANNEL_ASTATS_CLIENT)
+	CommandLineSwitchCase(arg, "astats")
+	{
+		const char* const p[] = { ASTATS_CHANNEL_NAME };
+		if (!freerdp_client_add_dynamic_channel(settings, ARRAYSIZE(p), p))
+			return fail_at(arg, COMMAND_LINE_ERROR_UNEXPECTED_VALUE);
+	}
+#endif
 	CommandLineSwitchCase(arg, "microphone")
 	{
 		size_t count = 0;

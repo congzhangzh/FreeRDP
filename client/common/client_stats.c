@@ -23,6 +23,8 @@
 
 #include <freerdp/autodetect.h>
 #include <freerdp/channels/rdpgfx.h>
+#include <freerdp/channels/astats.h>
+#include <freerdp/metrics.h>
 #include <freerdp/client.h>
 #include <freerdp/constants.h>
 #include <freerdp/freerdp.h>
@@ -58,7 +60,10 @@ enum
 	STATS_SERVER_OS_MAJOR_TYPE,
 	STATS_SERVER_OS_MINOR_TYPE,
 	STATS_SERVER_PORT,
-	STATS_GFX_CAPS_VERSION,
+	STATS_SERVER_GFX_PERIODS, /* then one per ASTATS_ID_*, in their order */
+	STATS_SERVER_GFX_FIRST,
+	STATS_SERVER_GFX_END = STATS_SERVER_GFX_FIRST + 21,
+	STATS_GFX_CAPS_VERSION = STATS_SERVER_GFX_END,
 	STATS_GFX_CAPS_FLAGS,
 	STATS_GFX_SURFACES,
 	STATS_GFX_SURFACE1_CODECID, /* then _WIDTH, _HEIGHT, and so for each slot */
@@ -87,6 +92,28 @@ static const char* const sessionNames[] = { "NETWORK_BYTES_RECEIVED",
 	                                        "SERVER_OS_MAJOR_TYPE",
 	                                        "SERVER_OS_MINOR_TYPE",
 	                                        "SERVER_PORT",
+	                                        "SERVER_GFX_PERIODS",
+	                                        "SERVER_GFX_PERIOD_MS",
+	                                        "SERVER_GFX_CAPTURED",
+	                                        "SERVER_GFX_SENT",
+	                                        "SERVER_GFX_HELD",
+	                                        "SERVER_GFX_MERGED",
+	                                        "SERVER_GFX_ACKS",
+	                                        "SERVER_GFX_ACK_DELAY_AVG_MS",
+	                                        "SERVER_GFX_ACK_DELAY_MAX_MS",
+	                                        "SERVER_GFX_ACK_DELAY_MIN_MS",
+	                                        "SERVER_GFX_ENCODE_AVG_US",
+	                                        "SERVER_GFX_ENCODE_MAX_US",
+	                                        "SERVER_GFX_IN_FLIGHT_MAX",
+	                                        "SERVER_GFX_IN_FLIGHT_LIMIT",
+	                                        "SERVER_GFX_FRAME_ID_FIRST",
+	                                        "SERVER_GFX_FRAME_ID_LAST",
+	                                        "SERVER_GFX_FRAME_ID_ACKED_LAST",
+	                                        "SERVER_GFX_CAPTURE_AVG_US",
+	                                        "SERVER_GFX_CAPTURE_MAX_US",
+	                                        "SERVER_GFX_ROUND_AVG_US",
+	                                        "SERVER_GFX_ROUND_MAX_US",
+	                                        "SERVER_GFX_PERIOD_NUMBER",
 	                                        "GFX_CAPS_VERSION",
 	                                        "GFX_CAPS_FLAGS",
 	                                        "RDPGFX_SURFACES",
@@ -107,10 +134,12 @@ enum
 {
 	STRINGS_SERVER_HOSTNAME,
 	STRINGS_SERVER_CERT_CN,
+	STRINGS_SERVER_CONNECTION_ID,
 	STRINGS_MAX
 };
 
-static const char* const stringNames[] = { "SERVER_HOSTNAME", "SERVER_CERT_CN" };
+static const char* const stringNames[] = { "SERVER_HOSTNAME", "SERVER_CERT_CN",
+	                                       "SERVER_CONNECTION_ID" };
 
 static uint64_t network_value(const rdpContext* context, size_t index)
 {
@@ -166,6 +195,21 @@ static uint64_t audio_value(const rdpContext* context, size_t index)
 		default:
 			return 0;
 	}
+}
+
+/* what the server told over FreeRDP::Advanced::Stats (/astats): its newest period, by
+ * ASTATS_ID_*, 0 until it came; SERVER_GFX_PERIODS counts the reports */
+WINPR_STATIC_ASSERT(STATS_SERVER_GFX_END - STATS_SERVER_GFX_FIRST == ASTATS_ID_LAST);
+
+static uint64_t server_gfx_value(const rdpContext* context, size_t index)
+{
+	const rdpMetrics* metrics = context->metrics;
+	if (!metrics)
+		return 0;
+	if (index == STATS_SERVER_GFX_PERIODS)
+		return metrics->ServerStatsReports;
+	const size_t id = index - STATS_SERVER_GFX_FIRST + ASTATS_ID_PERIOD_MS;
+	return (id < ARRAYSIZE(metrics->ServerStats)) ? metrics->ServerStats[id] : 0;
 }
 
 /* what the server announced: 0 until it has (freerdp_get_remote_settings) */
@@ -308,6 +352,8 @@ uint64_t freerdp_client_stats_value_for_index(const rdpContext* context, size_t 
 		return audio_value(context, index);
 	if (index <= STATS_SERVER_PORT)
 		return server_value(context, index);
+	if (index < STATS_SERVER_GFX_END)
+		return server_gfx_value(context, index);
 
 #if defined(CHANNEL_RDPGFX_CLIENT)
 	if (index < freerdp_client_stats_max_index())
@@ -341,6 +387,11 @@ const char* freerdp_client_stats_string_value_for_index(const rdpContext* contex
 		case STRINGS_SERVER_CERT_CN:
 			return freerdp_settings_get_string(freerdp_get_remote_settings(context),
 			                                   FreeRDP_CertificateName);
+		case STRINGS_SERVER_CONNECTION_ID:
+			/* the server's id of this connection (FreeRDP::Advanced::Stats), "" until it came */
+			return (context->metrics && (context->metrics->ServerConnectionId[0] != '\0'))
+			           ? context->metrics->ServerConnectionId
+			           : nullptr;
 		default:
 			return nullptr;
 	}

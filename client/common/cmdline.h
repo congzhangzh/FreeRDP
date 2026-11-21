@@ -63,6 +63,11 @@ static const COMMAND_LINE_ARGUMENT_A global_cmd_args[] = {
 	  "Automatically request remote assistance input control" },
 	{ "async-channels", COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueFalse, nullptr, -1, nullptr,
 	  "Asynchronous channels (experimental)" },
+#if defined(CHANNEL_ASTATS_CLIENT)
+	{ "astats", COMMAND_LINE_VALUE_FLAG, nullptr, nullptr, nullptr, -1, nullptr,
+	  "The server's statistics (FreeRDP::Advanced::Stats): what its frames did, period by "
+	  "period, next to the client's own (overlay, stats socket); off by default" },
+#endif
 	{ "async-update", COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueFalse, nullptr, -1, nullptr,
 	  "Asynchronous update" },
 	{ "audio-mode", COMMAND_LINE_VALUE_REQUIRED, "[[none|2]|[server|1]|[redirect|0]]", nullptr,

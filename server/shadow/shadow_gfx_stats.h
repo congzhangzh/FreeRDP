@@ -21,6 +21,7 @@
 
 #include <winpr/wtypes.h>
 #include <freerdp/api.h>
+#include <freerdp/channels/astats.h>
 
 /* send times kept per client for the acknowledgement delay: a power of 2, more than the frames a
  * client may have in flight; an acknowledgement for an older frame is counted without a delay */
@@ -156,6 +157,12 @@ extern "C"
 	WINPR_ATTR_NODISCARD FREERDP_LOCAL BOOL
 	shadow_gfx_stats_json(const SHADOW_GFX_VALUES* values, const SHADOW_GFX_PERIOD_INFO* info,
 	                      char* buffer, size_t size);
+
+	/** values as a FreeRDP::Advanced::Stats report, period the server's count of them; the frame
+	 *  ids and the capture and round times only when known, as in shadow_gfx_stats_json().
+	 *  @return the values written (at most size) */
+	WINPR_ATTR_NODISCARD FREERDP_LOCAL size_t shadow_gfx_stats_report(
+	    const SHADOW_GFX_VALUES* values, UINT64 period, ASTATS_VALUE* report, size_t size);
 
 	/** The frames in flight the link carries without a queue: the frames acknowledged per second
 	 *  (rate) times the round trip without a queue (baseAckNs), rounded up, and

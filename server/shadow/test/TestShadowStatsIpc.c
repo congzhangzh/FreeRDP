@@ -396,6 +396,21 @@ static BOOL test_json(void)
 		(void)fprintf(stderr, "got      %s\nexpected %s\n", object, expected);
 		return FALSE;
 	}
+	/* the channel's report: the same numbers by id, the period's number last */
+	{
+		ASTATS_VALUE report[ASTATS_ID_LAST] = { 0 };
+		const size_t count = shadow_gfx_stats_report(&values, 3, report, ARRAYSIZE(report));
+		CHECK(count == ASTATS_ID_LAST);
+		CHECK((report[2].id == ASTATS_ID_SENT) && (report[2].value == 290));
+		CHECK((report[count - 1].id == ASTATS_ID_PERIOD_NUMBER) && (report[count - 1].value == 3));
+		BOOL first = FALSE;
+		for (size_t x = 0; x < count; x++)
+			first =
+			    first || ((report[x].id == ASTATS_ID_FRAME_ID_FIRST) && (report[x].value == 100));
+		CHECK(first);
+		/* a smaller array takes what fits */
+		CHECK(shadow_gfx_stats_report(&values, 3, report, 4) == 4);
+	}
 	/* too small a buffer is refused, not cut */
 	CHECK(!shadow_gfx_stats_json(&values, &info, object, 100));
 
@@ -408,6 +423,16 @@ static BOOL test_json(void)
 	CHECK(shadow_gfx_stats_json(&values, &info, object, sizeof(object)));
 	CHECK(!strstr(object, "GFX_FRAME_ID_FIRST") && !strstr(object, "GFX_FRAME_ID_LAST"));
 	CHECK(!strstr(object, "GFX_CAPTURE_") && !strstr(object, "GFX_ROUND_"));
+	{
+		/* no frame ids, capture or round times in the report either */
+		ASTATS_VALUE report[ASTATS_ID_LAST] = { 0 };
+		const size_t count = shadow_gfx_stats_report(&values, 1, report, ARRAYSIZE(report));
+		CHECK(count == ASTATS_ID_LAST - 6);
+		for (size_t x = 0; x < count; x++)
+			CHECK((report[x].id != ASTATS_ID_FRAME_ID_FIRST) &&
+			      (report[x].id != ASTATS_ID_CAPTURE_AVG_US) &&
+			      (report[x].id != ASTATS_ID_ROUND_MAX_US));
+	}
 	CHECK(strstr(object, ",\"GFX_FRAME_ID_ACKED_LAST\":0}}"));
 
 	/* a peer that is no address is left out */

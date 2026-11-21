@@ -30,6 +30,9 @@ extern "C"
 {
 #endif
 
+/** the values of rdpMetrics::ServerStats, by ASTATS_ID_* (freerdp/channels/astats.h) */
+#define FREERDP_METRICS_SERVER_STATS 32
+
 	struct rdp_metrics
 	{
 		rdpContext* context;
@@ -48,6 +51,15 @@ extern "C"
 		UINT64 AudioFormatTag;        /**< WAVE_FORMAT_* of the last open @since version 3.34.0 */
 		UINT64 AudioDelayMs; /**< last delay told to the server, arrival to the end of the play
 		                        call plus what the backend reports @since version 3.34.0 */
+
+		/* What the server told over FreeRDP::Advanced::Stats (/astats), the newest period, by
+		 * ASTATS_ID_* (0 where the server left a value out); ServerStatsReports counts the
+		 * reports, 0 while the server sent none. */
+		UINT64 ServerStats[FREERDP_METRICS_SERVER_STATS]; /**< @since version 3.34.0 */
+		UINT64 ServerStatsReports;                        /**< @since version 3.34.0 */
+		/** the server's id of this connection, 16 lowercase hex digits, "" while unknown
+		 *  @since version 3.34.0 */
+		char ServerConnectionId[17];
 	};
 	typedef struct rdp_metrics rdpMetrics;
 
