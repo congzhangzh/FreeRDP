@@ -512,13 +512,63 @@ static int checkServer()
 	const auto same = sdl::overlay::serverRows(n, r);
 	EXPECT(find(same, "RDP version"), "10.7");
 	CHECK(!find(same, "Certificate"));
+	CHECK(!find(same, "Server times"));
+	return 0;
+}
+
+/* the server's own measurements over its statistics channel */
+static int checkServerStats()
+{
+	const std::vector<std::string> names = {
+		"SERVER_GFX_PERIODS",
+		"SERVER_GFX_PERIOD_MS",
+		"SERVER_GFX_CAPTURED",
+		"SERVER_GFX_SENT",
+		"SERVER_GFX_HELD",
+		"SERVER_GFX_MERGED",
+		"SERVER_GFX_ACK_DELAY_AVG_MS",
+		"SERVER_GFX_ACK_DELAY_MIN_MS",
+		"SERVER_GFX_ACK_DELAY_MAX_MS",
+		"SERVER_GFX_ENCODE_AVG_US",
+		"SERVER_GFX_ENCODE_MAX_US",
+		"SERVER_GFX_IN_FLIGHT_MAX",
+		"SERVER_GFX_IN_FLIGHT_LIMIT",
+		"SERVER_GFX_CAPTURE_AVG_US",
+		"SERVER_GFX_ROUND_AVG_US",
+	};
+	const Names n(names);
+	Reading r;
+	r.values.assign(names.size(), 0);
+
+	/* no report yet (or a server that sends none): no row, whatever else reads */
+	r.values.at(2) = 300;
+	CHECK(sdl::overlay::serverRows(n, r).empty());
+
+	r.values = { 3, 5000, 104, 103, 2, 1, 27, 8, 66, 29880, 41000, 1, 8, 15610, 46420 };
+	auto rows = sdl::overlay::serverRows(n, r);
+	CHECK(rows.size() == 3);
+	EXPECT(find(rows, "Server frames (5.0 s)"), "20.8 captured, 20.6 sent /s, 2 held, 1 merged");
+	EXPECT(find(rows, "Server times"),
+	       "capture 15.6 ms, encode 29.9 ms (max 41.0 ms), round 46.4 ms");
+	EXPECT(find(rows, "Server acks"), "27 ms (8–66), in flight 1 of 8");
+
+	/* a server that does not measure capture and round (Windows, macOS): left out */
+	r.values.at(13) = 0;
+	r.values.at(14) = 0;
+	rows = sdl::overlay::serverRows(n, r);
+	EXPECT(find(rows, "Server times"), "encode 29.9 ms (max 41.0 ms)");
+
+	/* no period length: no rate */
+	r.values.at(1) = 0;
+	rows = sdl::overlay::serverRows(n, r);
+	EXPECT(find(rows, "Server frames (0.0 s)"), "– captured, – sent /s, 2 held, 1 merged");
 	return 0;
 }
 
 int TestSDLOverlayModel([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
 {
 	for (auto* check : { checkNames, checkRates, checkLabels, checkNetworkAndAudio, checkClient,
-	                     checkAverages, checkLayout, checkServer })
+	                     checkAverages, checkLayout, checkServer, checkServerStats })
 	{
 		const int rc = check();
 		if (rc != 0)

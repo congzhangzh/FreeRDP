@@ -115,7 +115,8 @@ namespace sdl::overlay
 	/** The server part, under the client part: what the server announced (RDP version, OS,
 	 * the graphics caps it confirmed, its surfaces and their codecs) and where this client
 	 * connected, with the names of the client statistics' name functions, as the web client's
-	 * Info card shows them. A row the server has not told yet is left out. */
+	 * Info card shows them, and what a FreeRDP server measured in its last period (its
+	 * statistics channel, /astats). A row the server has not told yet is left out. */
 	[[nodiscard]] std::vector<Row> serverRows(const Names& names, const Reading& now);
 
 	/** The client part's decoder rows: per decoder that has worked, its backend and whether it
