@@ -23,6 +23,7 @@
 
 #include <freerdp/config.h>
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +38,14 @@
 
 #include "rdpsnd_main.h"
 
+/* What is kept queued without a /sound:latency, and the most it may ask for */
+#define RDPSND_MAC_DEFAULT_LATENCY_MS 100
+#define RDPSND_MAC_MAX_LATENCY_MS 1000
+/* Queued sound beyond the latency, same slack as rdpsnd_detect_overrun() and the SDL backend */
+#define RDPSND_MAC_OVERRUN_SLACK_MS 200
+/* Dropped sound is logged at most this often */
+#define RDPSND_MAC_DROP_LOG_MS 10000
+
 typedef struct
 {
 	rdpsndDevicePlugin device;
@@ -50,6 +59,14 @@ typedef struct
 	AVAudioEngine *engine;
 	AVAudioPlayerNode *player;
 	UINT64 diff;
+
+	/* frames scheduled on the player and not played yet: the completion handlers run on
+	 * another thread */
+	atomic_long queued;
+	/* a stop may complete the buffers after the count was reset: theirs count no more */
+	atomic_long generation;
+	UINT64 dropLogged;
+	UINT64 droppedMs;
 } rdpsndMacPlugin;
 
 static BOOL rdpsnd_mac_set_format(rdpsndDevicePlugin *device, const AUDIO_FORMAT *format,
@@ -59,7 +76,8 @@ static BOOL rdpsnd_mac_set_format(rdpsndDevicePlugin *device, const AUDIO_FORMAT
 	if (!mac || !format)
 		return FALSE;
 
-	mac->latency = latency;
+	mac->latency =
+	    (latency > 0) ? MIN(latency, RDPSND_MAC_MAX_LATENCY_MS) : RDPSND_MAC_DEFAULT_LATENCY_MS;
 	mac->format = *format;
 
 	audio_format_print(WLog_Get(TAG), WLOG_DEBUG, format);
@@ -243,6 +261,8 @@ static void rdpsnd_mac_close(rdpsndDevicePlugin *device)
 			[mac->player stop];
 			mac->isPlaying = FALSE;
 		}
+		atomic_fetch_add(&mac->generation, 1);
+		atomic_store(&mac->queued, 0);
 
 		if (mac->isOpen)
 		{
@@ -355,6 +375,29 @@ static UINT rdpsnd_mac_play(rdpsndDevicePlugin *device, const BYTE *data, size_t
 		step = 2 * mac->format.nChannels;
 
 		count = size / step;
+		if ((count == 0) || (mac->format.nSamplesPerSec == 0))
+			return 0;
+
+		/* Everything scheduled plays, in order: a burst after a stall (the engine starting, a
+		 * late network) would delay the sound for the rest of the session. */
+		const UINT64 rate = mac->format.nSamplesPerSec;
+		const long queued = atomic_load(&mac->queued);
+		const UINT64 queuedMs = (queued > 0) ? 1000ULL * (UINT64)queued / rate : 0;
+		const UINT64 sizeMs = 1000ULL * count / rate;
+		if (mac->isPlaying && (queuedMs > sizeMs + mac->latency + RDPSND_MAC_OVERRUN_SLACK_MS))
+		{
+			mac->droppedMs += sizeMs;
+			if (start - mac->dropLogged >= RDPSND_MAC_DROP_LOG_MS)
+			{
+				WLog_INFO(TAG,
+				          "%" PRIu64 " ms queued, more than %" PRIu32 " + %d ms: dropped %" PRIu64
+				          " ms of sound since the last message",
+				          queuedMs, mac->latency, RDPSND_MAC_OVERRUN_SLACK_MS, mac->droppedMs);
+				mac->dropLogged = start;
+				mac->droppedMs = 0;
+			}
+			return queuedMs > UINT_MAX ? UINT_MAX : (UINT)queuedMs;
+		}
 		format = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatFloat32
 		                                          sampleRate:mac->format.nSamplesPerSec
 		                                            channels:mac->format.nChannels
@@ -396,8 +439,13 @@ static UINT rdpsnd_mac_play(rdpsndDevicePlugin *device, const BYTE *data, size_t
 		{
 			rdpsnd_mac_start(device);
 
+			const long frames = (long)count;
+			const long generation = atomic_load(&mac->generation);
+			atomic_fetch_add(&mac->queued, frames);
 			[mac->player scheduleBuffer:buffer
 			          completionHandler:^{
+				          if (atomic_load(&mac->generation) == generation)
+					          atomic_fetch_sub(&mac->queued, frames);
 				          UINT64 stop = GetTickCount64();
 				          if (start > stop)
 					          mac->diff = 0;
