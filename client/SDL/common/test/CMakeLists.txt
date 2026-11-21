@@ -6,7 +6,7 @@ set(${MODULE_PREFIX}_DRIVER ${MODULE_NAME}.cpp)
 set(${MODULE_PREFIX}_TESTS TestSDLPrefs.cpp TestSDLAadHelper.cpp)
 if(WITH_CLIENT_SDL3)
   list(APPEND ${MODULE_PREFIX}_TESTS TestSDLRailWindowStyle.cpp TestSDLWebClipOffers.cpp TestSDLWheel.cpp
-       TestSDLOverlayModel.cpp TestSDLStatsJson.cpp
+       TestSDLOverlayModel.cpp TestSDLStatsJson.cpp TestSDLHiDpi.cpp
   )
   if(NOT EMSCRIPTEN)
     list(APPEND ${MODULE_PREFIX}_TESTS TestSDLStatsIpc.cpp)
@@ -26,7 +26,8 @@ set(${MODULE_PREFIX}_LIBS freerdp-client sdl-common-prefs freerdp-cxx-filesystem
 
 target_link_libraries(${MODULE_NAME} PRIVATE ${${MODULE_PREFIX}_LIBS})
 if(WITH_CLIENT_SDL3)
-  target_sources(${MODULE_NAME} PRIVATE ../../SDL3/sdl_overlay_model.cpp ../../SDL3/sdl_stats_json.cpp)
+  target_sources(${MODULE_NAME} PRIVATE ../../SDL3/sdl_overlay_model.cpp ../../SDL3/sdl_stats_json.cpp
+                                         ../../SDL3/sdl_hidpi.cpp)
   if(NOT EMSCRIPTEN)
     find_package(Threads REQUIRED)
     if(WIN32)

@@ -29,6 +29,8 @@
 
 #include <freerdp/settings_types.h>
 
+#include "sdl_hidpi.hpp"
+
 class SdlOverlay;
 class SdlOverlayPainter;
 
@@ -44,6 +46,12 @@ class SdlWindow
 	[[nodiscard]] static SdlWindow createPopup(SDL_Window* parent, const SDL_Rect& rect,
 	                                           bool transparent, bool tooltip = false);
 	[[nodiscard]] static rdpMonitor query(SDL_DisplayID id, bool forceAsPrimary = false);
+
+	/** /sdl-hidpi for the windows created from now on and the displays queried, each by its
+	 * display: points (one pixel per point, the system scales; the default) or pixels. Set once,
+	 * while the command line is parsed, before any window exists. */
+	static void setHiDpi(const sdl::hidpi::Policy& policy);
+	[[nodiscard]] static sdl::hidpi::Mode hiDpiMode(SDL_DisplayID id);
 
 	SdlWindow(SdlWindow&& other) noexcept;
 	SdlWindow(const SdlWindow& other) = delete;
