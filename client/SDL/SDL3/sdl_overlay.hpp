@@ -75,7 +75,8 @@ class SdlOverlay
 	/** SDL's thread, on SDL_EVENT_USER_OVERLAY: take the newest reading, build the rows and
 	 * send them to the socket, if any. rendererName may be nullptr (no window).
 	 * @return true when there is something new to draw */
-	[[nodiscard]] bool update(int windowWidth, int windowHeight, const char* rendererName);
+	[[nodiscard]] bool update(int windowWidth, int windowHeight, const char* rendererName,
+	                          const std::string& hidpi = {});
 
 	/** The rows to draw: client info on the left, the server under it, the real-time part on
 	 * the right. A new generation means the rows changed. */
@@ -93,7 +94,7 @@ class SdlOverlay
 	                                      FreeRDP_TimerID timerID, uint64_t timestamp,
 	                                      uint64_t interval);
 	[[nodiscard]] bool read(rdpContext* context, uint64_t timestamp);
-	void clientRows(const char* rendererName);
+	void clientRows(const char* rendererName, const std::string& hidpi);
 
 	SdlContext* _sdl;
 	std::atomic<bool> _visible = false;
@@ -118,6 +119,7 @@ class SdlOverlay
 	uint64_t _ipcSeq = 0;
 	sdl::overlay::History _history;
 	std::vector<sdl::overlay::Row> _client;
+	std::string _hidpi; /* the HiDPI line the client rows were made with */
 	std::vector<sdl::overlay::Row> _left;
 	std::vector<sdl::overlay::Row> _server;
 	std::vector<sdl::overlay::Row> _right;
