@@ -44,6 +44,7 @@
 static constexpr auto sdl_allow_screensaver = "sdl-allow-screensaver";
 static constexpr auto sdl_connection_dialog = "sdl-connection-dialog";
 static constexpr auto sdl_info = "sdl-info";
+static constexpr auto sdl_hidpi = "sdl-hidpi";
 #if !defined(__EMSCRIPTEN__)
 static constexpr auto sdl_stats_ipc = "sdl-stats-ipc";
 #endif
@@ -93,6 +94,18 @@ SdlContext::SdlContext(rdpContext* context)
 	                  "\\\\.\\pipe\\sdl-freerdp-<pid>.stats; logged at start), whether the "
 	                  "overlay shows or not" });
 #endif
+
+	_args.push_back(
+	    { sdl_hidpi, COMMAND_LINE_VALUE_REQUIRED, "points|pixels[,<id>:points|pixels...]", "points",
+	      nullptr, -1, nullptr,
+	      "On a display with more pixels than points (a Retina Mac): points asks the "
+	      "server for each window's size in points at the display's own scale and lets "
+	      "the system scale the picture, a quarter of the pixels at 2x (default); pixels "
+	      "asks for every pixel at the scale times the density. Each display by its own "
+	      "density; one with a pixel per point is the same in both. <id>:<mode> gives a "
+	      "display (its id in /monitor-list) a mode of its own. A window keeps the mode of the "
+	      "display it was created on. Windows and X11 scale with one pixel per point, so there "
+	      "both modes are the same" });
 
 	/* Push a null element used as abort when iterating the array */
 	_args.push_back({ nullptr, 0, nullptr, nullptr, nullptr, -1, nullptr, nullptr });
@@ -1110,7 +1123,18 @@ bool SdlContext::updateOverlay()
 	int h = 0;
 	if (window && !SDL_GetWindowSizeInPixels(window->window(), &w, &h))
 		return true;
-	if (_overlay.update(w, h, window ? window->rendererName() : nullptr) && window)
+	/* the mode and the density of the window's display, for the overlay */
+	float density = 1.0f;
+	SDL_DisplayID display = 0;
+	if (window)
+	{
+		display = SDL_GetDisplayForWindow(window->window());
+		const auto* mode = SDL_GetCurrentDisplayMode(display);
+		if (mode && (mode->pixel_density > 0.0f))
+			density = mode->pixel_density;
+	}
+	const auto hidpi = sdl::hidpi::overlayText(SdlWindow::hiDpiMode(display), density);
+	if (_overlay.update(w, h, window ? window->rendererName() : nullptr, hidpi) && window)
 		window->updateSurface(&_overlay);
 	return true;
 }
@@ -1825,6 +1849,18 @@ int SdlContext::argumentHandler(const COMMAND_LINE_ARGUMENT_A* arg, void* custom
 		{
 			if (!sdl->_overlay.show(arg->Value != nullptr))
 				return -2;
+		}
+		else if (strcmp(arg->Name, sdl_hidpi) == 0)
+		{
+			const auto policy = sdl::hidpi::parsePolicy(arg->Value ? arg->Value : "");
+			if (!policy)
+			{
+				WLog_Print(sdl->getWLog(), WLOG_ERROR,
+				           "/%s:%s: points or pixels, then <display id>:points|pixels", sdl_hidpi,
+				           arg->Value ? arg->Value : "");
+				return -2;
+			}
+			SdlWindow::setHiDpi(*policy);
 		}
 #if !defined(__EMSCRIPTEN__)
 		else if (strcmp(arg->Name, sdl_stats_ipc) == 0)
