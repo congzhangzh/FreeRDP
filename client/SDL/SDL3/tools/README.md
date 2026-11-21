@@ -20,3 +20,10 @@ summaries. Counters start over on a reconnect (`connection` grows), so a summary
 first connection only. For a quick look: `--rows` (what the overlay shows), `--get NAME...`,
 `--rate NAME...`. The script needs only Python 3; `--self-test` checks it without a client.
 Windows' Python has no AF_UNIX sockets: read the socket there with another program.
+
+To join the client's lines with a server's numbers for the same connection, use `time_ms` (the
+reading's wall-clock time, ms since 1970 UTC; `ns` is the monotonic time for rates) and, when the
+server sends one over its statistics channel, `strings.SERVER_CONNECTION_ID` (16 hex digits): a
+FreeRDP shadow server writes the same ID and the end of each of its periods as `time_ms` in its
+own statistics, so a client line belongs to the server period whose window holds its `time_ms`.
+Without that channel there is no ID; join on time only.

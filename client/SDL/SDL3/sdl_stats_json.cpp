@@ -161,6 +161,8 @@ namespace sdl::stats
 		out += ",\"version\":" + std::to_string(schemaVersion);
 		out += ",\"seq\":" + std::to_string(snapshot.seq);
 		out += ",\"ns\":" + std::to_string(reading ? reading->ns : 0);
+		/* the wall clock, to join these lines with the server's */
+		out += ",\"time_ms\":" + std::to_string(reading ? reading->wallMs : 0);
 		out += ",\"connection\":" + std::to_string(snapshot.connection);
 		out += ",\"session_seconds\":" + std::to_string(snapshot.sessionSeconds);
 		out += ",\"desktop\":[" + std::to_string(reading ? reading->desktopWidth : 0) + ',' +

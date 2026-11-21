@@ -56,6 +56,7 @@ static int checkSnapshot()
 	};
 	sdl::overlay::Reading reading;
 	reading.ns = 123456789012345ull;
+	reading.wallMs = 1795000000123ull;
 	reading.values = { 1000, 1, 2, 3, 42, 7, UINT64_MAX };
 	reading.desktopWidth = 1920;
 	reading.desktopHeight = 1080;
@@ -81,7 +82,8 @@ static int checkSnapshot()
 
 	CHECK(json.find('\n') == std::string::npos);
 	CHECK(contains(json, "\"schema\":\"freerdp-sdl-stats\",\"version\":1,"));
-	CHECK(contains(json, "\"seq\":5,\"ns\":123456789012345,\"connection\":2,"));
+	CHECK(contains(json, "\"seq\":5,\"ns\":123456789012345,\"time_ms\":1795000000123,"
+	                     "\"connection\":2,"));
 	CHECK(contains(json, "\"session_seconds\":61,\"desktop\":[1920,1080],\"window\":[1280,720]"));
 	CHECK(contains(json, "\"counters\":{\"NETWORK_BYTES_RECEIVED\":1000,\"AUDIO_DELAY_MS\":42,"
 	                     "\"BIG\":18446744073709551615}"));

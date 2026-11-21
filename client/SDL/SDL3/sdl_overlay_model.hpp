@@ -35,6 +35,7 @@ namespace sdl::overlay
 	struct Reading
 	{
 		uint64_t ns = 0;              /**< when it was taken, in ns from any base */
+		uint64_t wallMs = 0;          /**< the same moment by the wall clock, ms since 1970 (UTC) */
 		std::vector<uint64_t> values; /**< by statistic index */
 		uint32_t desktopWidth = 0;
 		uint32_t desktopHeight = 0;

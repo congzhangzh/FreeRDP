@@ -131,7 +131,8 @@ def summary(lines):
 def self_test():
     """A fake client on a temporary socket, then each mode against it."""
     sample = {
-        "schema": SCHEMA, "version": VERSION, "seq": 1, "ns": 1_000_000_000, "connection": 1,
+        "schema": SCHEMA, "version": VERSION, "seq": 1, "ns": 1_000_000_000, "time_ms": 1_795_000_000_000,
+        "connection": 1,
         "session_seconds": 1, "desktop": [1920, 1080], "window": [1280, 720],
         "counters": {"RDPGFX_FRAMES_DECODED": 10, "BIG": 2**64 - 1},
         "strings": {"SERVER_HOSTNAME": "hé"}, "backends": {"AV1": "dav1d"},
@@ -161,6 +162,7 @@ def self_test():
         server.close()
     assert a["counters"]["BIG"] == 2**64 - 1, "integers are exact"
     assert a["strings"]["SERVER_HOSTNAME"] == "hé"
+    assert a["time_ms"] == 1_795_000_000_000
     assert rate(a, b, "RDPGFX_FRAMES_DECODED") == 30.0
     assert rate(a, dict(b, connection=2), "RDPGFX_FRAMES_DECODED") is None
     assert "Frames" in rows_text(a)

@@ -262,6 +262,9 @@ bool SdlOverlay::read(rdpContext* context, uint64_t timestamp)
 
 	sdl::overlay::Reading reading;
 	reading.ns = timestamp;
+	reading.wallMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+	                                           std::chrono::system_clock::now().time_since_epoch())
+	                                           .count());
 	reading.desktopWidth = freerdp_settings_get_uint32(context->settings, FreeRDP_DesktopWidth);
 	reading.desktopHeight = freerdp_settings_get_uint32(context->settings, FreeRDP_DesktopHeight);
 	statsRead(context, reading);
