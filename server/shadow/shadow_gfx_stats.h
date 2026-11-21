@@ -61,6 +61,12 @@ typedef struct
 	UINT64 encodeSumNs; /* encode and send of one frame */
 	UINT64 encodeMaxNs;
 	UINT32 maxInFlight; /* the most frames in flight seen */
+	UINT64 captures;    /* rounds whose capture time the subsystem told */
+	UINT64 captureSumNs;
+	UINT64 captureMaxNs;
+	UINT64 rounds; /* frames sent from such a capture: capture start to the frame sent */
+	UINT64 roundSumNs;
+	UINT64 roundMaxNs;
 	UINT32 firstFrameId; /* the first and the last frame sent, when sent > 0 */
 	UINT32 lastFrameId;
 	SHADOW_GFX_SENT_FRAME ring[SHADOW_GFX_STATS_RING];
@@ -86,6 +92,12 @@ typedef struct
 	UINT64 frameIdFirst;  /* the GFX frame ids (StartFrame) of the first and the last frame sent */
 	UINT64 frameIdLast;
 	UINT64 frameIdAckedLast; /* the last one the client acknowledged */
+	UINT64 captures;         /* 0: no capture times (the four below are left out) */
+	UINT64 captureAvgUs;
+	UINT64 captureMaxUs;
+	UINT64 rounds; /* 0: no round times */
+	UINT64 roundAvgUs;
+	UINT64 roundMaxUs;
 } SHADOW_GFX_VALUES;
 
 /* Who and when a period is (the stats socket): the connection's id, which the client also gets
@@ -114,6 +126,13 @@ extern "C"
 	/** counts a frame sent: its encode time and its send time for the acknowledgement delay */
 	FREERDP_LOCAL void shadow_gfx_stats_frame_sent(SHADOW_GFX_STATS* stats, UINT32 frameId,
 	                                               UINT64 startNs, UINT64 endNs);
+
+	/** counts a round's capture time (the subsystem's, for the frame this client takes now) */
+	FREERDP_LOCAL void shadow_gfx_stats_capture(SHADOW_GFX_STATS* stats, UINT64 captureNs);
+
+	/** counts a round's time: from its capture's start to its frame sent */
+	FREERDP_LOCAL void shadow_gfx_stats_round(SHADOW_GFX_STATS* stats, UINT64 startNs,
+	                                          UINT64 endNs);
 
 	/** counts an acknowledgement and, if the frame's send time is in the ring, its delay
 	 *  @return that delay in ns, 0 when the send time was not in the ring */

@@ -1261,6 +1261,8 @@ static int x11_shadow_screen_grab(x11ShadowSubsystem* subsystem)
 	if (count < 1)
 		return 1;
 
+	const UINT64 captureStart = winpr_GetTickCount64NS();
+
 	{
 		EnterCriticalSection(&surface->lock);
 		surfaceRect.right = WINPR_ASSERTING_INT_CAST(UINT16, surface->width);
@@ -1305,6 +1307,8 @@ static int x11_shadow_screen_grab(x11ShadowSubsystem* subsystem)
 				goto fail_capture;
 #endif
 			count = ArrayList_Count(server->clients);
+			subsystem->common.captureStartNs = captureStart;
+			subsystem->common.captureNs = winpr_GetTickCount64NS() - captureStart;
 			shadow_subsystem_frame_update(&subsystem->common);
 
 			if (count == 1)
@@ -1339,6 +1343,9 @@ static int x11_shadow_subsystem_process_message(x11ShadowSubsystem* subsystem, w
 	switch (message->id)
 	{
 		case SHADOW_MSG_IN_REFRESH_REQUEST_ID:
+			/* the same picture again, no capture */
+			subsystem->common.captureStartNs = 0;
+			subsystem->common.captureNs = 0;
 			shadow_subsystem_frame_update((rdpShadowSubsystem*)subsystem);
 			break;
 

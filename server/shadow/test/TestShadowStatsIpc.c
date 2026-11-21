@@ -354,6 +354,11 @@ static BOOL test_json(void)
 	stats.maxInFlight = 7;
 
 	SHADOW_GFX_VALUES values = { 0 };
+	shadow_gfx_stats_capture(&stats, 18000400);                   /* 18000 us */
+	shadow_gfx_stats_capture(&stats, 20001600);                   /* avg 19001 us, max 20002 */
+	shadow_gfx_stats_round(&stats, 1000000000ull, 1050000600ull); /* 50001 us */
+	shadow_gfx_stats_round(&stats, 0, 5);                         /* no capture start: none */
+	shadow_gfx_stats_round(&stats, 9, 5);                         /* backwards: none */
 	stats.firstFrameId = 100;
 	stats.lastFrameId = 389;
 	shadow_gfx_stats_values(&stats, 12, 5003, 383, &values);
@@ -374,15 +379,18 @@ static BOOL test_json(void)
 	char object[1024];
 	CHECK(shadow_gfx_stats_json(&values, &info, object, sizeof(object)));
 	const char* expected =
-	    "{\"connection_id\":\"00ab00cd00ef0012\",\"peer\":\"127.0.0.1:43210\",\"connected_ms\":1763700000000,"
+	    "{\"connection_id\":\"00ab00cd00ef0012\",\"peer\":\"127.0.0.1:43210\",\"connected_ms\":"
+	    "1763700000000,"
 	    "\"started_at\":\"2026-11-21T10:31:05-05:00\",\"periods\":3,"
-	    "\"time_ms\":1763700015003,\"ns\":987654321012,\"period_ms\":5003,\"acks_suspended\":false,\"fps\":50,"
+	    "\"time_ms\":1763700015003,\"ns\":987654321012,\"period_ms\":5003,\"acks_suspended\":false,"
+	    "\"fps\":50,"
 	    "\"max_fps\":60,\"counters\":{\"GFX_PERIOD_MS\":5003,\"GFX_CAPTURED\":300,"
 	    "\"GFX_SENT\":290,\"GFX_HELD\":10,\"GFX_MERGED\":9,\"GFX_ACKS\":288,"
 	    "\"GFX_ACK_DELAY_AVG_MS\":201,\"GFX_ACK_DELAY_MAX_MS\":250,\"GFX_ACK_DELAY_MIN_MS\":151,"
 	    "\"GFX_ENCODE_AVG_US\":12346,\"GFX_ENCODE_MAX_US\":41000,\"GFX_IN_FLIGHT_MAX\":7,"
 	    "\"GFX_IN_FLIGHT_LIMIT\":12,\"GFX_FRAME_ID_FIRST\":100,\"GFX_FRAME_ID_LAST\":389,"
-	    "\"GFX_FRAME_ID_ACKED_LAST\":383}}";
+	    "\"GFX_CAPTURE_AVG_US\":19001,\"GFX_CAPTURE_MAX_US\":20002,\"GFX_ROUND_AVG_US\":50001,"
+	    "\"GFX_ROUND_MAX_US\":50001,\"GFX_FRAME_ID_ACKED_LAST\":383}}";
 	if (strcmp(object, expected) != 0)
 	{
 		(void)fprintf(stderr, "got      %s\nexpected %s\n", object, expected);
@@ -399,6 +407,7 @@ static BOOL test_json(void)
 	/* a period that sent nothing has no frame ids, not 0 */
 	CHECK(shadow_gfx_stats_json(&values, &info, object, sizeof(object)));
 	CHECK(!strstr(object, "GFX_FRAME_ID_FIRST") && !strstr(object, "GFX_FRAME_ID_LAST"));
+	CHECK(!strstr(object, "GFX_CAPTURE_") && !strstr(object, "GFX_ROUND_"));
 	CHECK(strstr(object, ",\"GFX_FRAME_ID_ACKED_LAST\":0}}"));
 
 	/* a peer that is no address is left out */

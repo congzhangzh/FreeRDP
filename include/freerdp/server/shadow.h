@@ -409,6 +409,12 @@ extern "C"
 
 		WINPR_ATTR_NODISCARD pfnShadowClientResize ClientResize; /** @since version 3.34.0 */
 		WINPR_ATTR_NODISCARD pfnShadowClientLayout ClientLayout; /** @since version 3.34.0 */
+
+		/** the frame published now (shadow_subsystem_frame_update()): when its capture started
+		 *  (winpr_GetTickCount64NS(); 0: not a capture, or the backend does not tell) and how
+		 *  long it took, for the clients' counters @since version 3.34.0 */
+		UINT64 captureStartNs;
+		UINT64 captureNs; /** @since version 3.34.0 */
 	};
 
 /* Definition of message between subsystem and clients */

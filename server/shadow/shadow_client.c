@@ -2263,8 +2263,11 @@ static BOOL shadow_client_send_surface_gfx(rdpShadowClient* client, const BYTE* 
 	    shadow_client_encode_surface_gfx(client, pSrcData, nSrcStep, SrcFormat, nXSrc, nYSrc,
 	                                     nWidth, nHeight, srcWidth, srcHeight, damage);
 	if (rc && encoder->gfxFrameOut)
-		shadow_gfx_stats_frame_sent(&encoder->gfxStats, encoder->frameId, start,
-		                            winpr_GetTickCount64NS());
+	{
+		const UINT64 end = winpr_GetTickCount64NS();
+		shadow_gfx_stats_frame_sent(&encoder->gfxStats, encoder->frameId, start, end);
+		shadow_gfx_stats_round(&encoder->gfxStats, encoder->roundStartNs, end);
+	}
 	return rc;
 }
 
@@ -3567,6 +3570,15 @@ static DWORD WINAPI shadow_client_thread(LPVOID arg)
 			if (client->activated && !client->suppressOutput)
 			{
 				client->encoder->gfxStats.captured++;
+				{
+					/* the subsystem waits until this client has taken the frame: its capture
+					 * times stay put while we read them */
+					const rdpShadowSubsystem* subsystem =
+					    client->server ? client->server->subsystem : nullptr;
+					client->encoder->roundStartNs = subsystem ? subsystem->captureStartNs : 0;
+					if (client->encoder->roundStartNs != 0)
+						shadow_gfx_stats_capture(&client->encoder->gfxStats, subsystem->captureNs);
+				}
 
 				/* Send screen update or resize to this client */
 

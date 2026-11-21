@@ -1369,6 +1369,7 @@ static void mutter_damage_stats(mutterOutput* output, UINT32 tiles)
 
 static void mutter_on_process(void* data)
 {
+	const UINT64 captureStart = winpr_GetTickCount64NS();
 	mutterOutput* output = (mutterOutput*)data;
 	WINPR_ASSERT(output);
 	mutterShadowSubsystem* mutter = output->mutter;
@@ -1455,7 +1456,12 @@ static void mutter_on_process(void* data)
 	 * thread needs the lock for each chunk it hands to the clients; it stalled, and PipeWire
 	 * dropped the sound. The update has a subscriber list of its own (see win_shadow.c). */
 	if (ArrayList_Count(server->clients) > 0)
+	{
+		/* the capture: from PipeWire's buffer to the copy in the surface */
+		mutter->common.captureStartNs = captureStart;
+		mutter->common.captureNs = winpr_GetTickCount64NS() - captureStart;
 		shadow_subsystem_frame_update(&mutter->common);
+	}
 
 	EnterCriticalSection(&surface->lock);
 	region16_clear(&surface->invalidRegion);
@@ -2672,7 +2678,12 @@ static void mutter_shadow_refresh(mutterShadowSubsystem* mutter)
 
 	/* not under the clients list lock, as in mutter_on_process */
 	if (ArrayList_Count(server->clients) > 0)
+	{
+		/* the same picture again, no capture */
+		mutter->common.captureStartNs = 0;
+		mutter->common.captureNs = 0;
 		shadow_subsystem_frame_update(&mutter->common);
+	}
 
 	EnterCriticalSection(&surface->lock);
 	region16_clear(&surface->invalidRegion);

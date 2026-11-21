@@ -67,6 +67,25 @@ void shadow_gfx_stats_frame_sent(SHADOW_GFX_STATS* stats, UINT32 frameId, UINT64
 	slot->sentNs = endNs;
 }
 
+void shadow_gfx_stats_capture(SHADOW_GFX_STATS* stats, UINT64 captureNs)
+{
+	WINPR_ASSERT(stats);
+	stats->captures++;
+	stats->captureSumNs = add_saturated(stats->captureSumNs, captureNs);
+	stats->captureMaxNs = MAX(stats->captureMaxNs, captureNs);
+}
+
+void shadow_gfx_stats_round(SHADOW_GFX_STATS* stats, UINT64 startNs, UINT64 endNs)
+{
+	WINPR_ASSERT(stats);
+	if ((startNs == 0) || (endNs < startNs))
+		return;
+	const UINT64 roundNs = endNs - startNs;
+	stats->rounds++;
+	stats->roundSumNs = add_saturated(stats->roundSumNs, roundNs);
+	stats->roundMaxNs = MAX(stats->roundMaxNs, roundNs);
+}
+
 UINT64 shadow_gfx_stats_frame_acked(SHADOW_GFX_STATS* stats, UINT32 frameId, UINT64 ackNs)
 {
 	WINPR_ASSERT(stats);
@@ -165,6 +184,13 @@ void shadow_gfx_stats_values(const SHADOW_GFX_STATS* stats, UINT32 inFlightLimit
 		.frameIdFirst = stats->sent ? stats->firstFrameId : 0,
 		.frameIdLast = stats->sent ? stats->lastFrameId : 0,
 		.frameIdAckedLast = lastAckedFrameId,
+		.captures = stats->captures,
+		.captureAvgUs =
+		    stats->captures ? div_round(stats->captureSumNs / stats->captures, 1000) : 0,
+		.captureMaxUs = div_round(stats->captureMaxNs, 1000),
+		.rounds = stats->rounds,
+		.roundAvgUs = stats->rounds ? div_round(stats->roundSumNs / stats->rounds, 1000) : 0,
+		.roundMaxUs = div_round(stats->roundMaxNs, 1000),
 	};
 	*values = v;
 }
@@ -187,31 +213,42 @@ BOOL shadow_gfx_stats_json(const SHADOW_GFX_VALUES* values, const SHADOW_GFX_PER
 		(void)snprintf(frames, sizeof(frames),
 		               ",\"GFX_FRAME_ID_FIRST\":%" PRIu64 ",\"GFX_FRAME_ID_LAST\":%" PRIu64,
 		               values->frameIdFirst, values->frameIdLast);
+	/* the capture and the round times, when the subsystem tells them */
+	char times[160] = WINPR_C_ARRAY_INIT;
+	int at = 0;
+	if (values->captures > 0)
+		at = snprintf(times, sizeof(times),
+		              ",\"GFX_CAPTURE_AVG_US\":%" PRIu64 ",\"GFX_CAPTURE_MAX_US\":%" PRIu64,
+		              values->captureAvgUs, values->captureMaxUs);
+	if ((values->rounds > 0) && (at >= 0) && ((size_t)at < sizeof(times)))
+		(void)snprintf(&times[at], sizeof(times) - (size_t)at,
+		               ",\"GFX_ROUND_AVG_US\":%" PRIu64 ",\"GFX_ROUND_MAX_US\":%" PRIu64,
+		               values->roundAvgUs, values->roundMaxUs);
 	const char* startedAt = info->startedAt;
 	if (startedAt &&
 	    ((*startedAt == '\0') || (strspn(startedAt, "0123456789-+:T") != strlen(startedAt))))
 		startedAt = nullptr;
-	const int rc =
-	    snprintf(buffer, size,
-	             "{\"connection_id\":\"%016" PRIx64 "\",\"peer\":%s%s%s,\"connected_ms\":%" PRIu64
-	             ",\"started_at\":%s%s%s"
-	             ",\"periods\":%" PRIu64 ",\"time_ms\":%" PRIu64 ",\"ns\":%" PRIu64
-	             ",\"period_ms\":%" PRIu64 ",\"acks_suspended\":%s,\"fps\":%" PRIu32
-	             ",\"max_fps\":%" PRIu32 ",\"counters\":{\"GFX_PERIOD_MS\":%" PRIu64
-	             ",\"GFX_CAPTURED\":%" PRIu64 ",\"GFX_SENT\":%" PRIu64 ",\"GFX_HELD\":%" PRIu64
-	             ",\"GFX_MERGED\":%" PRIu64 ",\"GFX_ACKS\":%" PRIu64
-	             ",\"GFX_ACK_DELAY_AVG_MS\":%" PRIu64 ",\"GFX_ACK_DELAY_MAX_MS\":%" PRIu64
-	             ",\"GFX_ACK_DELAY_MIN_MS\":%" PRIu64 ",\"GFX_ENCODE_AVG_US\":%" PRIu64
-	             ",\"GFX_ENCODE_MAX_US\":%" PRIu64 ",\"GFX_IN_FLIGHT_MAX\":%" PRIu64
-	             ",\"GFX_IN_FLIGHT_LIMIT\":%" PRIu64 "%s,\"GFX_FRAME_ID_ACKED_LAST\":%" PRIu64 "}}",
-	             info->connectionId, peer ? "\"" : "", peer ? peer : "null", peer ? "\"" : "",
-	             info->connectedMs, startedAt ? "\"" : "", startedAt ? startedAt : "null",
-	             startedAt ? "\"" : "", info->periods, info->timeMs, info->ns, values->periodMs,
-	             info->acksSuspended ? "true" : "false", info->fps, info->maxFps, values->periodMs,
-	             values->captured, values->sent, values->held, values->merged, values->acks,
-	             values->ackDelayAvgMs, values->ackDelayMaxMs, values->ackDelayMinMs,
-	             values->encodeAvgUs, values->encodeMaxUs, values->inFlightMax,
-	             values->inFlightLimit, frames, values->frameIdAckedLast);
+	const int rc = snprintf(
+	    buffer, size,
+	    "{\"connection_id\":\"%016" PRIx64 "\",\"peer\":%s%s%s,\"connected_ms\":%" PRIu64
+	    ",\"started_at\":%s%s%s"
+	    ",\"periods\":%" PRIu64 ",\"time_ms\":%" PRIu64 ",\"ns\":%" PRIu64 ",\"period_ms\":%" PRIu64
+	    ",\"acks_suspended\":%s,\"fps\":%" PRIu32 ",\"max_fps\":%" PRIu32
+	    ",\"counters\":{\"GFX_PERIOD_MS\":%" PRIu64 ",\"GFX_CAPTURED\":%" PRIu64
+	    ",\"GFX_SENT\":%" PRIu64 ",\"GFX_HELD\":%" PRIu64 ",\"GFX_MERGED\":%" PRIu64
+	    ",\"GFX_ACKS\":%" PRIu64 ",\"GFX_ACK_DELAY_AVG_MS\":%" PRIu64
+	    ",\"GFX_ACK_DELAY_MAX_MS\":%" PRIu64 ",\"GFX_ACK_DELAY_MIN_MS\":%" PRIu64
+	    ",\"GFX_ENCODE_AVG_US\":%" PRIu64 ",\"GFX_ENCODE_MAX_US\":%" PRIu64
+	    ",\"GFX_IN_FLIGHT_MAX\":%" PRIu64 ",\"GFX_IN_FLIGHT_LIMIT\":%" PRIu64
+	    "%s%s,\"GFX_FRAME_ID_ACKED_LAST\":%" PRIu64 "}}",
+	    info->connectionId, peer ? "\"" : "", peer ? peer : "null", peer ? "\"" : "",
+	    info->connectedMs, startedAt ? "\"" : "", startedAt ? startedAt : "null",
+	    startedAt ? "\"" : "", info->periods, info->timeMs, info->ns, values->periodMs,
+	    info->acksSuspended ? "true" : "false", info->fps, info->maxFps, values->periodMs,
+	    values->captured, values->sent, values->held, values->merged, values->acks,
+	    values->ackDelayAvgMs, values->ackDelayMaxMs, values->ackDelayMinMs, values->encodeAvgUs,
+	    values->encodeMaxUs, values->inFlightMax, values->inFlightLimit, frames, times,
+	    values->frameIdAckedLast);
 	return (rc > 0) && ((size_t)rc < size);
 }
 
@@ -286,6 +323,25 @@ BOOL shadow_gfx_stats_format(const SHADOW_GFX_STATS* stats, UINT32 inFlightLimit
 		               avg % 10, max / 10, max % 10);
 	}
 
+	char times[96] = WINPR_C_ARRAY_INIT;
+	if (stats->captures > 0)
+	{
+		const UINT64 avg = div_round(stats->captureSumNs / stats->captures, 100000);
+		const UINT64 max = div_round(stats->captureMaxNs, 100000);
+		(void)snprintf(times, sizeof(times),
+		               ", capture avg %" PRIu64 ".%" PRIu64 " ms max %" PRIu64 ".%" PRIu64 " ms",
+		               avg / 10, avg % 10, max / 10, max % 10);
+	}
+	if (stats->rounds > 0)
+	{
+		const UINT64 avg = div_round(stats->roundSumNs / stats->rounds, 100000);
+		const UINT64 max = div_round(stats->roundMaxNs, 100000);
+		const size_t used = strlen(times);
+		(void)snprintf(&times[used], sizeof(times) - used,
+		               ", round avg %" PRIu64 ".%" PRIu64 " ms max %" PRIu64 ".%" PRIu64 " ms",
+		               avg / 10, avg % 10, max / 10, max % 10);
+	}
+
 	char limit[32] = " (no limit)";
 	if (inFlightLimit > 0)
 		(void)snprintf(limit, sizeof(limit), " of %" PRIu32, inFlightLimit);
@@ -295,9 +351,9 @@ BOOL shadow_gfx_stats_format(const SHADOW_GFX_STATS* stats, UINT32 inFlightLimit
 	    snprintf(buffer, size,
 	             "gfx %" PRIu64 ".%" PRIu64 " s: captured %" PRIu64 " (%s/s), sent %" PRIu64
 	             " (%s/s), held %" PRIu64 ", merged %" PRIu64 ", acks %" PRIu64
-	             "%s, ack delay %s, encode %s, in flight max %" PRIu32 "%s",
+	             "%s, ack delay %s, encode %s, in flight max %" PRIu32 "%s%s",
 	             seconds / 10, seconds % 10, stats->captured, captured, stats->sent, sent,
 	             stats->held, stats->merged, stats->acks, acksSuspended ? " (suspended)" : "",
-	             delay, encode, stats->maxInFlight, limit);
+	             delay, encode, stats->maxInFlight, limit, times);
 	return (rc > 0) && ((size_t)rc < size);
 }

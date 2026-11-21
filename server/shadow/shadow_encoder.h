@@ -100,6 +100,7 @@ struct rdp_shadow_encoder
 	char startedAt[40]; /* the same, ISO 8601 on this machine's clock; "" when it has none */
 	char peer[64];      /* the client's address, "ip:port"; "" when not known */
 	UINT64 statsPeriods;
+	UINT64 roundStartNs;       /* this round's capture start (rdpShadowSubsystem::captureStartNs) */
 	BOOL gfxFrameOut;          /* the frame being encoded went out */
 
 	/* GFX RFX dirty tile skipping (shadow_rfx_dirty.c): snapshot of the last
