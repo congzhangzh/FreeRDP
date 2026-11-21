@@ -201,6 +201,9 @@ class SdlContext
 	[[nodiscard]] SdlWindow* overlayWindow();
 	[[nodiscard]] bool resizeToScale(SdlWindow* window);
 	[[nodiscard]] bool useLocalScale() const;
+	/** where the session is drawn in the window: its offset (/multimon) and scale (local scale,
+	 * /sdl-hidpi:scale:N) */
+	[[nodiscard]] sdl::hidpi::Mapping mapping(const SdlWindow& window) const;
 
 	[[nodiscard]] static BOOL preConnect(freerdp* instance);
 	[[nodiscard]] static BOOL postConnect(freerdp* instance);

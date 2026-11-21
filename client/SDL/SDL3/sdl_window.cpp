@@ -35,16 +35,27 @@ void SdlWindow::setHiDpi(const sdl::hidpi::Policy& policy)
 	hiDpi = policy;
 }
 
-sdl::hidpi::Mode SdlWindow::hiDpiMode(SDL_DisplayID id)
+sdl::hidpi::Setting SdlWindow::hiDpiSetting(SDL_DisplayID id)
 {
 	return hiDpi.forDisplay(id);
 }
 
-/* every pixel of a high density display only in pixels mode: without it SDL gives the window one
- * pixel per point and reports its size, scale and mouse in points, which the system scales */
+/* every pixel of a high density display unless in points mode: without it SDL gives the window one
+ * pixel per point and reports its size, scale and mouse in points, which the system scales;
+ * scale:N draws its session scaled into every pixel */
 static bool highPixelDensity(SDL_DisplayID id)
 {
-	return hiDpi.forDisplay(id) == sdl::hidpi::Mode::Pixels;
+	return hiDpi.forDisplay(id).mode != sdl::hidpi::Mode::Points;
+}
+
+SDL_DisplayID SdlWindow::displayId() const
+{
+	return _displayID;
+}
+
+const rdpMonitor& SdlWindow::assignedMonitor() const
+{
+	return _monitor;
 }
 
 SdlWindow::SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect& rect,
@@ -382,6 +393,28 @@ static SDL_Rect scaledDstRect(const SDL_FPoint& scale, const SDL_Rect& srcRect)
 	return dstRect;
 }
 
+bool SdlWindow::drawMappedRects(SDL_Surface* surface, const sdl::hidpi::Mapping& mapping,
+                                const std::vector<SDL_Rect>& rects)
+{
+	WINPR_ASSERT(surface);
+	const SDL_FPoint scale{ mapping.scaleX, mapping.scaleY };
+	const auto one = [&](const SDL_Rect& srcRect)
+	{
+		const SDL_Rect moved{ srcRect.x + mapping.offsetX, srcRect.y + mapping.offsetY, srcRect.w,
+			                  srcRect.h };
+		auto dstRect = scaledDstRect(scale, moved);
+		return blit(surface, srcRect, dstRect);
+	};
+	if (rects.empty())
+		return one({ 0, 0, surface->w, surface->h });
+	for (const auto& srcRect : rects)
+	{
+		if (!one(srcRect))
+			return false;
+	}
+	return true;
+}
+
 bool SdlWindow::drawScaledRect(SDL_Surface* surface, const SDL_FPoint& scale,
                                const SDL_Rect& srcRect)
 {
@@ -497,8 +530,11 @@ rdpMonitor SdlWindow::query(SDL_Window* window, SDL_DisplayID id, bool forceAsPr
 {
 	if (!window)
 		return {};
-	return makeMonitor(id, rect(window, forceAsPrimary), SDL_GetWindowDisplayScale(window),
-	                   forceAsPrimary);
+	/* scale:N: the session at scale 100, drawn scaled */
+	const bool scaled =
+	    hiDpi.forDisplay(SDL_GetDisplayForWindow(window)).mode == sdl::hidpi::Mode::Scale;
+	return makeMonitor(id, rect(window, forceAsPrimary),
+	                   scaled ? 1.0f : SDL_GetWindowDisplayScale(window), forceAsPrimary);
 }
 
 /* Dummy windows report wrong sizes on Wayland and X11, use the display. */
@@ -538,6 +574,11 @@ SDL_Rect SdlWindow::rect(SDL_Window* window, bool forceAsPrimary)
 
 	if (!SDL_GetWindowSizeInPixels(window, &rect.w, &rect.h))
 		return {};
+	/* the window in points, for scale:N */
+	int pointsW = 0;
+	int pointsH = 0;
+	if (!SDL_GetWindowSize(window, &pointsW, &pointsH))
+		return {};
 
 	const bool placeholder = (rect.w < 200) || (rect.h < 200);
 	if (placeholder && tryFallback(true))
@@ -566,6 +607,8 @@ SDL_Rect SdlWindow::rect(SDL_Window* window, bool forceAsPrimary)
 			}
 			rect.w = displayBounds.w;
 			rect.h = displayBounds.h;
+			pointsW = displayBounds.w;
+			pointsH = displayBounds.h;
 
 			float factor = 1.0f;
 			const auto mode = SDL_GetCurrentDisplayMode(displayID);
@@ -588,6 +631,13 @@ SDL_Rect SdlWindow::rect(SDL_Window* window, bool forceAsPrimary)
 		}
 	}
 
+	const auto setting = hiDpi.forDisplay(SDL_GetDisplayForWindow(window));
+	if (setting.mode == sdl::hidpi::Mode::Scale)
+	{
+		const auto size = sdl::hidpi::monitorSize(pointsW, pointsH, 1.0f, 1.0f, setting);
+		rect.w = size.width;
+		rect.h = size.height;
+	}
 	return rect;
 }
 

@@ -96,8 +96,9 @@ SdlContext::SdlContext(rdpContext* context)
 #endif
 
 	_args.push_back(
-	    { sdl_hidpi, COMMAND_LINE_VALUE_REQUIRED, "points|pixels[,<id>:points|pixels...]", "points",
-	      nullptr, -1, nullptr,
+	    { sdl_hidpi, COMMAND_LINE_VALUE_REQUIRED,
+	      "points|pixels|scale:<N>[,<id>:points|pixels|scale:<N>...]", "points", nullptr, -1,
+	      nullptr,
 	      "On a display with more pixels than points (a Retina Mac): points asks the "
 	      "server for each window's size in points at the display's own scale and lets "
 	      "the system scale the picture, a quarter of the pixels at 2x (default); pixels "
@@ -105,7 +106,8 @@ SdlContext::SdlContext(rdpContext* context)
 	      "density; one with a pixel per point is the same in both. <id>:<mode> gives a "
 	      "display (its id in /monitor-list) a mode of its own. A window keeps the mode of the "
 	      "display it was created on. Windows and X11 scale with one pixel per point, so there "
-	      "both modes are the same" });
+	      "points and pixels are the same. scale:<N> (50 to 400) asks for the points times "
+	      "N/100 at scale 100 and draws that session scaled to the window, e.g. scale:150" });
 
 	/* Push a null element used as abort when iterating the array */
 	_args.push_back({ nullptr, 0, nullptr, nullptr, nullptr, -1, nullptr, nullptr });
@@ -1074,10 +1076,13 @@ bool SdlContext::drawToWindow(SdlWindow& window, const std::vector<SDL_Rect>& re
 	}
 	else
 	{
-		SDL_Point offset{ 0, 0 };
-		if (freerdp_settings_get_bool(context()->settings, FreeRDP_UseMultimon))
-			offset = { window.offsetX(), window.offsetY() };
-		if (!window.drawRects(surface, offset, rects))
+		const auto m = mapping(window);
+		if ((m.scaleX == 1.0f) && (m.scaleY == 1.0f))
+		{
+			if (!window.drawRects(surface, SDL_Point{ m.offsetX, m.offsetY }, rects))
+				return false;
+		}
+		else if (!window.drawMappedRects(surface, m, rects))
 			return false;
 	}
 
@@ -1133,7 +1138,7 @@ bool SdlContext::updateOverlay()
 		if (mode && (mode->pixel_density > 0.0f))
 			density = mode->pixel_density;
 	}
-	const auto hidpi = sdl::hidpi::overlayText(SdlWindow::hiDpiMode(display), density);
+	const auto hidpi = sdl::hidpi::overlayText(SdlWindow::hiDpiSetting(display), density);
 	if (_overlay.update(w, h, window ? window->rendererName() : nullptr, hidpi) && window)
 		window->updateSurface(&_overlay);
 	return true;
@@ -1702,8 +1707,17 @@ SDL_FPoint SdlContext::screenToPixel(SDL_WindowID id, const SDL_FPoint& pos)
 	SDL_FPoint rpos{};
 	if (!SDL_RenderCoordinatesFromWindow(renderer, pos.x, pos.y, &rpos.x, &rpos.y))
 		return {};
-	removeLocalScaling(rpos.x, rpos.y);
-	return rpos;
+	if (useLocalScale())
+	{
+		removeLocalScaling(rpos.x, rpos.y);
+		return rpos;
+	}
+	/* scale:N; the monitor offset follows in applyMonitorOffset() */
+	auto m = mapping(*w);
+	m.offsetX = 0;
+	m.offsetY = 0;
+	const auto [x, y] = sdl::hidpi::toSession(rpos.x, rpos.y, m);
+	return SDL_FPoint{ x, y };
 }
 
 SDL_FPoint SdlContext::pixelToScreen(SDL_WindowID id, const SDL_FPoint& pos)
@@ -1724,7 +1738,14 @@ SDL_FPoint SdlContext::pixelToScreen(SDL_WindowID id, const SDL_FPoint& pos)
 	SDL_FPoint rpos{};
 	if (!SDL_RenderCoordinatesToWindow(renderer, pos.x, pos.y, &rpos.x, &rpos.y))
 		return {};
-	return applyLocalScaling(rpos);
+	if (useLocalScale())
+		return applyLocalScaling(rpos);
+	/* scale:N; sizes and positions alike, as before without an offset */
+	auto m = mapping(*w);
+	m.offsetX = 0;
+	m.offsetY = 0;
+	const auto [x, y] = sdl::hidpi::toWindow(rpos.x, rpos.y, m);
+	return SDL_FPoint{ x, y };
 }
 
 SDL_FRect SdlContext::pixelToScreen(SDL_WindowID id, const SDL_FRect& pos, bool round)
@@ -1856,8 +1877,8 @@ int SdlContext::argumentHandler(const COMMAND_LINE_ARGUMENT_A* arg, void* custom
 			if (!policy)
 			{
 				WLog_Print(sdl->getWLog(), WLOG_ERROR,
-				           "/%s:%s: points or pixels, then <display id>:points|pixels", sdl_hidpi,
-				           arg->Value ? arg->Value : "");
+				           "/%s:%s: points, pixels or scale:<50-400>, then <display id>:<that>",
+				           sdl_hidpi, arg->Value ? arg->Value : "");
 				return -2;
 			}
 			SdlWindow::setHiDpi(*policy);
@@ -1917,6 +1938,51 @@ bool SdlContext::resizeToScale(SdlWindow* window)
 	if (!window)
 		return false;
 	return window->resizeToScale();
+}
+
+sdl::hidpi::Mapping SdlContext::mapping(const SdlWindow& window) const
+{
+	sdl::hidpi::Mapping m;
+	if (useLocalScale())
+	{
+		/* smart-sizing and a fixed window: the whole session scaled, no offset */
+		m.scaleX = _localScale.x;
+		m.scaleY = _localScale.y;
+		return m;
+	}
+	const auto settings = context()->settings;
+	const bool multimon = freerdp_settings_get_bool(settings, FreeRDP_UseMultimon);
+	if (multimon)
+	{
+		m.offsetX = window.offsetX();
+		m.offsetY = window.offsetY();
+	}
+	if (SdlWindow::hiDpiSetting(window.displayId()).mode != sdl::hidpi::Mode::Scale)
+		return m;
+
+	/* scale:N: the window's pixels per session pixel of what it shows */
+	int w = 0;
+	int h = 0;
+	if (!SDL_GetWindowSizeInPixels(window.window(), &w, &h))
+		return m;
+	int sw = 0;
+	int sh = 0;
+	if (multimon)
+	{
+		sw = window.assignedMonitor().width;
+		sh = window.assignedMonitor().height;
+	}
+	else if (context()->gdi)
+	{
+		sw = static_cast<int>(context()->gdi->width);
+		sh = static_cast<int>(context()->gdi->height);
+	}
+	if ((sw > 0) && (sh > 0) && (w > 0) && (h > 0))
+	{
+		m.scaleX = static_cast<float>(w) / static_cast<float>(sw);
+		m.scaleY = static_cast<float>(h) / static_cast<float>(sh);
+	}
+	return m;
 }
 
 bool SdlContext::useLocalScale() const
@@ -2570,20 +2636,13 @@ bool SdlContext::presentRenderers()
 				auto& r = kv.second;
 				const auto& p = placements[kv.first];
 				/* where the session is drawn in the window: as drawToWindow() does */
-				SDL_Point offset{ 0, 0 };
-				if (!useLocalScale() &&
-				    freerdp_settings_get_bool(context()->settings, FreeRDP_UseMultimon))
-					offset = { window.offsetX(), window.offsetY() };
+				const auto m = mapping(window);
 				auto toWindow = [&](const SDL_Rect& rc)
 				{
-					if (useLocalScale())
-						return SDL_FRect{ static_cast<float>(rc.x) * _localScale.x,
-							              static_cast<float>(rc.y) * _localScale.y,
-							              static_cast<float>(rc.w) * _localScale.x,
-							              static_cast<float>(rc.h) * _localScale.y };
-					return SDL_FRect{ static_cast<float>(rc.x + offset.x),
-						              static_cast<float>(rc.y + offset.y), static_cast<float>(rc.w),
-						              static_cast<float>(rc.h) };
+					const auto [x, y] =
+					    sdl::hidpi::toWindow(static_cast<float>(rc.x), static_cast<float>(rc.y), m);
+					return SDL_FRect{ x, y, static_cast<float>(rc.w) * m.scaleX,
+						              static_cast<float>(rc.h) * m.scaleY };
 				};
 				const SDL_FRect dst = toWindow(p.rect);
 				std::vector<SDL_FRect> clip;

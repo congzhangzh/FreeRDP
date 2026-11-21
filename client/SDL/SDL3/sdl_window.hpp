@@ -48,10 +48,19 @@ class SdlWindow
 	[[nodiscard]] static rdpMonitor query(SDL_DisplayID id, bool forceAsPrimary = false);
 
 	/** /sdl-hidpi for the windows created from now on and the displays queried, each by its
-	 * display: points (one pixel per point, the system scales; the default) or pixels. Set once,
-	 * while the command line is parsed, before any window exists. */
+	 * display: points (one pixel per point, the system scales; the default), pixels or scale:N.
+	 * Set once, while the command line is parsed, before any window exists. */
 	static void setHiDpi(const sdl::hidpi::Policy& policy);
-	[[nodiscard]] static sdl::hidpi::Mode hiDpiMode(SDL_DisplayID id);
+	[[nodiscard]] static sdl::hidpi::Setting hiDpiSetting(SDL_DisplayID id);
+
+	/** @return the display the window was created on (its /sdl-hidpi setting's) */
+	[[nodiscard]] SDL_DisplayID displayId() const;
+	/** @return the monitor of the layout the window shows (set by setMonitor) */
+	[[nodiscard]] const rdpMonitor& assignedMonitor() const;
+
+	/** Draw rects of the session: each at (rect + offset) x scale in the window (scale:N) */
+	[[nodiscard]] bool drawMappedRects(SDL_Surface* surface, const sdl::hidpi::Mapping& mapping,
+	                                   const std::vector<SDL_Rect>& rects);
 
 	SdlWindow(SdlWindow&& other) noexcept;
 	SdlWindow(const SdlWindow& other) = delete;
