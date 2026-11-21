@@ -534,6 +534,38 @@ static UINT send_start_frame(IWTSVirtualChannelCallback* callback)
 	return rc;
 }
 
+static UINT send_end_frame(IWTSVirtualChannelCallback* callback, UINT32 frameId)
+{
+	wStream* s = Stream_New(nullptr, 2 + RDPGFX_HEADER_SIZE + RDPGFX_END_FRAME_PDU_SIZE);
+	if (!s)
+		return CHANNEL_RC_NO_MEMORY;
+	Stream_Write_UINT8(s, ZGFX_SEGMENTED_SINGLE);
+	Stream_Write_UINT8(s, ZGFX_PACKET_COMPR_TYPE_RDP8);
+	Stream_Write_UINT16(s, RDPGFX_CMDID_ENDFRAME);
+	Stream_Write_UINT16(s, 0); /* flags */
+	Stream_Write_UINT32(s, RDPGFX_HEADER_SIZE + RDPGFX_END_FRAME_PDU_SIZE);
+	Stream_Write_UINT32(s, frameId);
+	Stream_SealLength(s);
+	Stream_ResetPosition(s);
+	const UINT rc = callback->OnDataReceived(callback, s);
+	Stream_Free(s, TRUE);
+	return rc;
+}
+
+/* the frame ids, the clock client and server share: the last one received and the last acked */
+static BOOL check_frame_ids(const rdpContext* context, IWTSVirtualChannelCallback* callback)
+{
+	TEST_CHECK(stat_value(context, "RDPGFX_FRAMES_ACKED") == 0);
+	TEST_CHECK(stat_value(context, "RDPGFX_FRAME_ID_LAST") == 0);
+	TEST_CHECK(send_end_frame(callback, 1) == CHANNEL_RC_OK);
+	TEST_CHECK(send_start_frame(callback) == CHANNEL_RC_OK);
+	TEST_CHECK(send_end_frame(callback, 0x80000007) == CHANNEL_RC_OK);
+	return (stat_value(context, "RDPGFX_FRAME_ID_LAST") == 0x80000007) &&
+	       (stat_value(context, "RDPGFX_FRAME_ID_ACKED_LAST") == 0x80000007) &&
+	       (stat_value(context, "RDPGFX_FRAMES_ACKED") == 2) &&
+	       (stat_value(context, "RDPGFX_FRAMES_DECODED") == 2);
+}
+
 /* surfaces by surface ID in the slots, whatever order they came in */
 static BOOL check_surfaces(const rdpContext* context, RdpgfxClientContext* gfx)
 {
@@ -722,7 +754,8 @@ static BOOL check_gfx_channel(rdpContext* context, IWTSPlugin* plugin, test_chan
 		     (stat_value(context, "RDPGFX_CMDID_STARTFRAME") == 0) &&
 		     (send_start_frame(callback) == CHANNEL_RC_OK) &&
 		     (stat_value(context, "RDPGFX_CMDID_STARTFRAME") == 1) &&
-		     (stat_value(context, "RDPGFX_CMDID_ENDFRAME") == 0);
+		     (stat_value(context, "RDPGFX_CMDID_ENDFRAME") == 0) &&
+		     check_frame_ids(context, callback);
 		gdi.gfx = nullptr;
 		rc = rc && (stat_value(context, "RDPGFX_CMDID_STARTFRAME") == 0) &&
 		     (stat_value(context, "GFX_CAPS_VERSION") == 0);

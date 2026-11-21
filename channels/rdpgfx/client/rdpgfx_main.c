@@ -75,6 +75,10 @@ typedef struct
 	uint64_t bytesGfxCodecID[RDPGFX_CODECID_MAX];
 	uint64_t framesDecoded;
 	uint64_t framesUnacknowledged;
+	/* the server's frame ids: a clock both ends share, to line up their statistics */
+	uint64_t frameIdLast;      /* of the last frame received whole (its EndFrame) */
+	uint64_t frameIdAckedLast; /* of the last frame acknowledged */
+	uint64_t framesAcked;      /* acknowledgements sent: 0 = frameIdAckedLast means nothing yet */
 	uint64_t decoder[RDPGFX_CODECID_MAX][RDPGFX_DECODER_STATS];
 } RdpgfxClientContextStats;
 
@@ -150,8 +154,14 @@ const char* rdpgfx_stats_name_for_index(size_t index)
 		return "RDPGFX_FRAMES_DECODED";
 	if (index == 1)
 		return "RDPGFX_FRAMES_UNACKNOWLEDGED";
+	if (index == 2)
+		return "RDPGFX_FRAME_ID_LAST";
+	if (index == 3)
+		return "RDPGFX_FRAME_ID_ACKED_LAST";
+	if (index == 4)
+		return "RDPGFX_FRAMES_ACKED";
 
-	index -= 2;
+	index -= 5;
 	if (index < 1ull * RDPGFX_CODECID_MAX * RDPGFX_DECODER_STATS)
 	{
 		if (!InitOnceExecuteOnce(&bytesGfxCodecNamesOnce, rdpgfx_stats_init_names, nullptr,
@@ -184,8 +194,14 @@ uint64_t rdpgfx_stats_value_for_index(RdpgfxClientContext* context, size_t index
 		return intCtx->stats.framesDecoded;
 	if (index == 1)
 		return intCtx->stats.framesUnacknowledged;
+	if (index == 2)
+		return intCtx->stats.frameIdLast;
+	if (index == 3)
+		return intCtx->stats.frameIdAckedLast;
+	if (index == 4)
+		return intCtx->stats.framesAcked;
 
-	index -= 2;
+	index -= 5;
 	if (index < 1ull * RDPGFX_CODECID_MAX * RDPGFX_DECODER_STATS)
 	{
 		const size_t stat = index % RDPGFX_DECODER_STATS;
@@ -280,12 +296,22 @@ static void rdpgfx_stats_cmdid_event(RdpgfxClientContext* context, uint32_t inde
 	intCtx->stats.cntGfxCommandID[index]++;
 }
 
-static void rdpgfx_stats_frame_decoded(RdpgfxClientContext* context)
+static void rdpgfx_stats_frame_decoded(RdpgfxClientContext* context, UINT32 frameId)
 {
 	if (!context)
 		return;
 	RdpgfxClientContextInt* intCtx = (RdpgfxClientContextInt*)context;
 	intCtx->stats.framesDecoded++;
+	intCtx->stats.frameIdLast = frameId;
+}
+
+static void rdpgfx_stats_frame_acked(RdpgfxClientContext* context, UINT32 frameId)
+{
+	if (!context)
+		return;
+	RdpgfxClientContextInt* intCtx = (RdpgfxClientContextInt*)context;
+	intCtx->stats.frameIdAckedLast = frameId;
+	intCtx->stats.framesAcked++;
 }
 
 /* A copy: the plugin's own counter is reset before the stats are dumped on close */
@@ -1023,6 +1049,7 @@ static UINT rdpgfx_send_frame_acknowledge_pdu(RdpgfxClientContext* context,
 	{
 		gfx->UnacknowledgedFrames--;
 		rdpgfx_stats_frames_unacknowledged(context, gfx->UnacknowledgedFrames);
+		rdpgfx_stats_frame_acked(context, pdu->frameId);
 	}
 
 fail:
@@ -1750,7 +1777,7 @@ static UINT rdpgfx_recv_end_frame_pdu(GENERIC_CHANNEL_CALLBACK* callback, wStrea
 	const UINT64 end = GetTickCount64();
 	const UINT64 EndFrameTime = end - start;
 	gfx->TotalDecodedFrames++;
-	rdpgfx_stats_frame_decoded(context);
+	rdpgfx_stats_frame_decoded(context, pdu.frameId);
 
 	if (!gfx->sendFrameAcks)
 		return error;
