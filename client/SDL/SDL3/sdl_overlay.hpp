@@ -105,6 +105,7 @@ class SdlOverlay
 	std::chrono::steady_clock::time_point _since;
 	bool _restart = false;
 	uint64_t _connection = 0;
+	std::string _startedAt;
 
 #if !defined(__EMSCRIPTEN__)
 	/* opened before the session starts, closed with the overlay */

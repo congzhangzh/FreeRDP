@@ -20,6 +20,7 @@
 #pragma once
 
 #include <cstdint>
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -39,6 +40,9 @@ namespace sdl::stats
 		uint64_t seq = 0;        /**< 1 for the first line, then one more per line */
 		uint64_t connection = 0; /**< 1 for the first connection, one more per reconnect */
 		uint64_t sessionSeconds = 0;
+		/** when the connection started by this machine's clock, ISO 8601 with the UTC offset:
+		 * for people, never to join on (two machines' clocks differ) */
+		std::string startedAt;
 		int windowWidth = 0;
 		int windowHeight = 0;
 		/** the statistics' names, by index; unused and repeated names are left out */
@@ -48,6 +52,12 @@ namespace sdl::stats
 		const std::vector<sdl::overlay::Row>* server = nullptr;
 		const std::vector<sdl::overlay::Row>* realtime = nullptr;
 	};
+
+	/** @return local as "2026-11-21T10:31:05-05:00", offsetSeconds east of UTC */
+	[[nodiscard]] std::string iso8601(const std::tm& local, long offsetSeconds);
+
+	/** @return the moment t by this machine's clock and time zone, as iso8601() */
+	[[nodiscard]] std::string localIso8601(std::time_t t);
 
 	/** @return s as a JSON string, quotes included; bytes that are no UTF-8 become U+FFFD */
 	[[nodiscard]] std::string quote(const std::string& s);

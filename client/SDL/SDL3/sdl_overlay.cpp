@@ -210,6 +210,7 @@ bool SdlOverlay::connected()
 		_pending.reset();
 		_restart = true;
 		_connection++;
+		_startedAt = sdl::stats::localIso8601(std::time(nullptr));
 	}
 	if (!wanted())
 		return true;
@@ -353,6 +354,7 @@ void SdlOverlay::publish(const sdl::overlay::View& view, const sdl::overlay::Rea
 	{
 		std::scoped_lock lock(_mutex);
 		snapshot.connection = _connection;
+		snapshot.startedAt = _startedAt;
 	}
 	snapshot.sessionSeconds = view.sessionSeconds;
 	snapshot.windowWidth = view.windowWidth;

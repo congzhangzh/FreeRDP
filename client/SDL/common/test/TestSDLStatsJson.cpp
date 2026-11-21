@@ -1,5 +1,6 @@
 #include <cstdint>
 #include <cstdio>
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -71,6 +72,7 @@ static int checkSnapshot()
 	snapshot.seq = 5;
 	snapshot.connection = 2;
 	snapshot.sessionSeconds = 61;
+	snapshot.startedAt = "2026-11-21T10:31:05-05:00";
 	snapshot.windowWidth = 1280;
 	snapshot.windowHeight = 720;
 	snapshot.names = &names;
@@ -84,7 +86,8 @@ static int checkSnapshot()
 	CHECK(contains(json, "\"schema\":\"freerdp-sdl-stats\",\"version\":1,"));
 	CHECK(contains(json, "\"seq\":5,\"ns\":123456789012345,\"time_ms\":1795000000123,"
 	                     "\"connection\":2,"));
-	CHECK(contains(json, "\"session_seconds\":61,\"desktop\":[1920,1080],\"window\":[1280,720]"));
+	CHECK(contains(json, "\"started_at\":\"2026-11-21T10:31:05-05:00\",\"session_seconds\":61,"
+	                     "\"desktop\":[1920,1080],\"window\":[1280,720]"));
 	CHECK(contains(json, "\"counters\":{\"NETWORK_BYTES_RECEIVED\":1000,\"AUDIO_DELAY_MS\":42,"
 	                     "\"BIG\":18446744073709551615}"));
 	CHECK(!contains(json, "UNUSED"));
@@ -120,9 +123,53 @@ static int checkSnapshot()
 	return 0;
 }
 
+static int checkTime()
+{
+	std::tm t = {};
+	t.tm_year = 2026 - 1900;
+	t.tm_mon = 10;
+	t.tm_mday = 21;
+	t.tm_hour = 10;
+	t.tm_min = 31;
+	t.tm_sec = 5;
+	CHECK(sdl::stats::iso8601(t, -5 * 3600) == "2026-11-21T10:31:05-05:00");
+	CHECK(sdl::stats::iso8601(t, 0) == "2026-11-21T10:31:05+00:00");
+	CHECK(sdl::stats::iso8601(t, 5 * 3600 + 30 * 60) == "2026-11-21T10:31:05+05:30");
+	CHECK(sdl::stats::iso8601(t, -(9 * 3600 + 30 * 60)) == "2026-11-21T10:31:05-09:30");
+
+	/* this machine's clock: the same moment, whatever its zone */
+	const std::time_t now = 1795000000;
+	const auto local = sdl::stats::localIso8601(now);
+	CHECK(local.size() == 25);
+	std::tm parsed = {};
+	int sign = 0;
+	int oh = 0;
+	int om = 0;
+	char c = 0;
+	CHECK(std::sscanf(local.c_str(), "%4d-%2d-%2dT%2d:%2d:%2d%c%2d:%2d", &parsed.tm_year,
+	                  &parsed.tm_mon, &parsed.tm_mday, &parsed.tm_hour, &parsed.tm_min,
+	                  &parsed.tm_sec, &c, &oh, &om) == 9);
+	sign = (c == '-') ? -1 : 1;
+	/* days from the civil date (Howard Hinnant's algorithm), to check without the zone */
+	const auto days = [](int y, int m, int d)
+	{
+		y -= (m <= 2) ? 1 : 0;
+		const int era = (y >= 0 ? y : y - 399) / 400;
+		const int yoe = y - era * 400;
+		const int doy = (153 * (m + ((m > 2) ? -3 : 9)) + 2) / 5 + d - 1;
+		const int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+		return static_cast<long long>(era) * 146097 + doe - 719468;
+	};
+	const long long seconds = days(parsed.tm_year, parsed.tm_mon, parsed.tm_mday) * 86400LL +
+	                          parsed.tm_hour * 3600LL + parsed.tm_min * 60LL + parsed.tm_sec -
+	                          sign * (oh * 3600LL + om * 60LL);
+	CHECK(seconds == now);
+	return 0;
+}
+
 int TestSDLStatsJson([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
 {
-	for (auto* check : { checkQuote, checkSnapshot })
+	for (auto* check : { checkQuote, checkSnapshot, checkTime })
 	{
 		const int rc = check();
 		if (rc != 0)
