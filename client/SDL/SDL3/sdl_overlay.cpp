@@ -277,9 +277,10 @@ bool SdlOverlay::read(rdpContext* context, uint64_t timestamp)
 	return sdl_push_user_event(SDL_EVENT_USER_OVERLAY);
 }
 
-void SdlOverlay::clientRows(const char* rendererName)
+void SdlOverlay::clientRows(const char* rendererName, const std::string& hidpi)
 {
 	_client.clear();
+	_hidpi = hidpi;
 	std::string freerdp = freerdp_get_version_string();
 	const char* revision = freerdp_get_build_revision();
 	/* a build from outside a git tree says "n/a" */
@@ -290,9 +291,12 @@ void SdlOverlay::clientRows(const char* rendererName)
 	_client.push_back({ "SDL", version(SDL_GetVersion()) + ", SDL_ttf " + version(TTF_Version()) +
 	                               ", renderer " + (rendererName ? rendererName : "unknown") });
 	_client.push_back({ "Decoders", decodersSupported(_sdl->context()) });
+	if (!hidpi.empty())
+		_client.push_back({ "HiDPI", hidpi });
 }
 
-bool SdlOverlay::update(int windowWidth, int windowHeight, const char* rendererName)
+bool SdlOverlay::update(int windowWidth, int windowHeight, const char* rendererName,
+                        const std::string& hidpi)
 {
 	std::optional<sdl::overlay::Reading> reading;
 	std::chrono::steady_clock::time_point since;
@@ -316,8 +320,8 @@ bool SdlOverlay::update(int windowWidth, int windowHeight, const char* rendererN
 	}
 	const auto& names = *_names;
 	/* without a window there is no renderer to name yet */
-	if (_client.empty() || !rendererName)
-		clientRows(rendererName);
+	if (_client.empty() || !rendererName || (_hidpi != hidpi))
+		clientRows(rendererName, hidpi);
 
 	sdl::overlay::View view;
 	view.windowWidth = windowWidth;
