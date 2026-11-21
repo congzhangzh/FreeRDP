@@ -57,11 +57,54 @@ typedef struct
 	UINT64 ackDelays;     /* acknowledgements whose frame's send time was still in the ring */
 	UINT64 ackDelaySumNs; /* send to acknowledgement */
 	UINT64 ackDelayMaxNs;
+	UINT64 ackDelayMinNs; /* 0: none yet */
 	UINT64 encodeSumNs; /* encode and send of one frame */
 	UINT64 encodeMaxNs;
 	UINT32 maxInFlight; /* the most frames in flight seen */
+	UINT32 firstFrameId; /* the first and the last frame sent, when sent > 0 */
+	UINT32 lastFrameId;
 	SHADOW_GFX_SENT_FRAME ring[SHADOW_GFX_STATS_RING];
 } SHADOW_GFX_STATS;
+
+/* One period's numbers as a program reads them (the stats socket, the stats channel): exact
+ * integers, the averages rounded, 0 where there was nothing to average */
+typedef struct
+{
+	UINT64 periodMs;
+	UINT64 captured;
+	UINT64 sent;
+	UINT64 held;
+	UINT64 merged;
+	UINT64 acks;
+	UINT64 ackDelayAvgMs;
+	UINT64 ackDelayMaxMs;
+	UINT64 ackDelayMinMs;
+	UINT64 encodeAvgUs;
+	UINT64 encodeMaxUs;
+	UINT64 inFlightMax;
+	UINT64 inFlightLimit; /* 0: no limit */
+	UINT64 frameIdFirst;  /* the GFX frame ids (StartFrame) of the first and the last frame sent */
+	UINT64 frameIdLast;
+	UINT64 frameIdAckedLast; /* the last one the client acknowledged */
+} SHADOW_GFX_VALUES;
+
+/* Who and when a period is (the stats socket): the connection's id, which the client also gets
+ * over the stats channel, and the peer's address, to join it with the client's lines; the
+ * frame ids (SHADOW_GFX_VALUES) are the clock to join on, the client acknowledges the same ones.
+ * The wall clock times are for people: two machines' clocks need not agree. */
+typedef struct
+{
+	UINT64 connectionId;
+	const char* peer;      /* "ip:port", "[ipv6]:port", or nullptr */
+	const char* startedAt; /* the connection's start on this machine's clock, ISO 8601 */
+	UINT64 connectedMs;    /* Unix epoch ms */
+	UINT64 periods;        /* this one included */
+	UINT64 timeMs;         /* the period's end, Unix epoch ms */
+	UINT64 ns;             /* the monotonic clock (winpr_GetTickCount64NS) read with timeMs */
+	BOOL acksSuspended;
+	UINT32 fps;    /* the encoder's rate now (it slows down when frames are behind) */
+	UINT32 maxFps; /* its highest */
+} SHADOW_GFX_PERIOD_INFO;
 
 #ifdef __cplusplus
 extern "C"
@@ -76,6 +119,24 @@ extern "C"
 	 *  @return that delay in ns, 0 when the send time was not in the ring */
 	FREERDP_LOCAL UINT64 shadow_gfx_stats_frame_acked(SHADOW_GFX_STATS* stats, UINT32 frameId,
 	                                                  UINT64 ackNs);
+
+	/** unixMs on this machine's clock as ISO 8601 with its UTC offset, "2026-11-21T10:31:05-05:00"
+	 *  @return FALSE when buffer is too small */
+	WINPR_ATTR_NODISCARD FREERDP_LOCAL BOOL shadow_gfx_stats_local_time(UINT64 unixMs, char* buffer,
+	                                                                    size_t size);
+
+	/** fills values from one period's counters of elapsedMs with inFlightLimit allowed */
+	FREERDP_LOCAL void shadow_gfx_stats_values(const SHADOW_GFX_STATS* stats, UINT32 inFlightLimit,
+	                                           UINT64 elapsedMs, UINT32 lastAckedFrameId,
+	                                           SHADOW_GFX_VALUES* values);
+
+	/** One client's period as a JSON object (no line end): connection_id (16 lowercase hex
+	 *  digits), peer, connected_ms, started_at, periods, time_ms, ns, period_ms, acks_suspended,
+	 * fps, max_fps and "counters" with the GFX_* names (the client shows them as SERVER_GFX_*).
+	 *  @return FALSE when buffer is too small */
+	WINPR_ATTR_NODISCARD FREERDP_LOCAL BOOL
+	shadow_gfx_stats_json(const SHADOW_GFX_VALUES* values, const SHADOW_GFX_PERIOD_INFO* info,
+	                      char* buffer, size_t size);
 
 	/** The frames in flight the link carries without a queue: the frames acknowledged per second
 	 *  (rate) times the round trip without a queue (baseAckNs), rounded up, and

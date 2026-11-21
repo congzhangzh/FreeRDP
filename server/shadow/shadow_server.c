@@ -42,6 +42,7 @@
 #endif
 
 #include "shadow.h"
+#include "shadow_stats_ipc.h"
 #include "shadow_config.h"
 #include "shadow_cliprdr.h"
 
@@ -557,6 +558,8 @@ static BOOL shadow_server_parse_codec_order(rdpShadowServer* server, const char*
 }
 
 static void shadow_server_env_defaults(rdpShadowServer* server);
+WINPR_ATTR_NODISCARD
+static BOOL shadow_server_set_stats_ipc(rdpShadowServer* server, const char* value);
 
 /* The configuration file, before the command line: /config-file:<path> (it must be readable), or
  * <config dir>/shadow/shadow.conf if there is one. Its settings come in under the environment's,
@@ -922,6 +925,11 @@ int shadow_server_parse_command_line(rdpShadowServer* server, int argc, char** a
 			if (!shadow_server_parse_u32(arg->Value, 0, 3600, &seconds))
 				return fail_at(arg, COMMAND_LINE_ERROR);
 			server->statsPeriod = seconds;
+		}
+		CommandLineSwitchCase(arg, "stats-ipc")
+		{
+			if (!shadow_server_set_stats_ipc(server, arg->Value))
+				return fail_at(arg, COMMAND_LINE_ERROR);
 		}
 		CommandLineSwitchCase(arg, "framerate")
 		{
@@ -1344,6 +1352,26 @@ int shadow_server_start(rdpShadowServer* server)
 		return -1;
 	}
 
+	/* a socket that cannot open costs the counters, not the session: a session manager's
+	 * servers share one configuration file, and a fixed path there opens for one of them only */
+	if (server->statsIpcPath && !server->statsIpc)
+	{
+		char path[512] = WINPR_C_ARRAY_INIT;
+		char error[512] = WINPR_C_ARRAY_INIT;
+		BOOL ok = TRUE;
+		if (*server->statsIpcPath != '\0')
+			(void)_snprintf(path, sizeof(path), "%s", server->statsIpcPath);
+		else
+			ok = shadow_stats_ipc_default_path(path, sizeof(path), error, sizeof(error));
+		if (ok)
+			server->statsIpc = shadow_stats_ipc_open(path, error, sizeof(error));
+		if (server->statsIpc)
+			WLog_INFO(TAG, "the GFX counters go to %s (" SHADOW_STATS_IPC_SCHEMA " %u)", path,
+			          SHADOW_STATS_IPC_VERSION);
+		else
+			WLog_ERR(TAG, "/stats-ipc: %s; the server runs without it", error);
+	}
+
 	/* Bind magic:
 	 *
 	 * empty                 ... bind TCP all
@@ -1708,6 +1736,9 @@ int shadow_server_uninit(rdpShadowServer* server)
 	server->StopEvent = nullptr;
 	ArrayList_Free(server->clients);
 	server->clients = nullptr;
+	/* last: the clients are gone (shadow_server_stop() waited for them) */
+	shadow_stats_ipc_free(server->statsIpc);
+	server->statsIpc = nullptr;
 	return 1;
 }
 
@@ -1807,6 +1838,26 @@ static void shadow_server_env_codec(rdpShadowServer* server)
 		WLog_WARN(TAG, "%s=%s is not a /codec value: passed over", name, envValue);
 }
 
+/* /stats-ipc's value: nothing or "on" the default path, "off" none, else the path */
+WINPR_ATTR_NODISCARD
+static BOOL shadow_server_set_stats_ipc(rdpShadowServer* server, const char* value)
+{
+	WINPR_ASSERT(server);
+	if (value && (_stricmp(value, "off") == 0))
+	{
+		free(server->statsIpcPath);
+		server->statsIpcPath = nullptr;
+		return TRUE;
+	}
+	const BOOL byDefault = !value || (*value == '\0') || (_stricmp(value, "on") == 0);
+	char* path = _strdup(byDefault ? "" : value);
+	if (!path)
+		return FALSE;
+	free(server->statsIpcPath);
+	server->statsIpcPath = path;
+	return TRUE;
+}
+
 /* The settings with an environment variable (and so a line in the configuration file) */
 static void shadow_server_env_defaults(rdpShadowServer* server)
 {
@@ -1822,6 +1873,12 @@ static void shadow_server_env_defaults(rdpShadowServer* server)
 	/* /framerate's value, for a server started with no command line of its own (a session
 	 * manager's); a wrong one is logged and the rates stay each their own */
 	server->maxFrameRate = shadow_server_env_u32("FREERDP_SHADOW_FRAMERATE", 0, 1, 120);
+
+	/* /stats-ipc's value: off unless set */
+	// NOLINTNEXTLINE(concurrency-mt-unsafe)
+	const char* statsIpc = getenv("FREERDP_SHADOW_STATS_IPC");
+	if (statsIpc && (*statsIpc != '\0') && !shadow_server_set_stats_ipc(server, statsIpc))
+		WLog_WARN(TAG, "FREERDP_SHADOW_STATS_IPC=%s: out of memory, no stats socket", statsIpc);
 	if (server->maxFrameRate > 0)
 		server->h264FrameRate = server->maxFrameRate;
 
@@ -1868,6 +1925,8 @@ void shadow_server_free(rdpShadowServer* server)
 
 	free(server->ipcSocket);
 	server->ipcSocket = nullptr;
+	free(server->statsIpcPath);
+	server->statsIpcPath = nullptr;
 	freerdp_settings_free(server->settings);
 	server->settings = nullptr;
 	free(server);

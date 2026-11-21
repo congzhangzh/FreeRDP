@@ -93,6 +93,13 @@ struct rdp_shadow_encoder
 	BOOL warnedNoAck;
 	UINT64 statsLogged;
 	SHADOW_GFX_STATS gfxStats; /* the 5 s line */
+	/* who this connection is to a reader of the stats socket and the client (random, not 0),
+	 * since when (Unix epoch ms), and the periods it has had */
+	UINT64 connectionId;
+	UINT64 connectedMs;
+	char startedAt[40]; /* the same, ISO 8601 on this machine's clock; "" when it has none */
+	char peer[64];      /* the client's address, "ip:port"; "" when not known */
+	UINT64 statsPeriods;
 	BOOL gfxFrameOut;          /* the frame being encoded went out */
 
 	/* GFX RFX dirty tile skipping (shadow_rfx_dirty.c): snapshot of the last

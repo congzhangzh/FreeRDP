@@ -321,6 +321,12 @@ extern "C"
 		/** FREERDP_AV1_CONTEXT_OPTION_TILE_COLUMNS (log2; /codec av1:tile-columns), 0 when the
 		 *  build has no AV1 @since version 3.34.0 */
 		UINT32 AV1TileColumns;
+		/** the stats socket's path (/stats-ipc, FREERDP_SHADOW_STATS_IPC): nullptr: none, "": the
+		 *  default one, freerdp-shadow-<pid>.stats.sock in XDG_RUNTIME_DIR or TMPDIR
+		 *  @since version 3.34.0 */
+		char* statsIpcPath;
+		/** the socket while the server runs, the server's own @since version 3.34.0 */
+		struct s_shadow_stats_ipc* statsIpc;
 	};
 
 	struct rdp_shadow_surface

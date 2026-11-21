@@ -18,6 +18,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include <winpr/assert.h>
 #include <winpr/wlog.h>
@@ -54,6 +55,9 @@ void shadow_gfx_stats_frame_sent(SHADOW_GFX_STATS* stats, UINT32 frameId, UINT64
 	WINPR_STATIC_ASSERT((SHADOW_GFX_STATS_RING & (SHADOW_GFX_STATS_RING - 1)) == 0);
 
 	const UINT64 encodeNs = (endNs >= startNs) ? endNs - startNs : 0;
+	if (stats->sent == 0)
+		stats->firstFrameId = frameId;
+	stats->lastFrameId = frameId;
 	stats->sent++;
 	stats->encodeSumNs = add_saturated(stats->encodeSumNs, encodeNs);
 	stats->encodeMaxNs = MAX(stats->encodeMaxNs, encodeNs);
@@ -83,6 +87,8 @@ UINT64 shadow_gfx_stats_frame_acked(SHADOW_GFX_STATS* stats, UINT32 frameId, UIN
 	stats->ackDelays++;
 	stats->ackDelaySumNs = add_saturated(stats->ackDelaySumNs, delayNs);
 	stats->ackDelayMaxNs = MAX(stats->ackDelayMaxNs, delayNs);
+	if ((stats->ackDelayMinNs == 0) || (delayNs < stats->ackDelayMinNs))
+		stats->ackDelayMinNs = delayNs;
 	return delayNs;
 }
 
@@ -111,6 +117,102 @@ UINT32 shadow_gfx_window_next(UINT32 window, UINT32 peak, UINT64 baseAckNs, UINT
 	else if (avg * 2 > base * 3)
 		next = shadow_gfx_window(base, rate);
 	return next;
+}
+
+BOOL shadow_gfx_stats_local_time(UINT64 unixMs, char* buffer, size_t size)
+{
+	if (!buffer || (size == 0))
+		return FALSE;
+	const time_t t = (time_t)(unixMs / 1000ull);
+	struct tm local = WINPR_C_ARRAY_INIT;
+#if defined(_WIN32)
+	if (localtime_s(&local, &t) != 0)
+		return FALSE;
+#else
+	if (!localtime_r(&t, &local))
+		return FALSE;
+#endif
+	char text[40] = WINPR_C_ARRAY_INIT;
+	const size_t n = strftime(text, sizeof(text), "%Y-%m-%dT%H:%M:%S%z", &local);
+	/* %z is "-0500": ISO 8601 writes "-05:00" */
+	if ((n < 5) || ((text[n - 5] != '+') && (text[n - 5] != '-')))
+		return FALSE;
+	const int rc = snprintf(buffer, size, "%.*s:%s", (int)(n - 2), text, &text[n - 2]);
+	return (rc > 0) && ((size_t)rc < size);
+}
+
+void shadow_gfx_stats_values(const SHADOW_GFX_STATS* stats, UINT32 inFlightLimit, UINT64 elapsedMs,
+                             UINT32 lastAckedFrameId, SHADOW_GFX_VALUES* values)
+{
+	WINPR_ASSERT(stats);
+	WINPR_ASSERT(values);
+
+	const SHADOW_GFX_VALUES v = {
+		.periodMs = elapsedMs,
+		.captured = stats->captured,
+		.sent = stats->sent,
+		.held = stats->held,
+		.merged = stats->merged,
+		.acks = stats->acks,
+		.ackDelayAvgMs =
+		    stats->ackDelays ? div_round(stats->ackDelaySumNs / stats->ackDelays, 1000000) : 0,
+		.ackDelayMaxMs = div_round(stats->ackDelayMaxNs, 1000000),
+		.ackDelayMinMs = div_round(stats->ackDelayMinNs, 1000000),
+		.encodeAvgUs = stats->sent ? div_round(stats->encodeSumNs / stats->sent, 1000) : 0,
+		.encodeMaxUs = div_round(stats->encodeMaxNs, 1000),
+		.inFlightMax = stats->maxInFlight,
+		.inFlightLimit = inFlightLimit,
+		.frameIdFirst = stats->sent ? stats->firstFrameId : 0,
+		.frameIdLast = stats->sent ? stats->lastFrameId : 0,
+		.frameIdAckedLast = lastAckedFrameId,
+	};
+	*values = v;
+}
+
+BOOL shadow_gfx_stats_json(const SHADOW_GFX_VALUES* values, const SHADOW_GFX_PERIOD_INFO* info,
+                           char* buffer, size_t size)
+{
+	WINPR_ASSERT(values);
+	WINPR_ASSERT(info);
+
+	if (!buffer || (size == 0))
+		return FALSE;
+	/* an address has no character JSON would escape; anything else is left out */
+	const char* peer = info->peer;
+	if (peer && ((*peer == '\0') || (strspn(peer, "0123456789abcdefABCDEF.:[]") != strlen(peer))))
+		peer = nullptr;
+	/* the first and the last frame sent, both inclusive; none when the period sent none */
+	char frames[96] = WINPR_C_ARRAY_INIT;
+	if (values->sent > 0)
+		(void)snprintf(frames, sizeof(frames),
+		               ",\"GFX_FRAME_ID_FIRST\":%" PRIu64 ",\"GFX_FRAME_ID_LAST\":%" PRIu64,
+		               values->frameIdFirst, values->frameIdLast);
+	const char* startedAt = info->startedAt;
+	if (startedAt &&
+	    ((*startedAt == '\0') || (strspn(startedAt, "0123456789-+:T") != strlen(startedAt))))
+		startedAt = nullptr;
+	const int rc =
+	    snprintf(buffer, size,
+	             "{\"connection_id\":\"%016" PRIx64 "\",\"peer\":%s%s%s,\"connected_ms\":%" PRIu64
+	             ",\"started_at\":%s%s%s"
+	             ",\"periods\":%" PRIu64 ",\"time_ms\":%" PRIu64 ",\"ns\":%" PRIu64
+	             ",\"period_ms\":%" PRIu64 ",\"acks_suspended\":%s,\"fps\":%" PRIu32
+	             ",\"max_fps\":%" PRIu32 ",\"counters\":{\"GFX_PERIOD_MS\":%" PRIu64
+	             ",\"GFX_CAPTURED\":%" PRIu64 ",\"GFX_SENT\":%" PRIu64 ",\"GFX_HELD\":%" PRIu64
+	             ",\"GFX_MERGED\":%" PRIu64 ",\"GFX_ACKS\":%" PRIu64
+	             ",\"GFX_ACK_DELAY_AVG_MS\":%" PRIu64 ",\"GFX_ACK_DELAY_MAX_MS\":%" PRIu64
+	             ",\"GFX_ACK_DELAY_MIN_MS\":%" PRIu64 ",\"GFX_ENCODE_AVG_US\":%" PRIu64
+	             ",\"GFX_ENCODE_MAX_US\":%" PRIu64 ",\"GFX_IN_FLIGHT_MAX\":%" PRIu64
+	             ",\"GFX_IN_FLIGHT_LIMIT\":%" PRIu64 "%s,\"GFX_FRAME_ID_ACKED_LAST\":%" PRIu64 "}}",
+	             info->connectionId, peer ? "\"" : "", peer ? peer : "null", peer ? "\"" : "",
+	             info->connectedMs, startedAt ? "\"" : "", startedAt ? startedAt : "null",
+	             startedAt ? "\"" : "", info->periods, info->timeMs, info->ns, values->periodMs,
+	             info->acksSuspended ? "true" : "false", info->fps, info->maxFps, values->periodMs,
+	             values->captured, values->sent, values->held, values->merged, values->acks,
+	             values->ackDelayAvgMs, values->ackDelayMaxMs, values->ackDelayMinMs,
+	             values->encodeAvgUs, values->encodeMaxUs, values->inFlightMax,
+	             values->inFlightLimit, frames, values->frameIdAckedLast);
+	return (rc > 0) && ((size_t)rc < size);
 }
 
 void shadow_gfx_stats_next_period(SHADOW_GFX_STATS* stats)

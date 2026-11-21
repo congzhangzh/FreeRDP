@@ -162,6 +162,12 @@ int main(int argc, char** argv)
 		  "time) every <seconds>, at INFO on com.freerdp.server.shadow.gfx (default 0: only when "
 		  "that logger is at DEBUG or TRACE, every 5 s; or FREERDP_SHADOW_GFX_STATS_PERIOD from "
 		  "the environment or the configuration file)" },
+		{ "stats-ipc", COMMAND_LINE_VALUE_OPTIONAL, "[<path>|on|off]", nullptr, nullptr, -1,
+		  nullptr,
+		  "Send the GFX counters of every client, each 5 s period, as a line of JSON "
+		  "(\"freerdp-shadow-stats\") to a local socket only this user may read, by default "
+		  "freerdp-shadow-<pid>.stats.sock in XDG_RUNTIME_DIR or TMPDIR (or "
+		  "FREERDP_SHADOW_STATS_IPC from the environment or the configuration file; default off)" },
 		{ "framerate", COMMAND_LINE_VALUE_REQUIRED, "<1-120>", nullptr, nullptr, -1, nullptr,
 		  "The most frames per second the server captures and sends, for every subsystem and "
 		  "codec (default: each its own, e.g. 60 for the encoders, 30 for H.264; or "

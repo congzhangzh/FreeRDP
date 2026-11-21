@@ -40,6 +40,7 @@
 #include "shadow.h"
 #include "shadow_rfx_dirty.h"
 #include "shadow_autodetect.h"
+#include "shadow_stats_ipc.h"
 
 #define TAG CLIENT_TAG("shadow")
 
@@ -250,6 +251,8 @@ static void shadow_client_context_free(freerdp_peer* peer, rdpContext* context)
 		ArrayList_Remove(server->clients, (void*)client);
 
 	shadow_client_autodetect_uninit(client);
+	if (client->encoder && client->server)
+		shadow_stats_ipc_client_gone(client->server->statsIpc, client->encoder->connectionId);
 	shadow_encoder_free(client->encoder);
 
 	/* Clear queued messages and free resource */
@@ -3365,6 +3368,29 @@ static void shadow_client_gfx_stats(rdpShadowClient* client)
 		shadow_gfx_stats_write(&encoder->gfxStats, encoder->maxInFlight,
 		                       encoder->queueDepth == SUSPEND_FRAME_ACKNOWLEDGEMENT,
 		                       now - encoder->statsLogged);
+	if ((encoder->statsLogged != 0) && client->server && client->server->statsIpc)
+	{
+		SHADOW_GFX_VALUES values = WINPR_C_ARRAY_INIT;
+		shadow_gfx_stats_values(&encoder->gfxStats, encoder->maxInFlight,
+		                        now - encoder->statsLogged, encoder->lastAckframeId, &values);
+		const UINT64 nowNs = winpr_GetTickCount64NS();
+		const UINT64 nowMs = winpr_GetUnixTimeNS() / 1000000ull;
+		const SHADOW_GFX_PERIOD_INFO info = {
+			.connectionId = encoder->connectionId,
+			.peer = encoder->peer,
+			.startedAt = encoder->startedAt,
+			.connectedMs = encoder->connectedMs,
+			.periods = ++encoder->statsPeriods,
+			.timeMs = nowMs,
+			.ns = nowNs,
+			.acksSuspended = encoder->queueDepth == SUSPEND_FRAME_ACKNOWLEDGEMENT,
+			.fps = encoder->fps,
+			.maxFps = encoder->maxFps,
+		};
+		char object[1024] = WINPR_C_ARRAY_INIT;
+		if (shadow_gfx_stats_json(&values, &info, object, sizeof(object)))
+			shadow_stats_ipc_client_period(client->server->statsIpc, encoder->connectionId, object);
+	}
 	shadow_gfx_stats_next_period(&encoder->gfxStats);
 	encoder->statsLogged = now;
 }
@@ -3867,11 +3893,19 @@ BOOL shadow_client_accepted(freerdp_listener* listener, freerdp_peer* peer)
 	peer->ContextNew = shadow_client_context_new;
 	peer->ContextFree = shadow_client_context_free;
 
+	/* the client's address for the stats socket: now, while the peer holds its socket; the
+	 * context's transport takes it over */
+	char peerName[64] = WINPR_C_ARRAY_INIT;
+	if (!shadow_stats_ipc_peer_name(peer->sockfd, peerName, sizeof(peerName)))
+		peerName[0] = '\0';
+
 	if (!freerdp_peer_context_new_ex(peer, server->settings))
 		return FALSE;
 
 	client = (rdpShadowClient*)peer->context;
 	WINPR_ASSERT(client);
+	if (client->encoder)
+		(void)_snprintf(client->encoder->peer, sizeof(client->encoder->peer), "%s", peerName);
 
 #if defined(WITH_RDPEUDP_SERVER)
 	FreeRDP_UdpPeerCallbacks callbacks = WINPR_C_ARRAY_INIT;

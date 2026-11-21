@@ -22,6 +22,7 @@
 #include <stdlib.h>
 
 #include <winpr/assert.h>
+#include <winpr/crypto.h>
 #include <winpr/sysinfo.h>
 
 #include "shadow.h"
@@ -828,6 +829,18 @@ rdpShadowEncoder* shadow_encoder_new(rdpShadowClient* client)
 	encoder->server = server;
 	shadow_encoder_reset_fps(encoder);
 	encoder->lastAckTick = GetTickCount64();
+	encoder->connectedMs = winpr_GetUnixTimeNS() / 1000000ull;
+	if (!shadow_gfx_stats_local_time(encoder->connectedMs, encoder->startedAt,
+	                                 sizeof(encoder->startedAt)))
+		encoder->startedAt[0] = '\0';
+	while (encoder->connectionId == 0)
+	{
+		if (winpr_RAND(&encoder->connectionId, sizeof(encoder->connectionId)) < 0)
+		{
+			shadow_encoder_free(encoder);
+			return nullptr;
+		}
+	}
 	{
 		/* like xrdp's XRDP_GFX_FRAMES_IN_FLIGHT, but sized to the link by default; the
 		 * variable fixes it, 0 turns the limit off */
