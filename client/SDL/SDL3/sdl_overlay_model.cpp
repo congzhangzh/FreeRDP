@@ -501,6 +501,46 @@ namespace sdl::overlay
 			rows.push_back({ "Host", host + ":" + std::to_string(port) });
 		if (const auto cn = info("SERVER_CERT_CN"); !cn.empty())
 			rows.push_back({ "Certificate", cn });
+
+		/* What a FreeRDP server measured in its last period and sent over its statistics channel
+		 * (/astats): nothing before its first report, and nothing from servers that send none. A
+		 * time it does not measure reads 0 and is left out. */
+		if (value("SERVER_GFX_PERIODS") > 0)
+		{
+			const auto periodMs = value("SERVER_GFX_PERIOD_MS");
+			const auto perSecond = [&](const char* name)
+			{
+				return (periodMs > 0) ? fixed(1000.0 * static_cast<double>(value(name)) /
+				                                  static_cast<double>(periodMs),
+				                              1)
+				                      : std::string("–");
+			};
+			const auto ms = [&](const char* name)
+			{ return fixed(static_cast<double>(value(name)) / 1000.0, 1) + " ms"; };
+
+			rows.push_back(
+			    { "Server frames (" + fixed(static_cast<double>(periodMs) / 1000.0, 1) + " s)",
+			      perSecond("SERVER_GFX_CAPTURED") + " captured, " + perSecond("SERVER_GFX_SENT") +
+			          " sent /s, " + std::to_string(value("SERVER_GFX_HELD")) + " held, " +
+			          std::to_string(value("SERVER_GFX_MERGED")) + " merged" });
+
+			std::string times;
+			if (value("SERVER_GFX_CAPTURE_AVG_US") > 0)
+				times += "capture " + ms("SERVER_GFX_CAPTURE_AVG_US") + ", ";
+			times += "encode " + ms("SERVER_GFX_ENCODE_AVG_US") + " (max " +
+			         ms("SERVER_GFX_ENCODE_MAX_US") + ")";
+			if (value("SERVER_GFX_ROUND_AVG_US") > 0)
+				times += ", round " + ms("SERVER_GFX_ROUND_AVG_US");
+			rows.push_back({ "Server times", times });
+
+			rows.push_back(
+			    { "Server acks", std::to_string(value("SERVER_GFX_ACK_DELAY_AVG_MS")) + " ms (" +
+			                         std::to_string(value("SERVER_GFX_ACK_DELAY_MIN_MS")) + "–" +
+			                         std::to_string(value("SERVER_GFX_ACK_DELAY_MAX_MS")) +
+			                         "), in flight " +
+			                         std::to_string(value("SERVER_GFX_IN_FLIGHT_MAX")) + " of " +
+			                         std::to_string(value("SERVER_GFX_IN_FLIGHT_LIMIT")) });
+		}
 		return rows;
 	}
 
