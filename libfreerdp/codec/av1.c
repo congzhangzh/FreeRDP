@@ -497,8 +497,9 @@ static void av1_mf_start(FREERDP_AV1_CONTEXT* av1, UINT32 width, UINT32 height)
 		why = "4:4:4";
 	else
 	{
-		/* CBR and VBR at the bit rate; CQ and Q at the encoder's quality, 100 - cq-level x
-		 * 100 / 63 (the shadow's default cq-level 16: 75; 0, libaom's own, counts as its 10) */
+		/* CBR and VBR at the bit rate; CQ and Q at the encoder's quality 100 - cq-level x 5 / 8
+		 * (Boss Cong: the shadow's default cq-level 16 is quality 90; 0 is 100, 63 is 61; 0,
+		 * libaom's own, counts as its 10: 94) */
 		AV1_MF_RATE rate = AV1_MF_QUALITY;
 		if (av1->ecfg.rc_end_usage == AOM_CBR)
 			rate = AV1_MF_CBR;
@@ -507,7 +508,7 @@ static void av1_mf_start(FREERDP_AV1_CONTEXT* av1, UINT32 width, UINT32 height)
 		if (rate == AV1_MF_QUALITY)
 		{
 			const UINT32 cq = (av1->cqLevel > 0) ? av1->cqLevel : 10;
-			quality = 100u - ((cq * 100u + 31u) / 63u);
+			quality = 100u - ((cq * 5u + 4u) / 8u);
 			if (quality < 1)
 				quality = 1;
 		}
