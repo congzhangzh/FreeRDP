@@ -48,6 +48,31 @@ static bool highPixelDensity(SDL_DisplayID id)
 	return hiDpi.forDisplay(id).mode != sdl::hidpi::Mode::Points;
 }
 
+/* The mode is chosen when a window is created (SDL_WINDOW_HIGH_PIXEL_DENSITY cannot change later),
+ * so a window keeps it when it moves to a display of another mode: it is kept on the window. */
+static constexpr auto hiDpiProperty = "FreeRDP.sdl-hidpi";
+
+static void setWindowHiDpi(SDL_Window* window, const sdl::hidpi::Setting& setting)
+{
+	const auto value = static_cast<Sint64>(setting.mode) * 1000 + setting.percent;
+	std::ignore = SDL_SetNumberProperty(SDL_GetWindowProperties(window), hiDpiProperty, value);
+}
+
+sdl::hidpi::Setting SdlWindow::hiDpiSetting(SDL_Window* window)
+{
+	const auto props = SDL_GetWindowProperties(window);
+	if (!SDL_HasProperty(props, hiDpiProperty))
+		return hiDpi.forDisplay(SDL_GetDisplayForWindow(window));
+	const auto value = SDL_GetNumberProperty(props, hiDpiProperty, 0);
+	const auto mode = static_cast<sdl::hidpi::Mode>(value / 1000);
+	return { mode, static_cast<uint32_t>(value % 1000) };
+}
+
+sdl::hidpi::Setting SdlWindow::hiDpiSetting() const
+{
+	return hiDpiSetting(_window);
+}
+
 SDL_DisplayID SdlWindow::displayId() const
 {
 	return _displayID;
@@ -76,7 +101,11 @@ SdlWindow::SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect&
 	SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, createH);
 	SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN, true);
 
-	if ((flags & SDL_WINDOW_HIGH_PIXEL_DENSITY) && highPixelDensity(id))
+	/* a window that does not ask for every pixel is in points whatever the display's mode */
+	const auto setting = (flags & SDL_WINDOW_HIGH_PIXEL_DENSITY)
+	                         ? hiDpi.forDisplay(id)
+	                         : sdl::hidpi::Setting{ sdl::hidpi::Mode::Points };
+	if (setting.mode != sdl::hidpi::Mode::Points)
 		SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIGH_PIXEL_DENSITY_BOOLEAN, true);
 
 	if (flags & SDL_WINDOW_FULLSCREEN)
@@ -94,6 +123,8 @@ SdlWindow::SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect&
 
 	_window = SDL_CreateWindowWithProperties(props);
 	SDL_DestroyProperties(props);
+	if (_window)
+		setWindowHiDpi(_window, setting);
 	SDL_SetHint(SDL_HINT_APP_NAME, "");
 	std::ignore = SDL_SyncWindow(_window);
 
@@ -531,8 +562,7 @@ rdpMonitor SdlWindow::query(SDL_Window* window, SDL_DisplayID id, bool forceAsPr
 	if (!window)
 		return {};
 	/* scale:N: the session at scale 100, drawn scaled */
-	const bool scaled =
-	    hiDpi.forDisplay(SDL_GetDisplayForWindow(window)).mode == sdl::hidpi::Mode::Scale;
+	const bool scaled = hiDpiSetting(window).mode == sdl::hidpi::Mode::Scale;
 	return makeMonitor(id, rect(window, forceAsPrimary),
 	                   scaled ? 1.0f : SDL_GetWindowDisplayScale(window), forceAsPrimary);
 }
@@ -613,8 +643,9 @@ SDL_Rect SdlWindow::rect(SDL_Window* window, bool forceAsPrimary)
 			float factor = 1.0f;
 			const auto mode = SDL_GetCurrentDisplayMode(displayID);
 			if (mode && (mode->pixel_density > 1.0f))
-				factor =
-				    highPixelDensity(displayID) ? mode->pixel_density : 1.0f; /* points: as is */
+				factor = (hiDpiSetting(window).mode != sdl::hidpi::Mode::Points)
+				             ? mode->pixel_density
+				             : 1.0f; /* points: as is */
 			else
 			{
 				const float contentScale = SDL_GetDisplayContentScale(displayID);
@@ -631,7 +662,7 @@ SDL_Rect SdlWindow::rect(SDL_Window* window, bool forceAsPrimary)
 		}
 	}
 
-	const auto setting = hiDpi.forDisplay(SDL_GetDisplayForWindow(window));
+	const auto setting = hiDpiSetting(window);
 	if (setting.mode == sdl::hidpi::Mode::Scale)
 	{
 		const auto size = sdl::hidpi::monitorSize(pointsW, pointsH, 1.0f, 1.0f, setting);
@@ -1030,6 +1061,8 @@ static SDL_Window* createDummy(SDL_DisplayID id)
 
 	auto window = SDL_CreateWindowWithProperties(props);
 	SDL_DestroyProperties(props);
+	if (window)
+		setWindowHiDpi(window, hiDpi.forDisplay(id));
 
 	/* Workaround: we need to properly position the window on the correct monitor
 	 * before going fullscreen. Otherwise we will get the primary monitor details.
