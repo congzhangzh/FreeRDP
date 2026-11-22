@@ -56,6 +56,10 @@
 #include "av1_d3d11va.h"
 #endif
 
+#if defined(WITH_AV1_MF)
+#include "av1_mf.h"
+#endif
+
 #if defined(WITH_LIBAOM) || defined(WITH_DAV1D)
 
 #if defined(WITH_LIBYUV)
@@ -80,6 +84,9 @@ struct S_FREERDP_AV1_CONTEXT
 	UINT32 cqLevel; /* FREERDP_AV1_CONTEXT_OPTION_CQ_LEVEL, 0: libaom's */
 	UINT32 speed;   /* FREERDP_AV1_CONTEXT_OPTION_SPEED */
 	UINT32 tileColumns; /* FREERDP_AV1_CONTEXT_OPTION_TILE_COLUMNS, log2 */
+#if defined(WITH_AV1_MF)
+	AV1_MF* mf; /* the GPU's encoder for this stream, nullptr: libaom */
+#endif
 	/* encoder statistics, see av1_encoder_stats() */
 	struct
 	{
@@ -448,6 +455,40 @@ static void av1_encoder_stats(FREERDP_AV1_CONTEXT* av1, UINT64 startNS, size_t b
 }
 #endif
 
+#if defined(WITH_AV1_MF)
+/* The GPU's encoder takes the stream when it can: 4:2:0 at a bit rate (CBR, VBR); libaom keeps
+ * 4:4:4 and the quality modes (q, cq), and takes over when the GPU refuses or fails.
+ * FREERDP_AV1_ENCODER=libaom keeps libaom. */
+static void av1_mf_start(FREERDP_AV1_CONTEXT* av1, UINT32 width, UINT32 height)
+{
+	av1_mf_free(av1->mf);
+	av1->mf = nullptr;
+
+	const char* why = nullptr;
+	char env[16] = WINPR_C_ARRAY_INIT;
+	const DWORD n = GetEnvironmentVariableA("FREERDP_AV1_ENCODER", env, sizeof(env));
+	if ((n > 0) && (n < sizeof(env)) && (_stricmp(env, "libaom") == 0))
+		why = "FREERDP_AV1_ENCODER=libaom";
+	else if (av1->ecfg.g_profile != 0)
+		why = "4:4:4";
+	else if ((av1->ecfg.rc_end_usage != AOM_CBR) && (av1->ecfg.rc_end_usage != AOM_VBR))
+		why = "a quality rate control mode";
+	else
+	{
+		av1->mf = av1_mf_new(av1->log, width, height, av1->ecfg.rc_target_bitrate,
+		                     av1->ecfg.rc_end_usage == AOM_CBR);
+		if (!av1->mf)
+			why = "no hardware AV1 encoder takes it";
+	}
+	if (av1->mf)
+		WLog_Print(av1->log, WLOG_INFO,
+		           "AV1 encoder: Media Foundation, %s (hardware), libaom as fallback",
+		           av1_mf_name(av1->mf));
+	else
+		WLog_Print(av1->log, WLOG_INFO, "AV1 encoder: libaom (software; %s)", why);
+}
+#endif
+
 INT32 freerdp_av1_compress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, DWORD SrcFormat,
                            UINT32 nSrcStep, UINT32 nSrcWidth, UINT32 nSrcHeight,
                            const RECTANGLE_16* regionRect, BYTE** ppDstData, UINT32* pDstSize,
@@ -599,6 +640,30 @@ INT32 freerdp_av1_compress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, DWORD
 	img->planes[2] = av1->yuvdata[2];
 
 	const unsigned long duration = av1_aom_frame_duration(av1);
+#if defined(WITH_AV1_MF)
+	if (av1->mf)
+	{
+		const BYTE* const planes[3] = { av1->yuvdata[0], av1->yuvdata[1], av1->yuvdata[2] };
+		const BYTE* out = nullptr;
+		UINT32 outSize = 0;
+		const INT32 mrc =
+		    av1_mf_encode(av1->mf, planes, av1->yuvStride, (UINT32)duration, FALSE, &out, &outSize);
+		if (mrc > 0)
+		{
+			av1->pts += WINPR_ASSERTING_INT_CAST(aom_codec_pts_t, duration);
+			*ppDstData = WINPR_CAST_CONST_PTR_AWAY(out, BYTE*);
+			*pDstSize = outSize;
+			goto encoded;
+		}
+		/* libaom has seen no frame of this stream: its first one is a key frame with a sequence
+		 * header, so the client starts over with it */
+		WLog_Print(av1->log, WLOG_WARN,
+		           "AV1 encoder: %s failed (%" PRId32 "), libaom from this frame on (a key frame)",
+		           av1_mf_name(av1->mf), mrc);
+		av1_mf_free(av1->mf);
+		av1->mf = nullptr;
+	}
+#endif
 	const aom_codec_err_t rc = aom_codec_encode(&av1->ctx, img, av1->pts, duration, av1->eflags);
 	aom_img_free(img);
 	av1->pts += WINPR_ASSERTING_INT_CAST(aom_codec_pts_t, duration);
@@ -623,6 +688,9 @@ INT32 freerdp_av1_compress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, DWORD
 	}
 	if (*pDstSize == 0)
 		return 0;
+#if defined(WITH_AV1_MF)
+encoded:
+#endif
 
 	av1_encoder_stats(av1, startNS, *pDstSize);
 
@@ -1206,6 +1274,10 @@ BOOL freerdp_av1_context_reset(FREERDP_AV1_CONTEXT* av1, UINT32 width, UINT32 he
 		if (!av1_aom_apply_controls(av1))
 			return FALSE;
 
+#if defined(WITH_AV1_MF)
+		av1_mf_start(av1, width, height);
+#endif
+
 		static const char* const modes[] = { "vbr", "cbr", "cq", "q" };
 		const UINT32 mode = (UINT32)av1->ecfg.rc_end_usage;
 		WLog_Print(av1->log, WLOG_DEBUG,
@@ -1343,6 +1415,9 @@ void freerdp_av1_context_free(FREERDP_AV1_CONTEXT* av1)
 #endif
 		}
 	}
+#if defined(WITH_AV1_MF)
+	av1_mf_free(av1->mf);
+#endif
 #if defined(WITH_AV1_WEBCODECS)
 	av1_wc_close(av1->webcodecs);
 #endif

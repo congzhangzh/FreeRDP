@@ -218,6 +218,19 @@ if(WITH_AV1_D3D11VA)
   list(APPEND CODEC_LIBS d3d11 dxgi dxguid)
   message(STATUS "AV1 decoder: D3D11VA first")
 endif()
+# Hardware AV1 encoding on Windows: a GPU's encoder behind Media Foundation (e.g. the NVIDIA AV1
+# Encoder MFT); libaom stays the encoder for 4:4:4, the quality modes and when the GPU refuses or
+# fails. mfplat.dll is loaded at run time.
+cmake_dependent_option(
+  WITH_AV1_MF "[AV1] encode with a Media Foundation hardware encoder when the GPU can" ON
+  "WITH_GFX_AV1;WIN32;WITH_AOM;AOM_FOUND" OFF
+)
+if(WITH_AV1_MF)
+  add_compile_definitions(WITH_AV1_MF)
+  list(APPEND CODEC_SRCS av1_mf.c av1_mf.h)
+  list(APPEND CODEC_LIBS ole32 oleaut32)
+  message(STATUS "AV1 encoder: Media Foundation hardware first")
+endif()
 if(WITH_AV1_D3D11VA OR (BUILD_TESTING_INTERNAL AND WITH_GFX_AV1 AND WITH_DAV1D AND DAV1D_FOUND))
   list(APPEND CODEC_SRCS av1_obu.c av1_obu.h)
 endif()
