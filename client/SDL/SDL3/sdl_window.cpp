@@ -87,9 +87,16 @@ SdlWindow::SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect&
                      [[maybe_unused]] Uint32 flags)
     : _initialW(rect.w), _initialH(rect.h), _displayID(id)
 {
+	/* a window that does not ask for every pixel is in points whatever the display's mode */
+	const auto setting = (flags & SDL_WINDOW_HIGH_PIXEL_DENSITY)
+	                         ? hiDpi.forDisplay(id)
+	                         : sdl::hidpi::Setting{ sdl::hidpi::Mode::Points };
 	float pd = SDL_GetDisplayContentScale(id);
 	if (pd <= 0.0f)
 		pd = 1.0f;
+	/* scale:N: the size asked for is the session's, N/100 of the window's points */
+	if (setting.mode == sdl::hidpi::Mode::Scale)
+		pd = static_cast<float>(setting.percent) / 100.0f;
 	const int createW = static_cast<int>(std::ceil(static_cast<float>(rect.w) / pd));
 	const int createH = static_cast<int>(std::ceil(static_cast<float>(rect.h) / pd));
 
@@ -101,10 +108,6 @@ SdlWindow::SdlWindow(SDL_DisplayID id, const std::string& title, const SDL_Rect&
 	SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, createH);
 	SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN, true);
 
-	/* a window that does not ask for every pixel is in points whatever the display's mode */
-	const auto setting = (flags & SDL_WINDOW_HIGH_PIXEL_DENSITY)
-	                         ? hiDpi.forDisplay(id)
-	                         : sdl::hidpi::Setting{ sdl::hidpi::Mode::Points };
 	if (setting.mode != sdl::hidpi::Mode::Points)
 		SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIGH_PIXEL_DENSITY_BOOLEAN, true);
 
@@ -324,6 +327,10 @@ bool SdlWindow::resizeToScale()
 	float pd = SDL_GetWindowPixelDensity(_window);
 	if (pd <= 0.0f)
 		pd = 1.0f;
+	/* scale:N: the session keeps the size asked, the window N/100 of it in points on any display */
+	const auto setting = hiDpiSetting();
+	if (setting.mode == sdl::hidpi::Mode::Scale)
+		pd = static_cast<float>(setting.percent) / 100.0f;
 
 	const int targetW = static_cast<int>(std::ceil(static_cast<float>(_initialW) / pd));
 	const int targetH = static_cast<int>(std::ceil(static_cast<float>(_initialH) / pd));
