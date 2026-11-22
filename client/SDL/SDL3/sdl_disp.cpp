@@ -280,6 +280,13 @@ bool sdlDispContext::sendLayout(const rdpMonitor* monitors, size_t nmonitors)
 	if (!settings_changed(layouts))
 		return true;
 
+	for (const auto& l : layouts)
+		WLog_Print(_sdl->getWLog(), WLOG_DEBUG,
+		           "layout: %" PRIu32 "x%" PRIu32 "%+" PRId32 "%+" PRId32 " scale %" PRIu32
+		           " device %" PRIu32 "%s",
+		           l.Width, l.Height, l.Left, l.Top, l.DesktopScaleFactor, l.DeviceScaleFactor,
+		           (l.Flags & DISPLAY_CONTROL_MONITOR_PRIMARY) ? " primary" : "");
+
 	WINPR_ASSERT(_disp);
 	const size_t len = layouts.size();
 	WINPR_ASSERT(len <= UINT32_MAX);
