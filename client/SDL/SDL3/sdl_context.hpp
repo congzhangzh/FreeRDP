@@ -221,6 +221,8 @@ class SdlContext
 
 	[[nodiscard]] SDL_FPoint applyLocalScaling(const SDL_FPoint& val) const;
 	void removeLocalScaling(float& x, float& y) const;
+	/** window pixels of an event to session pixels: local scale or /sdl-hidpi:scale:N */
+	void removeScaling(SDL_WindowID id, float& x, float& y) const;
 
 	[[nodiscard]] bool handleEvent(const SDL_WindowEvent& ev);
 	[[nodiscard]] bool handleEvent(const SDL_DisplayEvent& ev);
