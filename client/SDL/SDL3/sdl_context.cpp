@@ -281,6 +281,7 @@ BOOL SdlContext::preConnect(freerdp* instance)
 			{
 				if (!freerdp_settings_set_uint32(settings, FreeRDP_DesktopScaleFactor, scale))
 					return FALSE;
+				WLog_Print(sdl->getWLog(), WLOG_DEBUG, "core data scale %" PRIu32, scale);
 			}
 
 			/* With /multimon the server also takes each monitor's own scale from the monitor
