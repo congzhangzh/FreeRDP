@@ -52,6 +52,10 @@
 #include "av1_videotoolbox.h"
 #endif
 
+#if defined(WITH_AV1_D3D11VA)
+#include "av1_d3d11va.h"
+#endif
+
 #if defined(WITH_LIBAOM) || defined(WITH_DAV1D)
 
 #if defined(WITH_LIBYUV)
@@ -98,6 +102,10 @@ struct S_FREERDP_AV1_CONTEXT
 #if defined(WITH_AV1_VIDEOTOOLBOX)
 	AV1_VT* vt;    /* nullptr without a hardware AV1 decoder */
 	bool vtStream; /* the current stream is VideoToolbox's (else the software decoder's) */
+#endif
+#if defined(WITH_AV1_D3D11VA)
+	AV1_D3D11VA* d3d11va; /* nullptr without a GPU that decodes AV1 */
+	bool d3d11vaStream;   /* the current stream is the GPU's (else the software decoder's) */
 #endif
 	BYTE* yuvdata[3];
 	UINT32 yuvWidth;
@@ -957,6 +965,53 @@ INT32 freerdp_av1_decompress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, UIN
 	}
 #endif
 
+#if defined(WITH_AV1_D3D11VA)
+	if (av1->d3d11va && av1->d3d11vaStream)
+	{
+		av1->lastDecode.backend = "D3D11VA";
+		AV1_D3D11VA_PICTURE pic = WINPR_C_ARRAY_INIT;
+		const INT32 drc = av1_d3d11va_decode(av1->d3d11va, pSrcData, SrcSize, &pic);
+		if (drc != AV1_D3D11VA_UNSUPPORTED)
+		{
+			/* the GPU has the stream, whatever became of this decode */
+			av1->lastDecode.hardware = FREERDP_DECODE_HARDWARE_YES;
+		}
+		if (drc == TRUE)
+		{
+			const INT32 crc = av1_convert_planar(av1, FALSE, pic.planes, pic.strides, pic.width,
+			                                     pic.height, pDstData, DstFormat, nDstStep,
+			                                     nDstWidth, nDstHeight, regionRects, numRegionRect);
+			if (crc >= 0)
+				av1->lastDecode.status = FREERDP_DECODE_PICTURE;
+			return crc;
+		}
+		if (drc == FALSE)
+		{
+			av1->lastDecode.status = FREERDP_DECODE_NO_PICTURE;
+			return TRUE;
+		}
+		/* bad input: refused, the stream stays with the GPU */
+		if (drc == AV1_D3D11VA_INVALID)
+			return -1;
+
+		/* The software decoder takes the rest of this stream (until the next reset). */
+		av1->d3d11vaStream = false;
+		av1->lastDecode.fellBack = TRUE;
+		if (drc != AV1_D3D11VA_UNSUPPORTED)
+		{
+			/* In the middle of the stream: the software decoder has none of its references,
+			 * it only picks up at a new sequence header. */
+			WLog_Print(av1->log, WLOG_WARN,
+			           "D3D11VA AV1 decode failed (%" PRId32 "), software decoder from the "
+			           "next sequence header",
+			           drc);
+			return drc;
+		}
+		/* This temporal unit starts the stream, the software decoder starts with it. */
+		av1->lastDecode.backend = AV1_SOFTWARE_DECODER;
+	}
+#endif
+
 #if defined(WITH_AV1_WEBCODECS)
 	if (av1->webcodecs > 0)
 	{
@@ -1179,6 +1234,24 @@ BOOL freerdp_av1_context_reset(FREERDP_AV1_CONTEXT* av1, UINT32 width, UINT32 he
 			av1_vt_reset(av1->vt);
 		av1->vtStream = (av1->vt != nullptr);
 #endif
+#if defined(WITH_AV1_D3D11VA)
+		if (!av1->d3d11va)
+		{
+			av1->d3d11va = av1_d3d11va_new(av1->log, AV1_D3D11VA_ANY_ADAPTER);
+			if (av1->d3d11va)
+				WLog_Print(av1->log, WLOG_INFO,
+				           "AV1 decoder: D3D11VA on %s (hardware), " AV1_SOFTWARE_DECODER
+				           " as fallback",
+				           av1_d3d11va_adapter_name(av1->d3d11va));
+			else
+				WLog_Print(av1->log, WLOG_INFO,
+				           "AV1 decoder: " AV1_SOFTWARE_DECODER
+				           " (software, no GPU with a D3D11VA AV1 decoder)");
+		}
+		else
+			av1_d3d11va_reset(av1->d3d11va);
+		av1->d3d11vaStream = (av1->d3d11va != nullptr);
+#endif
 #if defined(WITH_AV1_WEBCODECS)
 		if (av1->webcodecs == 0)
 		{
@@ -1275,6 +1348,9 @@ void freerdp_av1_context_free(FREERDP_AV1_CONTEXT* av1)
 #endif
 #if defined(WITH_AV1_VIDEOTOOLBOX)
 	av1_vt_free(av1->vt);
+#endif
+#if defined(WITH_AV1_D3D11VA)
+	av1_d3d11va_free(av1->d3d11va);
 #endif
 	winpr_aligned_free(av1->yuvdata[0]);
 	winpr_aligned_free(av1->yuvdata[1]);

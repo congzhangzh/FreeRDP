@@ -28,6 +28,10 @@ endif()
 
 if(WITH_GFX_AV1)
   list(APPEND TESTS TestFreeRDPCodecAV1.c)
+  if(BUILD_TESTING_INTERNAL AND WITH_DAV1D AND DAV1D_FOUND)
+    list(APPEND TESTS TestFreeRDPCodecAV1Obu.c)
+    set(TEST_AV1_OBU ON)
+  endif()
 endif()
 
 if(WITH_GFX_AV2)
@@ -87,6 +91,11 @@ add_compile_definitions(CMAKE_CURRENT_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}")
 add_executable(${MODULE_NAME} ${SRCS} ${CURSOR_TESTCASES_H} ${CURSOR_TESTCASES_C} ${TESTCASE_HEADER} ${TEST_COMMON})
 
 target_link_libraries(${MODULE_NAME} PRIVATE freerdp)
+
+if(TEST_AV1_OBU)
+  # the parser check decodes with dav1d itself
+  target_link_libraries(${MODULE_NAME} PRIVATE dav1d)
+endif()
 
 if(WITH_APPLE_VIDEOTOOLBOX)
   target_link_libraries(${MODULE_NAME} PRIVATE ${COREMEDIA_FRAMEWORK} ${COREFOUNDATION_FRAMEWORK})

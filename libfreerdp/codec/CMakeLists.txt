@@ -204,6 +204,24 @@ if(WITH_AV1_VIDEOTOOLBOX)
   message(STATUS "AV1 decoder: VideoToolbox first")
 endif()
 
+# Hardware AV1 decoding on Windows with any GPU (NVIDIA, AMD, Intel): the driver's DXVA AV1
+# decoder through Direct3D 11 video. The headers DXVA needs come from av1_obu.c (dav1d's parser,
+# into dav1d's header structures), and dav1d stays the fallback for the streams the GPU doesn't
+# take.
+cmake_dependent_option(
+  WITH_AV1_D3D11VA "[AV1] decode with Direct3D 11 video acceleration when the GPU can" ON
+  "WITH_GFX_AV1;WIN32;WITH_DAV1D;DAV1D_FOUND" OFF
+)
+if(WITH_AV1_D3D11VA)
+  add_compile_definitions(WITH_AV1_D3D11VA)
+  list(APPEND CODEC_SRCS av1_d3d11va.c av1_d3d11va.h)
+  list(APPEND CODEC_LIBS d3d11 dxgi dxguid)
+  message(STATUS "AV1 decoder: D3D11VA first")
+endif()
+if(WITH_AV1_D3D11VA OR (BUILD_TESTING_INTERNAL AND WITH_GFX_AV1 AND WITH_DAV1D AND DAV1D_FOUND))
+  list(APPEND CODEC_SRCS av1_obu.c av1_obu.h)
+endif()
+
 cmake_dependent_option(WITH_AVM "[AV2] compile with AVM" OFF "WITH_GFX_AV2" OFF)
 cmake_dependent_option(WITH_DAV2D "[AV2] compile with DAV2D" OFF "WITH_GFX_AV2" OFF)
 if(WITH_GFX_AV2)
