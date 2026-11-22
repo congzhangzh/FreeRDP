@@ -52,8 +52,12 @@ class SdlWindow
 	 * Set once, while the command line is parsed, before any window exists. */
 	static void setHiDpi(const sdl::hidpi::Policy& policy);
 	[[nodiscard]] static sdl::hidpi::Setting hiDpiSetting(SDL_DisplayID id);
+	/** @return the setting of a window: the one of the display it was created on, kept when it
+	 * moves (SDL_WINDOW_HIGH_PIXEL_DENSITY is chosen at creation) */
+	[[nodiscard]] static sdl::hidpi::Setting hiDpiSetting(SDL_Window* window);
+	[[nodiscard]] sdl::hidpi::Setting hiDpiSetting() const;
 
-	/** @return the display the window was created on (its /sdl-hidpi setting's) */
+	/** @return the display the window was created on */
 	[[nodiscard]] SDL_DisplayID displayId() const;
 	/** @return the monitor of the layout the window shows (set by setMonitor) */
 	[[nodiscard]] const rdpMonitor& assignedMonitor() const;
