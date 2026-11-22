@@ -576,6 +576,9 @@ bool SdlContext::createWindows()
 		{
 			window.setOffsetX(originX - monitor->x);
 			window.setOffsetY(originY - monitor->y);
+			/* the part of the session the window shows: what scale:N draws it from, not the
+			 * size the window had before it was placed on its display */
+			window.setMonitor(*monitor);
 		}
 
 		_windows.insert({ window.id(), std::move(window) });
