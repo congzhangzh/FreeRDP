@@ -164,6 +164,14 @@ struct S_AV1_MF
 	BOOL streaming;
 	LONGLONG time; /* the next sample's time, 100 ns */
 
+	/* The encoder gives a frame its bits from the nominal frame rate, not from the sample's
+	 * duration: the mean bit rate it is told is scaled by the real frame rate, so a frame gets
+	 * the target bit rate x its duration (frames come on damage, at any rate). */
+	UINT32 kbps;        /* the target */
+	UINT32 meanBitRate; /* what the encoder was told, bit/s */
+	double frameMs;     /* the mean frame duration, moving */
+	BOOL rateFollows;   /* FALSE once the encoder refused a new mean bit rate */
+
 	UINT32 needInput;  /* METransformNeedInput not yet answered */
 	UINT32 haveOutput; /* METransformHaveOutput not yet collected */
 
@@ -275,10 +283,10 @@ static BOOL find_encoder(AV1_MF* enc)
 	return TRUE;
 }
 
-static void set_ui4(AV1_MF* enc, const GUID* key, UINT32 value, const char* what)
+static HRESULT set_ui4(AV1_MF* enc, const GUID* key, UINT32 value, const char* what)
 {
 	if (!enc->codecApi)
-		return;
+		return E_NOINTERFACE;
 	VARIANT var;
 	VariantInit(&var);
 	V_VT(&var) = VT_UI4;
@@ -287,6 +295,7 @@ static void set_ui4(AV1_MF* enc, const GUID* key, UINT32 value, const char* what
 	if (FAILED(hr))
 		WLog_Print(enc->log, WLOG_DEBUG, "Media Foundation: %s %" PRIu32 ": 0x%08" PRIX32, what,
 		           value, (UINT32)hr);
+	return hr;
 }
 
 static BOOL configure(AV1_MF* enc, UINT32 kbps, BOOL cbr)
@@ -369,11 +378,12 @@ static BOOL configure(AV1_MF* enc, UINT32 kbps, BOOL cbr)
 
 	if (SUCCEEDED(IMFTransform_QueryInterface(enc->mft, &sIID_ICodecAPI, (void**)&enc->codecApi)))
 	{
-		set_ui4(enc, &sCODECAPI_AVLowLatencyMode, 1, "AVLowLatencyMode");
-		set_ui4(enc, &sCODECAPI_AVEncCommonRateControlMode,
-		        cbr ? AV1_MF_RC_CBR : AV1_MF_RC_LOW_DELAY_VBR, "AVEncCommonRateControlMode");
-		set_ui4(enc, &sCODECAPI_AVEncCommonMeanBitRate, kbps * 1000u, "AVEncCommonMeanBitRate");
-		set_ui4(enc, &sCODECAPI_AVEncMPVGOPSize, AV1_MF_GOP, "AVEncMPVGOPSize");
+		(void)set_ui4(enc, &sCODECAPI_AVLowLatencyMode, 1, "AVLowLatencyMode");
+		(void)set_ui4(enc, &sCODECAPI_AVEncCommonRateControlMode,
+		              cbr ? AV1_MF_RC_CBR : AV1_MF_RC_LOW_DELAY_VBR, "AVEncCommonRateControlMode");
+		(void)set_ui4(enc, &sCODECAPI_AVEncCommonMeanBitRate, kbps * 1000u,
+		              "AVEncCommonMeanBitRate");
+		(void)set_ui4(enc, &sCODECAPI_AVEncMPVGOPSize, AV1_MF_GOP, "AVEncMPVGOPSize");
 	}
 
 	MFT_OUTPUT_STREAM_INFO info = WINPR_C_ARRAY_INIT;
@@ -400,6 +410,10 @@ AV1_MF* av1_mf_new(wLog* log, UINT32 width, UINT32 height, UINT32 kbps, BOOL cbr
 	enc->log = log;
 	enc->width = width;
 	enc->height = height;
+	enc->kbps = kbps;
+	enc->meanBitRate = kbps * 1000u;
+	enc->frameMs = 1000.0 / AV1_MF_FRAME_RATE;
+	enc->rateFollows = TRUE;
 	if (!load(enc) || !find_encoder(enc) || !configure(enc, kbps, cbr))
 	{
 		av1_mf_free(enc);
@@ -637,6 +651,32 @@ fail:
 	return rc;
 }
 
+/* the mean bit rate for the real frame rate: target x nominal rate x mean frame duration */
+static void follow_frame_rate(AV1_MF* enc, UINT32 durationMs)
+{
+	if (!enc->rateFollows || (durationMs == 0))
+		return;
+	enc->frameMs += (durationMs - enc->frameMs) / 8.0; /* about the last 8 frames */
+	const double want = enc->kbps * 1000.0 * AV1_MF_FRAME_RATE * enc->frameMs / 1000.0;
+	if ((want < 1000.0) || (want > (double)UINT32_MAX))
+		return;
+	const double now = enc->meanBitRate;
+	if ((want > now * 0.95) && (want < now * 1.05))
+		return;
+	const HRESULT hr =
+	    set_ui4(enc, &sCODECAPI_AVEncCommonMeanBitRate, (UINT32)want, "AVEncCommonMeanBitRate");
+	if (SUCCEEDED(hr))
+	{
+		enc->meanBitRate = (UINT32)want;
+		return;
+	}
+	enc->rateFollows = FALSE;
+	WLog_Print(enc->log, WLOG_WARN,
+	           "%s takes no new mean bit rate (0x%08" PRIX32 "): at %.0f fps it gets the bit "
+	           "rate of %d fps",
+	           enc->name, (UINT32)hr, 1000.0 / enc->frameMs, AV1_MF_FRAME_RATE);
+}
+
 INT32 av1_mf_encode(AV1_MF* enc, const BYTE* const planes[3], const UINT32 strides[3],
                     UINT32 durationMs, BOOL keyFrame, const BYTE** ppData, UINT32* pSize)
 {
@@ -653,7 +693,8 @@ INT32 av1_mf_encode(AV1_MF* enc, const BYTE* const planes[3], const UINT32 strid
 			return -1;
 	}
 	if (keyFrame)
-		set_ui4(enc, &sCODECAPI_AVEncVideoForceKeyFrame, 1, "AVEncVideoForceKeyFrame");
+		(void)set_ui4(enc, &sCODECAPI_AVEncVideoForceKeyFrame, 1, "AVEncVideoForceKeyFrame");
+	follow_frame_rate(enc, durationMs);
 	if (!feed(enc, planes, strides, durationMs))
 		return -2;
 
