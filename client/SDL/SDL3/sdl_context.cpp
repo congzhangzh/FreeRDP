@@ -99,15 +99,16 @@ SdlContext::SdlContext(rdpContext* context)
 	    { sdl_hidpi, COMMAND_LINE_VALUE_REQUIRED,
 	      "points|pixels|scale:<N>[,<id>:points|pixels|scale:<N>...]", "points", nullptr, -1,
 	      nullptr,
-	      "On a display with more pixels than points (a Retina Mac): points asks the "
-	      "server for each window's size in points at the display's own scale and lets "
-	      "the system scale the picture, a quarter of the pixels at 2x (default); pixels "
-	      "asks for every pixel at the scale times the density. Each display by its own "
-	      "density; one with a pixel per point is the same in both. <id>:<mode> gives a "
-	      "display (its id in /monitor-list) a mode of its own. A window keeps the mode of the "
-	      "display it was created on. Windows and X11 scale with one pixel per point, so there "
-	      "points and pixels are the same. scale:<N> (50 to 400) asks for the points times "
-	      "N/100 at scale 100 and draws that session scaled to the window, e.g. scale:150" });
+	      "How a window on a display with more pixels than points (a Retina Mac, a 2x "
+	      "Wayland output) asks the server for its session. points (default): the window's "
+	      "size in points at the display's own scale, which the system scales up (a quarter "
+	      "of the pixels at 2x). pixels: every pixel, at the scale times the density (the "
+	      "behaviour before this option). scale:<N> (50 to 400): the points times N/100 at "
+	      "scale 100, which the client draws scaled to fit the window (e.g. scale:150). "
+	      "<id>:<setting> gives the display of that /monitor-list id a setting of its own, "
+	      "e.g. points,2:scale:150. A window keeps the setting of the display it was created "
+	      "on when it moves. Where a window has one pixel per point (Windows, X11), points "
+	      "and pixels are the same." });
 
 	/* Push a null element used as abort when iterating the array */
 	_args.push_back({ nullptr, 0, nullptr, nullptr, nullptr, -1, nullptr, nullptr });
@@ -679,8 +680,11 @@ bool SdlContext::updateWindow(SDL_WindowID id)
 	auto r = w.rect();
 	m.width = r.w;
 	m.height = r.h;
-	/* The window may be on another display than the one it was created on. */
-	m.attributes.desktopScaleFactor = static_cast<UINT32>(std::roundf(w.scale() * 100.0f));
+	/* The window may be on another display than the one it was created on; scale:N asks for
+	 * scale 100 on any display */
+	const bool scaled = (w.hiDpiSetting().mode == sdl::hidpi::Mode::Scale);
+	m.attributes.desktopScaleFactor =
+	    scaled ? 100 : static_cast<UINT32>(std::roundf(w.scale() * 100.0f));
 	w.setMonitor(m);
 	return true;
 }
@@ -1130,15 +1134,16 @@ bool SdlContext::updateOverlay()
 		return true;
 	/* the mode and the density of the window's display, for the overlay */
 	float density = 1.0f;
-	SDL_DisplayID display = 0;
+	sdl::hidpi::Setting setting;
 	if (window)
 	{
-		display = SDL_GetDisplayForWindow(window->window());
+		const auto display = SDL_GetDisplayForWindow(window->window());
 		const auto* mode = SDL_GetCurrentDisplayMode(display);
 		if (mode && (mode->pixel_density > 0.0f))
 			density = mode->pixel_density;
+		setting = window->hiDpiSetting();
 	}
-	const auto hidpi = sdl::hidpi::overlayText(SdlWindow::hiDpiSetting(display), density);
+	const auto hidpi = sdl::hidpi::overlayText(setting, density);
 	if (_overlay.update(w, h, window ? window->rendererName() : nullptr, hidpi) && window)
 		window->updateSurface(&_overlay);
 	return true;
@@ -1957,7 +1962,7 @@ sdl::hidpi::Mapping SdlContext::mapping(const SdlWindow& window) const
 		m.offsetX = window.offsetX();
 		m.offsetY = window.offsetY();
 	}
-	if (SdlWindow::hiDpiSetting(window.displayId()).mode != sdl::hidpi::Mode::Scale)
+	if (window.hiDpiSetting().mode != sdl::hidpi::Mode::Scale)
 		return m;
 
 	/* scale:N: the window's pixels per session pixel of what it shows */
