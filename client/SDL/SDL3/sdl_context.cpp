@@ -21,6 +21,7 @@
 #include <array>
 #include <cmath>
 #include <cfloat>
+#include <tuple>
 
 #include "sdl_context.hpp"
 #include "sdl_config.hpp"
@@ -1343,8 +1344,8 @@ bool SdlContext::handleEvent(const SDL_MouseMotionEvent& ev)
 		return true; /* Event for an untracked window (e.g. closed dialog) */
 	if (!eventToPixelCoordinates(ev.windowID, copy))
 		return true;
-	removeLocalScaling(copy.motion.x, copy.motion.y);
-	removeLocalScaling(copy.motion.xrel, copy.motion.yrel);
+	removeScaling(ev.windowID, copy.motion.x, copy.motion.y);
+	removeScaling(ev.windowID, copy.motion.xrel, copy.motion.yrel);
 	applyMonitorOffset(copy.motion.windowID, copy.motion.x, copy.motion.y);
 
 	return SdlTouch::handleEvent(this, copy.motion);
@@ -1362,7 +1363,7 @@ bool SdlContext::handleEvent(const SDL_MouseWheelEvent& ev)
 		return true;
 	if (!eventToPixelCoordinates(ev.windowID, copy))
 		return true;
-	removeLocalScaling(copy.wheel.mouse_x, copy.wheel.mouse_y);
+	removeScaling(ev.windowID, copy.wheel.mouse_x, copy.wheel.mouse_y);
 	return SdlTouch::handleEvent(this, copy.wheel);
 }
 
@@ -1584,7 +1585,7 @@ bool SdlContext::handleEvent(const SDL_MouseButtonEvent& ev)
 		return true;
 	if (!eventToPixelCoordinates(ev.windowID, copy))
 		return true;
-	removeLocalScaling(copy.button.x, copy.button.y);
+	removeScaling(ev.windowID, copy.button.x, copy.button.y);
 	applyMonitorOffset(copy.button.windowID, copy.button.x, copy.button.y);
 	return SdlTouch::handleEvent(this, copy.button);
 }
@@ -1597,8 +1598,8 @@ bool SdlContext::handleEvent(const SDL_TouchFingerEvent& ev)
 	copy.tfinger = ev;
 	if (!eventToPixelCoordinates(ev.windowID, copy))
 		return true;
-	removeLocalScaling(copy.tfinger.dx, copy.tfinger.dy);
-	removeLocalScaling(copy.tfinger.x, copy.tfinger.y);
+	removeScaling(ev.windowID, copy.tfinger.dx, copy.tfinger.dy);
+	removeScaling(ev.windowID, copy.tfinger.x, copy.tfinger.y);
 	applyMonitorOffset(copy.tfinger.windowID, copy.tfinger.x, copy.tfinger.y);
 	return SdlTouch::handleEvent(this, copy.tfinger);
 }
@@ -1692,6 +1693,24 @@ void SdlContext::removeLocalScaling(float& x, float& y) const
 		return;
 	x /= _localScale.x;
 	y /= _localScale.y;
+}
+
+void SdlContext::removeScaling(SDL_WindowID id, float& x, float& y) const
+{
+	if (useLocalScale())
+	{
+		removeLocalScaling(x, y);
+		return;
+	}
+	/* scale:N: window pixels to session pixels; the monitor offset follows in
+	 * applyMonitorOffset() */
+	const auto w = getWindowForId(id);
+	if (!w)
+		return;
+	auto m = mapping(*w);
+	m.offsetX = 0;
+	m.offsetY = 0;
+	std::tie(x, y) = sdl::hidpi::toSession(x, y, m);
 }
 
 SDL_FPoint SdlContext::screenToPixel(SDL_WindowID id, const SDL_FPoint& pos)
