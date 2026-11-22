@@ -117,12 +117,16 @@ static const GUID sCODECAPI_AVEncCommonMeanBitRate = {
 static const GUID sCODECAPI_AVEncMPVGOPSize = {
 	0x95f31b26, 0x95a4, 0x41aa, { 0x93, 0x03, 0x24, 0x6a, 0x7f, 0xc6, 0xee, 0xf1 }
 };
+static const GUID sCODECAPI_AVEncCommonQuality = {
+	0xfcbf57a3, 0x7ea5, 0x4b0c, { 0x96, 0x44, 0x69, 0xb4, 0x0c, 0x39, 0xc3, 0x91 }
+};
 static const GUID sCODECAPI_AVEncVideoForceKeyFrame = {
 	0x398c1b98, 0x8353, 0x475a, { 0x9e, 0xf2, 0x8f, 0x26, 0x5d, 0x26, 0x03, 0x45 }
 };
 
 /* values from codecapi.h and mfobjects.h */
 #define AV1_MF_RC_CBR 0           /* eAVEncCommonRateControlMode_CBR */
+#define AV1_MF_RC_QUALITY 3       /* eAVEncCommonRateControlMode_Quality */
 #define AV1_MF_RC_LOW_DELAY_VBR 4 /* eAVEncCommonRateControlMode_LowDelayVBR */
 #define AV1_MF_INTERLACE_PROGRESSIVE 2
 #define AV1_MF_GOP 100000      /* key frames when asked for, not by count */
@@ -317,7 +321,7 @@ static HRESULT set_ui4(AV1_MF* enc, const GUID* key, UINT32 value, const char* w
 	return hr;
 }
 
-static BOOL configure(AV1_MF* enc, UINT32 kbps, BOOL cbr)
+static BOOL configure(AV1_MF* enc, UINT32 kbps, AV1_MF_RATE rate, UINT32 quality)
 {
 	HRESULT hr = IMFActivate_ActivateObject(enc->activate, &sIID_IMFTransform, (void**)&enc->mft);
 	if (FAILED(hr))
@@ -343,17 +347,48 @@ static BOOL configure(AV1_MF* enc, UINT32 kbps, BOOL cbr)
 		return FALSE;
 	}
 
+	/* The encoder settings before the media types: the NVIDIA AV1 Encoder MFT (driver
+	 * 32.0.15.9613) takes them only then. Set after them they return S_OK and are ignored: a key
+	 * frame every 30 frames whatever the GOP size, and the quality mode encodes like CBR. */
+	if (SUCCEEDED(IMFTransform_QueryInterface(enc->mft, &sIID_ICodecAPI, (void**)&enc->codecApi)))
+	{
+		(void)set_ui4(enc, &sCODECAPI_AVLowLatencyMode, 1, "AVLowLatencyMode");
+		switch (rate)
+		{
+			case AV1_MF_QUALITY:
+				(void)set_ui4(enc, &sCODECAPI_AVEncCommonRateControlMode, AV1_MF_RC_QUALITY,
+				              "AVEncCommonRateControlMode");
+				(void)set_ui4(enc, &sCODECAPI_AVEncCommonQuality, quality, "AVEncCommonQuality");
+				break;
+			case AV1_MF_VBR:
+				(void)set_ui4(enc, &sCODECAPI_AVEncCommonRateControlMode, AV1_MF_RC_LOW_DELAY_VBR,
+				              "AVEncCommonRateControlMode");
+				(void)set_ui4(enc, &sCODECAPI_AVEncCommonMeanBitRate, kbps * 1000u,
+				              "AVEncCommonMeanBitRate");
+				break;
+			case AV1_MF_CBR:
+			default:
+				(void)set_ui4(enc, &sCODECAPI_AVEncCommonRateControlMode, AV1_MF_RC_CBR,
+				              "AVEncCommonRateControlMode");
+				(void)set_ui4(enc, &sCODECAPI_AVEncCommonMeanBitRate, kbps * 1000u,
+				              "AVEncCommonMeanBitRate");
+				break;
+		}
+		(void)set_ui4(enc, &sCODECAPI_AVEncMPVGOPSize, AV1_MF_GOP, "AVEncMPVGOPSize");
+	}
+
 	/* the output type first, then the input */
 	IMFMediaType* type = nullptr;
 	if (FAILED(enc->MFCreateMediaType(&type)))
 		return FALSE;
 	const UINT64 size = ((UINT64)enc->width << 32) | enc->height;
-	const UINT64 rate = ((UINT64)AV1_MF_FRAME_RATE << 32) | 1;
+	const UINT64 frameRate = ((UINT64)AV1_MF_FRAME_RATE << 32) | 1;
 	(void)IMFMediaType_SetGUID(type, &sMF_MT_MAJOR_TYPE, &sMFMediaType_Video);
 	(void)IMFMediaType_SetGUID(type, &sMF_MT_SUBTYPE, &sMFVideoFormat_AV1);
-	(void)IMFMediaType_SetUINT32(type, &sMF_MT_AVG_BITRATE, kbps * 1000u);
+	if (kbps > 0)
+		(void)IMFMediaType_SetUINT32(type, &sMF_MT_AVG_BITRATE, kbps * 1000u);
 	(void)IMFMediaType_SetUINT64(type, &sMF_MT_FRAME_SIZE, size);
-	(void)IMFMediaType_SetUINT64(type, &sMF_MT_FRAME_RATE, rate);
+	(void)IMFMediaType_SetUINT64(type, &sMF_MT_FRAME_RATE, frameRate);
 	(void)IMFMediaType_SetUINT64(type, &sMF_MT_PIXEL_ASPECT_RATIO, ((UINT64)1 << 32) | 1);
 	(void)IMFMediaType_SetUINT32(type, &sMF_MT_INTERLACE_MODE, AV1_MF_INTERLACE_PROGRESSIVE);
 	hr = IMFTransform_SetOutputType(enc->mft, 0, type, 0);
@@ -383,7 +418,7 @@ static BOOL configure(AV1_MF* enc, UINT32 kbps, BOOL cbr)
 		return FALSE;
 	}
 	(void)IMFMediaType_SetUINT64(type, &sMF_MT_FRAME_SIZE, size);
-	(void)IMFMediaType_SetUINT64(type, &sMF_MT_FRAME_RATE, rate);
+	(void)IMFMediaType_SetUINT64(type, &sMF_MT_FRAME_RATE, frameRate);
 	(void)IMFMediaType_SetUINT32(type, &sMF_MT_DEFAULT_STRIDE, enc->width);
 	(void)IMFMediaType_SetUINT32(type, &sMF_MT_INTERLACE_MODE, AV1_MF_INTERLACE_PROGRESSIVE);
 	hr = IMFTransform_SetInputType(enc->mft, 0, type, 0);
@@ -393,16 +428,6 @@ static BOOL configure(AV1_MF* enc, UINT32 kbps, BOOL cbr)
 		WLog_Print(enc->log, WLOG_WARN, "%s: SetInputType NV12: 0x%08" PRIX32, enc->name,
 		           (UINT32)hr);
 		return FALSE;
-	}
-
-	if (SUCCEEDED(IMFTransform_QueryInterface(enc->mft, &sIID_ICodecAPI, (void**)&enc->codecApi)))
-	{
-		(void)set_ui4(enc, &sCODECAPI_AVLowLatencyMode, 1, "AVLowLatencyMode");
-		(void)set_ui4(enc, &sCODECAPI_AVEncCommonRateControlMode,
-		              cbr ? AV1_MF_RC_CBR : AV1_MF_RC_LOW_DELAY_VBR, "AVEncCommonRateControlMode");
-		(void)set_ui4(enc, &sCODECAPI_AVEncCommonMeanBitRate, kbps * 1000u,
-		              "AVEncCommonMeanBitRate");
-		(void)set_ui4(enc, &sCODECAPI_AVEncMPVGOPSize, AV1_MF_GOP, "AVEncMPVGOPSize");
 	}
 
 	MFT_OUTPUT_STREAM_INFO info = WINPR_C_ARRAY_INIT;
@@ -453,9 +478,11 @@ INT32 av1_mf_device(const AV1_MF* enc)
 	return enc ? enc->id : -1;
 }
 
-AV1_MF* av1_mf_new(wLog* log, UINT32 width, UINT32 height, UINT32 kbps, BOOL cbr, INT32 device)
+AV1_MF* av1_mf_new(wLog* log, UINT32 width, UINT32 height, AV1_MF_RATE rate, UINT32 kbps,
+                   UINT32 quality, INT32 device)
 {
-	if ((width == 0) || (height == 0) || (width % 2) || (height % 2) || (kbps == 0))
+	if ((width == 0) || (height == 0) || (width % 2) || (height % 2) ||
+	    ((rate != AV1_MF_QUALITY) && (kbps == 0)) || (quality > 100))
 		return nullptr;
 	AV1_MF* enc = calloc(1, sizeof(AV1_MF));
 	if (!enc)
@@ -466,8 +493,9 @@ AV1_MF* av1_mf_new(wLog* log, UINT32 width, UINT32 height, UINT32 kbps, BOOL cbr
 	enc->kbps = kbps;
 	enc->meanBitRate = kbps * 1000u;
 	enc->frameMs = 1000.0 / AV1_MF_FRAME_RATE;
-	enc->rateFollows = TRUE;
-	if (!load(enc) || !find_encoder(enc, device) || !configure(enc, kbps, cbr))
+	/* the quality mode has no bit rate to follow */
+	enc->rateFollows = (rate != AV1_MF_QUALITY);
+	if (!load(enc) || !find_encoder(enc, device) || !configure(enc, kbps, rate, quality))
 	{
 		av1_mf_free(enc);
 		return nullptr;

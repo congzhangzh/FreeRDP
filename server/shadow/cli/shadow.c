@@ -167,7 +167,8 @@ int main(int argc, char** argv)
 		  nullptr, -1, nullptr,
 		  "Which video encoder goes first (AV1 4:2:0), as the client's /codec-first: hardware, "
 		  "the default: the GPU's when one takes the stream (the devices <id> of /codec-list in "
-		  "this order, or any), libaom as fallback; software: libaom" },
+		  "this order, or any), libaom as fallback; software: libaom. The GPU keeps /codec's "
+		  "rate control, cq and q as its quality 100 - cq-level x 100 / 63" },
 		{ "codec-list", COMMAND_LINE_VALUE_FLAG, nullptr, nullptr, nullptr, -1, nullptr,
 		  "List this machine's hardware video encoders with the ids of /codec-first and exit" },
 #endif

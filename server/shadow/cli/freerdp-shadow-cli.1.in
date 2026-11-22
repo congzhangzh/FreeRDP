@@ -82,7 +82,9 @@ command line wins over it, and a wrong value there is logged and ignored.
 Which video encoder goes first (AV1 4:2:0), the same option as the client's (which picks the
 decoder): hardware, the default, encodes on the GPU when one takes the stream: the devices <id>
 of /codec-list in this order, or any; libaom takes over when none does or when it fails.
-software encodes with libaom. E.g. /codec-first:hardware:1,0.
+software encodes with libaom. E.g. /codec-first:hardware:1,0. The GPU's encoder (Windows: Media
+Foundation) keeps the rate control of /codec: cbr and vbr at the bit rate, cq and q at its quality
+100 - cq-level x 100 / 63 (the default cq-level 16: quality 75).
 .IP /codec-list
 List this machine's hardware video encoders, one per line with the id of /codec-first, e.g.
 "0 Media Foundation NVIDIA AV1 Encoder MFT (AV1 4:2:0 encode)", and exit.

@@ -32,11 +32,18 @@ typedef struct S_AV1_MF AV1_MF;
  * @p names. @return how many there are, at most @p max */
 size_t av1_mf_list(char names[][256], size_t max);
 
-/** @param cbr TRUE: constant bit rate, FALSE: a low delay variable one
- *  @param device an id of av1_mf_list(), < 0: the first
+typedef enum
+{
+	AV1_MF_CBR,    /**< constant bit rate, kbps */
+	AV1_MF_VBR,    /**< a low delay variable bit rate around kbps */
+	AV1_MF_QUALITY /**< constant quality: quality, 0 (lowest) to 100 */
+} AV1_MF_RATE;
+
+/** @param device an id of av1_mf_list(), < 0: the first
  *  @return the encoder, or nullptr when there is no such hardware AV1 encoder or it refuses
  *          this size or rate (the reason is logged) */
-AV1_MF* av1_mf_new(wLog* log, UINT32 width, UINT32 height, UINT32 kbps, BOOL cbr, INT32 device);
+AV1_MF* av1_mf_new(wLog* log, UINT32 width, UINT32 height, AV1_MF_RATE rate, UINT32 kbps,
+                   UINT32 quality, INT32 device);
 
 /** The encoder's device id (of av1_mf_list()). */
 INT32 av1_mf_device(const AV1_MF* enc);

@@ -490,28 +490,50 @@ static void av1_mf_start(FREERDP_AV1_CONTEXT* av1, UINT32 width, UINT32 height)
 	av1->mf = nullptr;
 
 	const char* why = nullptr;
+	UINT32 quality = 0;
 	if (av1->backend == FREERDP_AV1_BACKEND_SOFTWARE)
 		why = "/codec-first:software";
 	else if (av1->ecfg.g_profile != 0)
 		why = "4:4:4";
-	else if ((av1->ecfg.rc_end_usage != AOM_CBR) && (av1->ecfg.rc_end_usage != AOM_VBR))
-		why = "a quality rate control mode";
 	else
 	{
+		/* CBR and VBR at the bit rate; CQ and Q at the encoder's quality, 100 - cq-level x
+		 * 100 / 63 (the shadow's default cq-level 16: 75; 0, libaom's own, counts as its 10) */
+		AV1_MF_RATE rate = AV1_MF_QUALITY;
+		if (av1->ecfg.rc_end_usage == AOM_CBR)
+			rate = AV1_MF_CBR;
+		else if (av1->ecfg.rc_end_usage == AOM_VBR)
+			rate = AV1_MF_VBR;
+		if (rate == AV1_MF_QUALITY)
+		{
+			const UINT32 cq = (av1->cqLevel > 0) ? av1->cqLevel : 10;
+			quality = 100u - ((cq * 100u + 31u) / 63u);
+			if (quality < 1)
+				quality = 1;
+		}
+
 		/* the devices of /codec-first in order, or the first that takes it */
 		const size_t tries = av1->nDevices ? av1->nDevices : 1;
 		for (size_t x = 0; (x < tries) && !av1->mf; x++)
-			av1->mf =
-			    av1_mf_new(av1->log, width, height, av1->ecfg.rc_target_bitrate,
-			               av1->ecfg.rc_end_usage == AOM_CBR, av1->nDevices ? av1->devices[x] : -1);
+			av1->mf = av1_mf_new(av1->log, width, height, rate, av1->ecfg.rc_target_bitrate,
+			                     quality, av1->nDevices ? av1->devices[x] : -1);
 		if (!av1->mf)
 			why = av1->nDevices ? "no device of /codec-first takes it"
 			                    : "no hardware AV1 encoder takes it";
 	}
 	if (av1->mf)
-		WLog_Print(av1->log, WLOG_INFO,
-		           "AV1 encoder: Media Foundation %" PRId32 " %s (hardware), libaom as fallback",
-		           av1_mf_device(av1->mf), av1_mf_name(av1->mf));
+	{
+		if (quality > 0)
+			WLog_Print(av1->log, WLOG_INFO,
+			           "AV1 encoder: Media Foundation %" PRId32 " %s (hardware, quality %" PRIu32
+			           " for cq-level %" PRIu32 "), libaom as fallback",
+			           av1_mf_device(av1->mf), av1_mf_name(av1->mf), quality, av1->cqLevel);
+		else
+			WLog_Print(av1->log, WLOG_INFO,
+			           "AV1 encoder: Media Foundation %" PRId32 " %s (hardware, %" PRIu32
+			           " kbit/s), libaom as fallback",
+			           av1_mf_device(av1->mf), av1_mf_name(av1->mf), av1->ecfg.rc_target_bitrate);
+	}
 	else
 		WLog_Print(av1->log, WLOG_INFO, "AV1 encoder: libaom (software; %s)", why);
 }
