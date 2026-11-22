@@ -48,6 +48,9 @@
 #include <freerdp/channels/rdp2tcp.h>
 #include <freerdp/channels/remdesk.h>
 #include <freerdp/channels/rdpsnd.h>
+#if defined(WITH_GFX_AV1)
+#include <freerdp/codec/av1.h>
+#endif
 #include <freerdp/channels/disp.h>
 #include <freerdp/crypto/crypto.h>
 #include <freerdp/locale/keyboard.h>
@@ -2015,6 +2018,21 @@ static int evaluate_result(int argc, char* argv[], int rc, rdpSettings* settings
 			return COMMAND_LINE_ERROR;
 		}
 	}
+#if defined(WITH_GFX_AV1)
+	arg = CommandLineFindArgumentA(largs, "codec-list");
+	if (arg && (arg->Flags & COMMAND_LINE_ARGUMENT_PRESENT))
+	{
+		size_t count = 0;
+		char** list = freerdp_av1_hardware_list(FALSE, &count);
+		if (!list)
+			return COMMAND_LINE_ERROR;
+		if (count == 0)
+			printf("no hardware video decoder\n");
+		for (size_t x = 0; x < count; x++)
+			printf("%s\n", list[x]);
+		freerdp_av1_hardware_list_free(list, count);
+	}
+#endif
 #if defined(WITH_FREERDP_DEPRECATED_COMMANDLINE)
 	arg = CommandLineFindArgumentA(largs, "tune-list");
 	WINPR_ASSERT(arg);
@@ -2939,6 +2957,7 @@ static int parse_kbd_layout(rdpSettings* settings, const char* value)
 }
 
 #if defined(WITH_FREERDP_DEPRECATED_COMMANDLINE)
+
 static int parse_codec_cache_options(rdpSettings* settings, const COMMAND_LINE_ARGUMENT_A* arg)
 {
 	WINPR_ASSERT(settings);
@@ -5779,6 +5798,19 @@ static int parse_command_line(rdpSettings* settings, const COMMAND_LINE_ARGUMENT
 		{
 			/* applied before the other options: see prepare_default_settings */
 		}
+#if defined(WITH_GFX_AV1)
+		CommandLineSwitchCase(arg, "codec-first")
+		{
+			if (!freerdp_codec_first_valid(arg->Value))
+				return fail_at(arg, COMMAND_LINE_ERROR_UNEXPECTED_VALUE);
+			if (!freerdp_settings_set_string(settings, FreeRDP_GfxCodecFirst, arg->Value))
+				return fail_at(arg, COMMAND_LINE_ERROR);
+		}
+		CommandLineSwitchCase(arg, "codec-list")
+		{
+			/* printed with the other lists, see evaluate_result */
+		}
+#endif
 		CommandLineSwitchCase(arg, "rfx-mode")
 		{
 			if (!arg->Value)

@@ -429,6 +429,7 @@ static const size_t string_list_indices[] = {
 	FreeRDP_GatewayPassword,
 	FreeRDP_GatewayUrl,
 	FreeRDP_GatewayUsername,
+	FreeRDP_GfxCodecFirst,
 	FreeRDP_HomePath,
 	FreeRDP_ImeFileName,
 	FreeRDP_KerberosArmor,

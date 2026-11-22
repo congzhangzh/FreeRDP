@@ -143,6 +143,7 @@ struct S_AV1_MF
 {
 	wLog* log;
 	char name[256];
+	INT32 id; /* the device's id in av1_mf_list() */
 	UINT32 width;
 	UINT32 height;
 
@@ -248,7 +249,24 @@ static BOOL load(AV1_MF* enc)
 }
 
 /* the first hardware encoder MFT with AV1 output */
-static BOOL find_encoder(AV1_MF* enc)
+/* the friendly name of an encoder MFT, UTF-8 */
+static void encoder_name(IMFActivate* act, char* buf, size_t size)
+{
+	WCHAR* name = nullptr;
+	UINT32 len = 0;
+	buf[0] = '\0';
+	if (SUCCEEDED(IMFActivate_GetAllocatedString(act, &sMFT_FRIENDLY_NAME_Attribute, &name, &len)))
+	{
+		if (WideCharToMultiByte(CP_UTF8, 0, name, -1, buf, (int)size, nullptr, nullptr) <= 0)
+			buf[0] = '\0';
+		CoTaskMemFree(name);
+	}
+	if (!buf[0])
+		(void)_snprintf(buf, size, "hardware AV1 encoder MFT");
+}
+
+/* the device @p device (an id of av1_mf_list(), < 0: the first) */
+static BOOL find_encoder(AV1_MF* enc, INT32 device)
 {
 	MFT_REGISTER_TYPE_INFO outInfo = { sMFMediaType_Video, sMFVideoFormat_AV1 };
 	IMFActivate** acts = nullptr;
@@ -263,23 +281,24 @@ static BOOL find_encoder(AV1_MF* enc)
 		CoTaskMemFree(acts);
 		return FALSE;
 	}
-	enc->activate = acts[0];
-	for (UINT32 i = 1; i < count; i++)
-		IMFActivate_Release(acts[i]);
-	CoTaskMemFree(acts);
-
-	WCHAR* name = nullptr;
-	UINT32 len = 0;
-	if (SUCCEEDED(IMFActivate_GetAllocatedString(enc->activate, &sMFT_FRIENDLY_NAME_Attribute,
-	                                             &name, &len)))
+	const UINT32 pick = (device < 0) ? 0 : (UINT32)device;
+	for (UINT32 i = 0; i < count; i++)
 	{
-		if (WideCharToMultiByte(CP_UTF8, 0, name, -1, enc->name, sizeof(enc->name), nullptr,
-		                        nullptr) <= 0)
-			enc->name[0] = '\0';
-		CoTaskMemFree(name);
+		if (i == pick)
+			enc->activate = acts[i];
+		else
+			IMFActivate_Release(acts[i]);
 	}
-	if (!enc->name[0])
-		(void)_snprintf(enc->name, sizeof(enc->name), "hardware AV1 encoder MFT");
+	CoTaskMemFree(acts);
+	if (!enc->activate)
+	{
+		WLog_Print(enc->log, WLOG_DEBUG, "Media Foundation: no hardware AV1 encoder %" PRId32,
+		           device);
+		return FALSE;
+	}
+	enc->id = (INT32)pick;
+
+	encoder_name(enc->activate, enc->name, sizeof(enc->name));
 	return TRUE;
 }
 
@@ -400,7 +419,41 @@ static BOOL configure(AV1_MF* enc, UINT32 kbps, BOOL cbr)
 	return TRUE;
 }
 
-AV1_MF* av1_mf_new(wLog* log, UINT32 width, UINT32 height, UINT32 kbps, BOOL cbr)
+size_t av1_mf_list(char names[][256], size_t max)
+{
+	AV1_MF probe = WINPR_C_ARRAY_INIT;
+	size_t n = 0;
+	if (load(&probe))
+	{
+		MFT_REGISTER_TYPE_INFO outInfo = { sMFMediaType_Video, sMFVideoFormat_AV1 };
+		IMFActivate** acts = nullptr;
+		UINT32 count = 0;
+		if (SUCCEEDED(probe.MFTEnumEx(sMFT_CATEGORY_VIDEO_ENCODER,
+		                              MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER, nullptr,
+		                              &outInfo, &acts, &count)))
+		{
+			for (UINT32 i = 0; i < count; i++)
+			{
+				if (n < max)
+					encoder_name(acts[i], names[n++], 256);
+				IMFActivate_Release(acts[i]);
+			}
+			CoTaskMemFree(acts);
+		}
+	}
+	if (probe.started)
+		(void)probe.MFShutdown();
+	if (probe.mfplat)
+		FreeLibrary(probe.mfplat);
+	return n;
+}
+
+INT32 av1_mf_device(const AV1_MF* enc)
+{
+	return enc ? enc->id : -1;
+}
+
+AV1_MF* av1_mf_new(wLog* log, UINT32 width, UINT32 height, UINT32 kbps, BOOL cbr, INT32 device)
 {
 	if ((width == 0) || (height == 0) || (width % 2) || (height % 2) || (kbps == 0))
 		return nullptr;
@@ -414,7 +467,7 @@ AV1_MF* av1_mf_new(wLog* log, UINT32 width, UINT32 height, UINT32 kbps, BOOL cbr
 	enc->meanBitRate = kbps * 1000u;
 	enc->frameMs = 1000.0 / AV1_MF_FRAME_RATE;
 	enc->rateFollows = TRUE;
-	if (!load(enc) || !find_encoder(enc) || !configure(enc, kbps, cbr))
+	if (!load(enc) || !find_encoder(enc, device) || !configure(enc, kbps, cbr))
 	{
 		av1_mf_free(enc);
 		return nullptr;

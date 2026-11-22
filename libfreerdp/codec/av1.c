@@ -18,6 +18,10 @@
  * limitations under the License.
  */
 
+#include <errno.h>
+#include <stdlib.h>
+
+#include <winpr/string.h>
 #include <winpr/sysinfo.h>
 
 #include <freerdp/codec/av1.h>
@@ -71,6 +75,11 @@ struct S_FREERDP_AV1_CONTEXT
 	wLog* log;
 	bool encoder;
 	bool initialized;
+	UINT32 backend; /* FREERDP_AV1_BACKEND_*, from the next reset on */
+	/* the hardware devices of /codec-first, in order; none: the first that takes the stream */
+	INT32 devices[FREERDP_CODEC_FIRST_MAX_DEVICES];
+	size_t nDevices;
+	bool backendLogged; /* the decoder said which one it uses */
 #if defined(WITH_LIBAOM)
 	aom_codec_ctx_t ctx;
 	aom_codec_enc_cfg_t ecfg;
@@ -288,6 +297,19 @@ static BOOL av1_aom_damage(const FREERDP_AV1_CONTEXT* av1, const RECTANGLE_16* r
 BOOL freerdp_av1_context_set_option(FREERDP_AV1_CONTEXT* av1, FREERDP_AV1_CONTEXT_OPTION option,
                                     UINT32 value)
 {
+	/* for both sides, a decoder without libaom too */
+	if (option == FREERDP_AV1_CONTEXT_OPTION_BACKEND)
+	{
+		if ((value != FREERDP_AV1_BACKEND_HARDWARE) && (value != FREERDP_AV1_BACKEND_SOFTWARE))
+		{
+			WLog_Print(av1->log, WLOG_WARN,
+			           "Unknown FREERDP_AV1_CONTEXT_OPTION_BACKEND value [0x%08" PRIx32 "]", value);
+			return FALSE;
+		}
+		av1->backend = value;
+		return TRUE;
+	}
+
 #if defined(WITH_LIBAOM)
 	switch (option)
 	{
@@ -366,6 +388,9 @@ BOOL freerdp_av1_context_set_option(FREERDP_AV1_CONTEXT* av1, FREERDP_AV1_CONTEX
 
 UINT32 freerdp_av1_context_get_option(FREERDP_AV1_CONTEXT* av1, FREERDP_AV1_CONTEXT_OPTION option)
 {
+	if (option == FREERDP_AV1_CONTEXT_OPTION_BACKEND)
+		return av1->backend;
+
 #if defined(WITH_LIBAOM)
 	switch (option)
 	{
@@ -458,32 +483,35 @@ static void av1_encoder_stats(FREERDP_AV1_CONTEXT* av1, UINT64 startNS, size_t b
 #if defined(WITH_AV1_MF)
 /* The GPU's encoder takes the stream when it can: 4:2:0 at a bit rate (CBR, VBR); libaom keeps
  * 4:4:4 and the quality modes (q, cq), and takes over when the GPU refuses or fails.
- * FREERDP_AV1_ENCODER=libaom keeps libaom. */
+ * FREERDP_AV1_BACKEND_SOFTWARE keeps libaom. */
 static void av1_mf_start(FREERDP_AV1_CONTEXT* av1, UINT32 width, UINT32 height)
 {
 	av1_mf_free(av1->mf);
 	av1->mf = nullptr;
 
 	const char* why = nullptr;
-	char env[16] = WINPR_C_ARRAY_INIT;
-	const DWORD n = GetEnvironmentVariableA("FREERDP_AV1_ENCODER", env, sizeof(env));
-	if ((n > 0) && (n < sizeof(env)) && (_stricmp(env, "libaom") == 0))
-		why = "FREERDP_AV1_ENCODER=libaom";
+	if (av1->backend == FREERDP_AV1_BACKEND_SOFTWARE)
+		why = "/codec-first:software";
 	else if (av1->ecfg.g_profile != 0)
 		why = "4:4:4";
 	else if ((av1->ecfg.rc_end_usage != AOM_CBR) && (av1->ecfg.rc_end_usage != AOM_VBR))
 		why = "a quality rate control mode";
 	else
 	{
-		av1->mf = av1_mf_new(av1->log, width, height, av1->ecfg.rc_target_bitrate,
-		                     av1->ecfg.rc_end_usage == AOM_CBR);
+		/* the devices of /codec-first in order, or the first that takes it */
+		const size_t tries = av1->nDevices ? av1->nDevices : 1;
+		for (size_t x = 0; (x < tries) && !av1->mf; x++)
+			av1->mf =
+			    av1_mf_new(av1->log, width, height, av1->ecfg.rc_target_bitrate,
+			               av1->ecfg.rc_end_usage == AOM_CBR, av1->nDevices ? av1->devices[x] : -1);
 		if (!av1->mf)
-			why = "no hardware AV1 encoder takes it";
+			why = av1->nDevices ? "no device of /codec-first takes it"
+			                    : "no hardware AV1 encoder takes it";
 	}
 	if (av1->mf)
 		WLog_Print(av1->log, WLOG_INFO,
-		           "AV1 encoder: Media Foundation, %s (hardware), libaom as fallback",
-		           av1_mf_name(av1->mf));
+		           "AV1 encoder: Media Foundation %" PRId32 " %s (hardware), libaom as fallback",
+		           av1_mf_device(av1->mf), av1_mf_name(av1->mf));
 	else
 		WLog_Print(av1->log, WLOG_INFO, "AV1 encoder: libaom (software; %s)", why);
 }
@@ -1295,30 +1323,61 @@ BOOL freerdp_av1_context_reset(FREERDP_AV1_CONTEXT* av1, UINT32 width, UINT32 he
 	else
 	{
 #if defined(WITH_AV1_VIDEOTOOLBOX)
-		if (!av1->vt)
+		if (av1->backend == FREERDP_AV1_BACKEND_SOFTWARE)
+		{
+			/* the software decoder is always there with VideoToolbox (CMake) */
+			av1_vt_free(av1->vt);
+			av1->vt = nullptr;
+			if (!av1->backendLogged)
+				WLog_Print(av1->log, WLOG_INFO, "AV1 decoder: software (/codec-first:software)");
+			av1->backendLogged = true;
+		}
+		else if (!av1->vt)
 		{
 			av1->vt = av1_vt_new(av1->log);
 			WLog_Print(av1->log, WLOG_INFO, "AV1 decoder: %s",
 			           av1->vt ? "VideoToolbox (hardware), software as fallback"
 			                   : "software (no VideoToolbox AV1 decoder)");
+			av1->backendLogged = true;
 		}
 		else
 			av1_vt_reset(av1->vt);
 		av1->vtStream = (av1->vt != nullptr);
 #endif
 #if defined(WITH_AV1_D3D11VA)
-		if (!av1->d3d11va)
+		if (av1->backend == FREERDP_AV1_BACKEND_SOFTWARE)
 		{
-			av1->d3d11va = av1_d3d11va_new(av1->log, AV1_D3D11VA_ANY_ADAPTER);
+			/* the software decoder is always there with D3D11VA (CMake: dav1d) */
+			av1_d3d11va_free(av1->d3d11va);
+			av1->d3d11va = nullptr;
+			if (!av1->backendLogged)
+				WLog_Print(av1->log, WLOG_INFO,
+				           "AV1 decoder: " AV1_SOFTWARE_DECODER
+				           " (software; /codec-first:software)");
+			av1->backendLogged = true;
+		}
+		else if (!av1->d3d11va)
+		{
+			/* the devices of /codec-first in order, or the first with an AV1 decoder */
+			const size_t tries = av1->nDevices ? av1->nDevices : 1;
+			for (size_t x = 0; (x < tries) && !av1->d3d11va; x++)
+				av1->d3d11va = av1_d3d11va_new(av1->log, av1->nDevices ? av1->devices[x]
+				                                                       : AV1_D3D11VA_ANY_ADAPTER);
 			if (av1->d3d11va)
 				WLog_Print(av1->log, WLOG_INFO,
-				           "AV1 decoder: D3D11VA on %s (hardware), " AV1_SOFTWARE_DECODER
+				           "AV1 decoder: D3D11VA %" PRId32 " %s (hardware), " AV1_SOFTWARE_DECODER
 				           " as fallback",
+				           av1_d3d11va_device(av1->d3d11va),
 				           av1_d3d11va_adapter_name(av1->d3d11va));
+			else if (av1->nDevices)
+				WLog_Print(av1->log, WLOG_WARN,
+				           "AV1 decoder: " AV1_SOFTWARE_DECODER
+				           " (software; no device of /codec-first, /codec-list lists them)");
 			else
 				WLog_Print(av1->log, WLOG_INFO,
 				           "AV1 decoder: " AV1_SOFTWARE_DECODER
 				           " (software, no GPU with a D3D11VA AV1 decoder)");
+			av1->backendLogged = true;
 		}
 		else
 			av1_d3d11va_reset(av1->d3d11va);
@@ -1566,3 +1625,116 @@ FREERDP_AV1_CONTEXT* freerdp_av1_context_new(BOOL Compressor)
 	return ctx;
 }
 #endif
+
+/* ---- /codec-first and /codec-list, the same on the client and the shadow server ---- */
+
+/* "hardware", "hardware:<id>[,<id>...]" or "software" */
+static BOOL codec_first_parse(const char* value, UINT32* backend, INT32* devices, size_t* nDevices)
+{
+	*nDevices = 0;
+	if (!value || (_stricmp(value, "hardware") == 0))
+	{
+		*backend = FREERDP_AV1_BACKEND_HARDWARE;
+		return TRUE;
+	}
+	if (_stricmp(value, "software") == 0)
+	{
+		*backend = FREERDP_AV1_BACKEND_SOFTWARE;
+		return TRUE;
+	}
+	if (_strnicmp(value, "hardware:", 9) != 0)
+		return FALSE;
+	const char* p = &value[9];
+	for (;;)
+	{
+		if ((*p < '0') || (*p > '9') || (*nDevices >= FREERDP_CODEC_FIRST_MAX_DEVICES))
+			return FALSE;
+		errno = 0;
+		char* end = nullptr;
+		const unsigned long id = strtoul(p, &end, 10);
+		if ((errno != 0) || !end || (id > 255))
+			return FALSE;
+		devices[(*nDevices)++] = (INT32)id;
+		if (*end == '\0')
+			break;
+		if (*end != ',')
+			return FALSE;
+		p = end + 1;
+	}
+	*backend = FREERDP_AV1_BACKEND_HARDWARE;
+	return TRUE;
+}
+
+BOOL freerdp_codec_first_valid(const char* value)
+{
+	UINT32 backend = 0;
+	INT32 devices[FREERDP_CODEC_FIRST_MAX_DEVICES] = WINPR_C_ARRAY_INIT;
+	size_t n = 0;
+	return value && codec_first_parse(value, &backend, devices, &n);
+}
+
+BOOL freerdp_av1_context_set_codec_first(FREERDP_AV1_CONTEXT* av1, const char* value)
+{
+	if (!av1)
+		return FALSE;
+	UINT32 backend = 0;
+	INT32 devices[FREERDP_CODEC_FIRST_MAX_DEVICES] = WINPR_C_ARRAY_INIT;
+	size_t n = 0;
+	if (!codec_first_parse(value, &backend, devices, &n))
+		return FALSE;
+	if (!freerdp_av1_context_set_option(av1, FREERDP_AV1_CONTEXT_OPTION_BACKEND, backend))
+		return FALSE;
+#if defined(WITH_LIBAOM) || defined(WITH_DAV1D)
+	memcpy(av1->devices, devices, sizeof(av1->devices));
+	av1->nDevices = n;
+#endif
+	return TRUE;
+}
+
+void freerdp_av1_hardware_list_free(char** list, size_t count)
+{
+	if (!list)
+		return;
+	for (size_t x = 0; x < count; x++)
+		free(list[x]);
+	free((void*)list);
+}
+
+char** freerdp_av1_hardware_list(BOOL encoder, size_t* count)
+{
+	if (!count)
+		return nullptr;
+	*count = 0;
+	char names[16][256] = WINPR_C_ARRAY_INIT;
+	size_t n = 0;
+	const char* api = "";
+#if defined(WITH_AV1_MF)
+	if (encoder)
+	{
+		n = av1_mf_list(names, ARRAYSIZE(names));
+		api = "Media Foundation";
+	}
+#endif
+#if defined(WITH_AV1_D3D11VA)
+	if (!encoder)
+	{
+		n = av1_d3d11va_list(names, ARRAYSIZE(names));
+		api = "D3D11VA";
+	}
+#endif
+	char** list = calloc(n + 1, sizeof(char*));
+	if (!list)
+		return nullptr;
+	for (size_t x = 0; x < n; x++)
+	{
+		size_t len = 0;
+		if (winpr_asprintf(&list[x], &len, "%" PRIuz " %s %s (AV1 4:2:0 %s)", x, api, names[x],
+		                   encoder ? "encode" : "decode") < 0)
+		{
+			freerdp_av1_hardware_list_free(list, x);
+			return nullptr;
+		}
+	}
+	*count = n;
+	return list;
+}

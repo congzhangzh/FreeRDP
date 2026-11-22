@@ -52,10 +52,50 @@ extern "C"
 		                                          1 to 63 (lower is better); 0 leaves libaom's */
 		FREERDP_AV1_CONTEXT_OPTION_THREADS,  /**< encoder threads, 0 for up to 4 */
 		FREERDP_AV1_CONTEXT_OPTION_SPEED,    /**< libaom's cpu-used, 0 (slowest) to 12 */
-		FREERDP_AV1_CONTEXT_OPTION_TILE_COLUMNS /**< log2 of the tile columns, 0 (one) to 6;
+		FREERDP_AV1_CONTEXT_OPTION_TILE_COLUMNS, /**< log2 of the tile columns, 0 (one) to 6;
 		                                             the threads write the tiles' bitstreams
 		                                             side by side */
+		FREERDP_AV1_CONTEXT_OPTION_BACKEND       /**< FREERDP_AV1_BACKEND_*, encoder and decoder;
+		                                              from the next freerdp_av1_context_reset() */
 	} FREERDP_AV1_CONTEXT_OPTION;
+
+	/** Which AV1 implementation goes first (FREERDP_AV1_CONTEXT_OPTION_BACKEND). */
+	typedef enum
+	{
+		FREERDP_AV1_BACKEND_HARDWARE = 0, /**< the GPU's when it can, software as fallback */
+		FREERDP_AV1_BACKEND_SOFTWARE = 1  /**< software; the GPU's only when no software codec
+		                                       is built in */
+	} FREERDP_AV1_BACKEND;
+
+/** /codec-first, the same on the client (decoding) and the shadow server (encoding):
+ *  "hardware" (the default): the GPU's codec when one takes the stream, software as fallback;
+ *  "hardware:<id>[,<id>...]": the devices of /codec-list in this order, then software;
+ *  "software": the software codec (the GPU's only when none is built in). */
+#define FREERDP_CODEC_FIRST_MAX_DEVICES 8
+
+	/** @brief whether @p value is a /codec-first value
+	 *  @since version 3.34.0 */
+	WINPR_ATTR_NODISCARD
+	FREERDP_API BOOL freerdp_codec_first_valid(const char* value);
+
+	/** @brief applies a /codec-first value (nullptr: "hardware"), from the next
+	 *  freerdp_av1_context_reset()
+	 *  @since version 3.34.0 */
+	WINPR_ATTR_NODISCARD
+	FREERDP_API BOOL freerdp_av1_context_set_codec_first(FREERDP_AV1_CONTEXT* av1,
+	                                                     const char* value);
+
+	/** @brief frees a list of freerdp_av1_hardware_list() @since version 3.34.0 */
+	FREERDP_API void freerdp_av1_hardware_list_free(char** list, size_t count);
+
+	/** @brief this machine's hardware AV1 decoders or encoders (/codec-list), one line each:
+	 *  "<id> <interface> <device> (AV1 4:2:0 decode|encode)"; the ids are the ones of
+	 *  /codec-first:hardware:<id>[,<id>...]
+	 *  @return the lines (none: an empty list) or \b nullptr on failure, free with
+	 *          freerdp_av1_hardware_list_free()
+	 *  @since version 3.34.0 */
+	WINPR_ATTR_MALLOC(freerdp_av1_hardware_list_free, 1)
+	FREERDP_API char** freerdp_av1_hardware_list(BOOL encoder, size_t* count);
 
 	WINPR_ATTR_NODISCARD
 	FREERDP_API BOOL freerdp_av1_context_set_option(FREERDP_AV1_CONTEXT* av1,

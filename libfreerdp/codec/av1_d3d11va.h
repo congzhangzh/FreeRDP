@@ -42,13 +42,19 @@ typedef struct
  * decoder keeps the stream. */
 #define AV1_D3D11VA_INVALID (-101)
 
-/** Any adapter: the first hardware adapter with an AV1 decoder, or the one the environment
- * variable FREERDP_AV1_D3D11VA_ADAPTER (a DXGI adapter index) names. */
+/** Any device: the first adapter with an AV1 decoder. */
 #define AV1_D3D11VA_ANY_ADAPTER (-1)
 
-/** @return a decoder on the DXGI adapter @p adapter (an index, or AV1_D3D11VA_ANY_ADAPTER),
- *          or nullptr when it has no AV1 decoder. */
+/** The adapters with an AV1 decoder (the devices), in DXGI's order: their names in @p names.
+ * @return how many there are, at most @p max */
+size_t av1_d3d11va_list(char names[][256], size_t max);
+
+/** @return a decoder on device @p adapter (an id of av1_d3d11va_list(), or
+ *          AV1_D3D11VA_ANY_ADAPTER), or nullptr when there is no such device. */
 AV1_D3D11VA* av1_d3d11va_new(wLog* log, INT32 adapter);
+
+/** The decoder's device id (of av1_d3d11va_list()). */
+INT32 av1_d3d11va_device(const AV1_D3D11VA* dec);
 void av1_d3d11va_free(AV1_D3D11VA* dec);
 
 /** The adapter's name (UTF-8), for the log. */

@@ -806,7 +806,9 @@ struct rdp_settings
 		                                                     * @since version 3.34.0 */
 	SETTINGS_DEPRECATED(ALIGN64 UINT32 GfxCodecOrder);      /** 3858
 		                                                     * @since version 3.34.0 */
-	UINT64 padding3904[3904 - 3859];                        /* 3859 */
+	SETTINGS_DEPRECATED(ALIGN64 char* GfxCodecFirst);       /** 3859
+		                                                     * @since version 3.34.0 */
+	UINT64 padding3904[3904 - 3860];                        /* 3860 */
 
 	/**
 	 * Caches

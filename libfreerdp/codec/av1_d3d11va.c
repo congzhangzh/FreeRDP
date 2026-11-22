@@ -52,6 +52,7 @@ struct S_AV1_D3D11VA
 {
 	wLog* log;
 	char adapterName[256];
+	INT32 id; /* the device's id in av1_d3d11va_list() */
 
 	ID3D11Device* device;
 	ID3D11DeviceContext* ctx;
@@ -163,6 +164,44 @@ static BOOL open_adapter(AV1_D3D11VA* dec, IDXGIAdapter1* a)
 	return TRUE;
 }
 
+static void close_adapter(AV1_D3D11VA* dec)
+{
+	RELEASE(dec->vctx);
+	RELEASE(dec->vdev);
+	RELEASE(dec->ctx);
+	RELEASE(dec->device);
+	dec->adapterName[0] = '\0';
+}
+
+size_t av1_d3d11va_list(char names[][256], size_t max)
+{
+	size_t count = 0;
+	IDXGIFactory1* factory = nullptr;
+	if (FAILED(CreateDXGIFactory1(&IID_IDXGIFactory1, (void**)&factory)))
+		return 0;
+	for (UINT i = 0; count < max; i++)
+	{
+		IDXGIAdapter1* a = nullptr;
+		if (IDXGIFactory1_EnumAdapters1(factory, i, &a) == DXGI_ERROR_NOT_FOUND)
+			break;
+		AV1_D3D11VA probe = WINPR_C_ARRAY_INIT;
+		if (open_adapter(&probe, a))
+		{
+			(void)_snprintf(names[count], 256, "%s", probe.adapterName);
+			count++;
+			close_adapter(&probe);
+		}
+		IDXGIAdapter1_Release(a);
+	}
+	IDXGIFactory1_Release(factory);
+	return count;
+}
+
+INT32 av1_d3d11va_device(const AV1_D3D11VA* dec)
+{
+	return dec ? dec->id : -1;
+}
+
 void av1_d3d11va_free(AV1_D3D11VA* dec)
 {
 	if (!dec)
@@ -191,29 +230,24 @@ AV1_D3D11VA* av1_d3d11va_new(wLog* log, INT32 adapter)
 	if (!dec->parser)
 		goto fail;
 
-	if (adapter == AV1_D3D11VA_ANY_ADAPTER)
-	{
-		char env[16] = WINPR_C_ARRAY_INIT;
-		const DWORD n = GetEnvironmentVariableA("FREERDP_AV1_D3D11VA_ADAPTER", env, sizeof(env));
-		if ((n > 0) && (n < sizeof(env)))
-			adapter = atoi(env);
-	}
-
+	/* the devices are the adapters with an AV1 decoder, in DXGI's order (/codec-list) */
 	IDXGIFactory1* factory = nullptr;
 	if (FAILED(CreateDXGIFactory1(&IID_IDXGIFactory1, (void**)&factory)))
 		goto fail;
+	INT32 id = 0;
 	for (UINT i = 0; !dec->device; i++)
 	{
-		if ((adapter >= 0) && (i != (UINT)adapter))
-		{
-			if (i > (UINT)adapter)
-				break;
-			continue;
-		}
 		IDXGIAdapter1* a = nullptr;
 		if (IDXGIFactory1_EnumAdapters1(factory, i, &a) == DXGI_ERROR_NOT_FOUND)
 			break;
-		(void)open_adapter(dec, a);
+		if (open_adapter(dec, a))
+		{
+			if ((adapter >= 0) && (id != adapter))
+				close_adapter(dec);
+			else
+				dec->id = id;
+			id++;
+		}
 		IDXGIAdapter1_Release(a);
 	}
 	IDXGIFactory1_Release(factory);

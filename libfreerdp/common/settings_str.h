@@ -543,6 +543,7 @@ static const struct settings_str_entry settings_map[] = {
 	{ FreeRDP_GatewayPassword, FREERDP_SETTINGS_TYPE_STRING, "FreeRDP_GatewayPassword" },
 	{ FreeRDP_GatewayUrl, FREERDP_SETTINGS_TYPE_STRING, "FreeRDP_GatewayUrl" },
 	{ FreeRDP_GatewayUsername, FREERDP_SETTINGS_TYPE_STRING, "FreeRDP_GatewayUsername" },
+	{ FreeRDP_GfxCodecFirst, FREERDP_SETTINGS_TYPE_STRING, "FreeRDP_GfxCodecFirst" },
 	{ FreeRDP_HomePath, FREERDP_SETTINGS_TYPE_STRING, "FreeRDP_HomePath" },
 	{ FreeRDP_ImeFileName, FREERDP_SETTINGS_TYPE_STRING, "FreeRDP_ImeFileName" },
 	{ FreeRDP_KerberosArmor, FREERDP_SETTINGS_TYPE_STRING, "FreeRDP_KerberosArmor" },

@@ -162,6 +162,15 @@ int main(int argc, char** argv)
 		  "time) every <seconds>, at INFO on com.freerdp.server.shadow.gfx (default 0: only when "
 		  "that logger is at DEBUG or TRACE, every 5 s; or FREERDP_SHADOW_GFX_STATS_PERIOD from "
 		  "the environment or the configuration file)" },
+#if defined(WITH_GFX_AV1)
+		{ "codec-first", COMMAND_LINE_VALUE_REQUIRED, "hardware[:<id>[,<id>...]]|software", nullptr,
+		  nullptr, -1, nullptr,
+		  "Which video encoder goes first (AV1 4:2:0), as the client's /codec-first: hardware, "
+		  "the default: the GPU's when one takes the stream (the devices <id> of /codec-list in "
+		  "this order, or any), libaom as fallback; software: libaom" },
+		{ "codec-list", COMMAND_LINE_VALUE_FLAG, nullptr, nullptr, nullptr, -1, nullptr,
+		  "List this machine's hardware video encoders with the ids of /codec-first and exit" },
+#endif
 		{ "stats-ipc", COMMAND_LINE_VALUE_OPTIONAL, "[<path>|on|off]", nullptr, nullptr, -1,
 		  nullptr,
 		  "Send the GFX counters of every client, each 5 s period, as a line of JSON "

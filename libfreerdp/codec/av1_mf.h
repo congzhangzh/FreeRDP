@@ -28,10 +28,18 @@
  * the low overhead bitstream format out, one per frame, a sequence header in every key frame. */
 typedef struct S_AV1_MF AV1_MF;
 
+/** The hardware AV1 encoder MFTs (the devices), in Media Foundation's order: their names in
+ * @p names. @return how many there are, at most @p max */
+size_t av1_mf_list(char names[][256], size_t max);
+
 /** @param cbr TRUE: constant bit rate, FALSE: a low delay variable one
- *  @return the encoder, or nullptr when the machine has no hardware AV1 encoder or it refuses
+ *  @param device an id of av1_mf_list(), < 0: the first
+ *  @return the encoder, or nullptr when there is no such hardware AV1 encoder or it refuses
  *          this size or rate (the reason is logged) */
-AV1_MF* av1_mf_new(wLog* log, UINT32 width, UINT32 height, UINT32 kbps, BOOL cbr);
+AV1_MF* av1_mf_new(wLog* log, UINT32 width, UINT32 height, UINT32 kbps, BOOL cbr, INT32 device);
+
+/** The encoder's device id (of av1_mf_list()). */
+INT32 av1_mf_device(const AV1_MF* enc);
 void av1_mf_free(AV1_MF* enc);
 
 /** The encoder's name (UTF-8), for the log. */

@@ -554,6 +554,13 @@ static UINT gdi_SurfaceCommand_AV1(rdpGdi* gdi, RdpgfxClientContext* context,
 			return ERROR_NOT_ENOUGH_MEMORY;
 		}
 
+		/* /codec-first: hardware first (the default: any device, or those of /codec-list in
+		 * order) or software first */
+		if (!freerdp_av1_context_set_codec_first(
+		        surface->av1,
+		        freerdp_settings_get_string(gdi->context->settings, FreeRDP_GfxCodecFirst)))
+			return ERROR_INVALID_PARAMETER;
+
 		if (!freerdp_av1_context_reset(surface->av1, surface->width, surface->height))
 			return ERROR_INTERNAL_ERROR;
 	}

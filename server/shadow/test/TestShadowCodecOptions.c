@@ -12,6 +12,8 @@
 static COMMAND_LINE_ARGUMENT_A options[] = {
 	{ "codec", COMMAND_LINE_VALUE_REQUIRED, "<codec>:<key>:<value>[,<codec>:<key>:<value>...]",
 	  nullptr, nullptr, -1, nullptr, "Encoder settings" },
+	{ "codec-first", COMMAND_LINE_VALUE_REQUIRED, "hardware[:<id>[,<id>...]]|software", nullptr,
+	  nullptr, -1, nullptr, "Which video encoder goes first" },
 	{ nullptr, 0, nullptr, nullptr, nullptr, -1, nullptr, nullptr }
 };
 
@@ -100,7 +102,7 @@ static BOOL expect_defaults(void)
 #if defined(WITH_GFX_AV1)
 	ok = ok && (server->AV1RateControlMode == FREERDP_AV1_CQ) && (server->AV1BitRate == 12000) &&
 	     (server->AV1CQLevel == 16) && (server->AV1Threads == 0) && (server->AV1Speed == 10) &&
-	     (server->AV1TileColumns == 2);
+	     (server->AV1TileColumns == 2) && !server->CodecFirst;
 #endif
 #if defined(WITH_GFX_AV2)
 	ok = ok && (server->AV2RateControlMode == FREERDP_AV2_CQ) && (server->AV2BitRate == 10000) &&
@@ -213,6 +215,28 @@ static void av1_tiles(FIELDS* f)
 	f->av1TileColumns = 2;
 }
 
+#if defined(WITH_GFX_AV1)
+/* /codec-first, the client's option: the value kept as given; a wrong one refused */
+WINPR_ATTR_NODISCARD
+static BOOL expect_codec_first(const char* option, BOOL accepted, const char* value)
+{
+	char* argv[] = { "freerdp-shadow-cli", (char*)option, nullptr };
+	rdpShadowServer* server = shadow_server_new();
+	if (!server)
+		return FALSE;
+	const int status = shadow_server_parse_command_line(server, 2, argv, options);
+	const char* got = server->CodecFirst;
+	BOOL ok = ((status >= 0) == accepted) &&
+	          ((!value && !got) || (value && got && (strcmp(value, got) == 0)));
+	if (!ok)
+		(void)fprintf(stderr, "%s: status %d, CodecFirst %s, expected %s %s\n", option, status,
+		              got ? got : "(none)", accepted ? "accepted" : "refused",
+		              value ? value : "(none)");
+	shadow_server_free(server);
+	return ok;
+}
+#endif
+
 static void av1_library(FIELDS* f)
 {
 	f->av1CQLevel = 0;
@@ -321,6 +345,14 @@ int TestShadowCodecOptions(int argc, char* argv[])
 	     ok;
 	ok = expect("av1 tiles", "/codec:av1:threads:8,av1:tile-columns:2", TRUE, av1_tiles) && ok;
 	ok = expect("av1 tile-columns 7", "/codec:av1:tile-columns:7", FALSE, nullptr) && ok;
+	ok =
+	    expect("av1 backend is no /codec key", "/codec:av1:backend:software", FALSE, nullptr) && ok;
+	ok = expect_codec_first("/codec-first:software", TRUE, "software") && ok;
+	ok = expect_codec_first("/codec-first:hardware:1,0", TRUE, "hardware:1,0") && ok;
+	ok = expect_codec_first("/codec-first:hardware", TRUE, "hardware") && ok;
+	ok = expect_codec_first("/codec-first:gpu", FALSE, nullptr) && ok;
+	ok = expect_codec_first("/codec-first:hardware:1,", FALSE, nullptr) && ok;
+	ok = expect_codec_first("/codec-first:hardware:x", FALSE, nullptr) && ok;
 	ok = expect("av1 cq-level 64", "/codec:av1:cq-level:64", FALSE, nullptr) && ok;
 	ok = expect("av1 threads 65", "/codec:av1:threads:65", FALSE, nullptr) && ok;
 	ok = expect("av1 cpu-used 13", "/codec:av1:cpu-used:13", FALSE, nullptr) && ok;

@@ -2993,6 +2993,9 @@ const char* freerdp_settings_get_string(WINPR_ATTR_UNUSED const rdpSettings* set
 		case FreeRDP_GatewayUsername:
 			return settings->GatewayUsername;
 
+		case FreeRDP_GfxCodecFirst:
+			return settings->GfxCodecFirst;
+
 		case FreeRDP_HomePath:
 			return settings->HomePath;
 
@@ -3342,6 +3345,9 @@ char* freerdp_settings_get_string_writable(rdpSettings* settings, FreeRDP_Settin
 
 		case FreeRDP_GatewayUsername:
 			return settings->GatewayUsername;
+
+		case FreeRDP_GfxCodecFirst:
+			return settings->GfxCodecFirst;
 
 		case FreeRDP_HomePath:
 			return settings->HomePath;
@@ -3704,6 +3710,9 @@ BOOL freerdp_settings_set_string_(WINPR_ATTR_UNUSED rdpSettings* settings,
 
 		case FreeRDP_GatewayUsername:
 			return update_string_(&settings->GatewayUsername, cnv.c, len);
+
+		case FreeRDP_GfxCodecFirst:
+			return update_string_(&settings->GfxCodecFirst, cnv.c, len);
 
 		case FreeRDP_HomePath:
 			return update_string_(&settings->HomePath, cnv.c, len);
@@ -4085,6 +4094,9 @@ BOOL freerdp_settings_set_string_copy_(WINPR_ATTR_UNUSED rdpSettings* settings,
 
 		case FreeRDP_GatewayUsername:
 			return update_string_copy_(&settings->GatewayUsername, cnv.cc, len, cleanup);
+
+		case FreeRDP_GfxCodecFirst:
+			return update_string_copy_(&settings->GfxCodecFirst, cnv.cc, len, cleanup);
 
 		case FreeRDP_HomePath:
 			return update_string_copy_(&settings->HomePath, cnv.cc, len, cleanup);

@@ -4,6 +4,9 @@
 #include <freerdp/client/cmdline.h>
 #include <freerdp/settings.h>
 #include <freerdp/channels/rdpgfx.h>
+#if defined(WITH_GFX_AV1)
+#include <freerdp/codec/av1.h>
+#endif
 #include <winpr/cmdline.h>
 #include <winpr/spec.h>
 #include <winpr/strlst.h>
@@ -600,6 +603,38 @@ static BOOL check_settings_gfx_codec_order_av(rdpSettings* settings)
 }
 #endif
 
+#if defined(WITH_GFX_AV1)
+static BOOL check_codec_first(rdpSettings* settings, const char* expected)
+{
+	const char* value = freerdp_settings_get_string(settings, FreeRDP_GfxCodecFirst);
+	if ((!expected && value) || (expected && (!value || (strcmp(value, expected) != 0))))
+	{
+		TEST_FAILURE("Expected /codec-first %s, got %s!\n", expected ? expected : "(none)",
+		             value ? value : "(none)");
+		return FALSE;
+	}
+	return TRUE;
+}
+
+/* /codec-first:software */
+static BOOL check_settings_codec_first_software(rdpSettings* settings)
+{
+	return check_codec_first(settings, "software");
+}
+
+/* /codec-first:hardware:1,0: device 1 of /codec-list, then device 0 */
+static BOOL check_settings_codec_first_devices(rdpSettings* settings)
+{
+	return check_codec_first(settings, "hardware:1,0");
+}
+
+/* the default, and what a refused /codec-first leaves: none (hardware first, any device) */
+static BOOL check_settings_codec_first_hardware(rdpSettings* settings)
+{
+	return check_codec_first(settings, nullptr);
+}
+#endif
+
 /* no order given: none */
 static BOOL check_settings_no_codec_order(rdpSettings* settings)
 {
@@ -808,6 +843,36 @@ static const test tests[] = {
 	  check_settings_no_codec_order,
 	  { "testfreerdp", "/gfx", "/v:test.freerdp.com", nullptr },
 	  { WINPR_C_ARRAY_INIT } },
+#if defined(WITH_GFX_AV1)
+	{ 0,
+	  check_settings_codec_first_hardware,
+	  { "testfreerdp", "/gfx:AV1", "/v:test.freerdp.com", nullptr },
+	  { WINPR_C_ARRAY_INIT } },
+	{ 0,
+	  check_settings_codec_first_software,
+	  { "testfreerdp", "/codec-first:software", "/v:test.freerdp.com", nullptr },
+	  { WINPR_C_ARRAY_INIT } },
+	{ 0,
+	  check_settings_codec_first_devices,
+	  { "testfreerdp", "/codec-first:hardware:1,0", "/v:test.freerdp.com", nullptr },
+	  { WINPR_C_ARRAY_INIT } },
+	{ COMMAND_LINE_ERROR_UNEXPECTED_VALUE,
+	  check_settings_codec_first_hardware,
+	  { "testfreerdp", "/codec-first:hardware:1,", "/v:test.freerdp.com", nullptr },
+	  { WINPR_C_ARRAY_INIT } },
+	{ COMMAND_LINE_ERROR_UNEXPECTED_VALUE,
+	  check_settings_codec_first_hardware,
+	  { "testfreerdp", "/codec-first:gpu", "/v:test.freerdp.com", nullptr },
+	  { WINPR_C_ARRAY_INIT } },
+	{ COMMAND_LINE_ERROR_UNEXPECTED_VALUE,
+	  check_settings_codec_first_hardware,
+	  { "testfreerdp", "/codec-first:hardware:x", "/v:test.freerdp.com", nullptr },
+	  { WINPR_C_ARRAY_INIT } },
+	{ COMMAND_LINE_STATUS_PRINT,
+	  check_settings_codec_first_hardware,
+	  { "testfreerdp", "/codec-list", nullptr },
+	  { WINPR_C_ARRAY_INIT } },
+#endif
 #if defined(WITH_GFX_AV1) && defined(WITH_GFX_AV2)
 	{ 0,
 	  check_settings_gfx_codec_order_av,

@@ -931,6 +931,19 @@ int shadow_server_parse_command_line(rdpShadowServer* server, int argc, char** a
 			if (!shadow_server_set_stats_ipc(server, arg->Value))
 				return fail_at(arg, COMMAND_LINE_ERROR);
 		}
+#if defined(WITH_GFX_AV1)
+		CommandLineSwitchCase(arg, "codec-first")
+		{
+			/* the client's /codec-first, for the encoder */
+			if (!freerdp_codec_first_valid(arg->Value))
+				return fail_at(arg, COMMAND_LINE_ERROR_UNEXPECTED_VALUE);
+			char* value = _strdup(arg->Value);
+			if (!value)
+				return fail_at(arg, COMMAND_LINE_ERROR_MEMORY);
+			free(server->CodecFirst);
+			server->CodecFirst = value;
+		}
+#endif
 		CommandLineSwitchCase(arg, "framerate")
 		{
 			/* H.264 follows it too */
@@ -1144,6 +1157,24 @@ int shadow_server_parse_command_line(rdpShadowServer* server, int argc, char** a
 		}
 		CommandLineSwitchEnd(arg)
 	} while ((arg = CommandLineFindNextArgumentA(arg)) != nullptr);
+
+#if defined(WITH_GFX_AV1)
+	/* like the subsystems: a list, then exit */
+	arg = CommandLineFindArgumentA(cargs, "codec-list");
+	if (arg && (arg->Flags & COMMAND_LINE_ARGUMENT_PRESENT))
+	{
+		size_t count = 0;
+		char** list = freerdp_av1_hardware_list(TRUE, &count);
+		if (!list)
+			return fail_at(arg, COMMAND_LINE_ERROR);
+		if (count == 0)
+			printf("no hardware video encoder\n");
+		for (size_t x = 0; x < count; x++)
+			printf("%s\n", list[x]);
+		freerdp_av1_hardware_list_free(list, count);
+		status = COMMAND_LINE_STATUS_PRINT;
+	}
+#endif
 
 	/* Before /monitors: the subsystem decides which monitors there are */
 	arg = CommandLineFindArgumentA(cargs, "subsystem");
@@ -1927,6 +1958,8 @@ void shadow_server_free(rdpShadowServer* server)
 	server->ipcSocket = nullptr;
 	free(server->statsIpcPath);
 	server->statsIpcPath = nullptr;
+	free(server->CodecFirst);
+	server->CodecFirst = nullptr;
 	freerdp_settings_free(server->settings);
 	server->settings = nullptr;
 	free(server);

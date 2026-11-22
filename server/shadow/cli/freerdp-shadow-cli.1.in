@@ -15,6 +15,8 @@
 [\fB/codec:\fP\fI<codec>:<key>:<value>[,...]\fP]
 [\fB/framerate:\fP\fI<1-120>\fP]
 [\fB/gfx-stats-period:\fP\fI<seconds>\fP]
+[\fB/codec-first:\fP\fIhardware[:<id>,...]|software\fP]
+[\fB/codec-list\fP]
 [\fB/stats-ipc\fP[:\fI<path>|on|off\fP]]
 [\fB+auth\fP]
 [\fB-may-view\fP]
@@ -76,6 +78,14 @@ it writes them only when that logger is at DEBUG or TRACE, every 5 seconds,
 e.g. WLOG_FILTER=com.freerdp.server.shadow.gfx:DEBUG. The same value can come from
 FREERDP_SHADOW_GFX_STATS_PERIOD in the environment or in the configuration file; the
 command line wins over it, and a wrong value there is logged and ignored.
+.IP /codec-first:hardware[:<id>[,<id>...]]|software
+Which video encoder goes first (AV1 4:2:0), the same option as the client's (which picks the
+decoder): hardware, the default, encodes on the GPU when one takes the stream: the devices <id>
+of /codec-list in this order, or any; libaom takes over when none does or when it fails.
+software encodes with libaom. E.g. /codec-first:hardware:1,0.
+.IP /codec-list
+List this machine's hardware video encoders, one per line with the id of /codec-first, e.g.
+"0 Media Foundation NVIDIA AV1 Encoder MFT (AV1 4:2:0 encode)", and exit.
 .IP /stats-ipc[:<path>|on|off]
 The same counters for a program: at the end of each client's period (5 seconds, or
 /gfx-stats-period), one line of JSON (schema "freerdp-shadow-stats", version 1)

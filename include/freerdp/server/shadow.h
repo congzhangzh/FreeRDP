@@ -327,6 +327,9 @@ extern "C"
 		char* statsIpcPath;
 		/** the socket while the server runs, the server's own @since version 3.34.0 */
 		struct s_shadow_stats_ipc* statsIpc;
+		/** /codec-first (freerdp_av1_context_set_codec_first()): nullptr, the default, is
+		 *  hardware first on any device @since version 3.34.0 */
+		char* CodecFirst;
 	};
 
 	struct rdp_shadow_surface

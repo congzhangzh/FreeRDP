@@ -143,6 +143,17 @@ static const COMMAND_LINE_ARGUMENT_A global_cmd_args[] = {
 	  "CLIPBOARD. PRIMARY is the X-style middle-click selection.\n"
 	  " * direction-to:[all|local|remote|off] control enabled clipboard direction\n"
 	  " * files-to:[all|local|remote|off] control enabled file clipboard direction" },
+#if defined(WITH_GFX_AV1)
+	{ "codec-first", COMMAND_LINE_VALUE_REQUIRED, "hardware[:<id>[,<id>...]]|software", nullptr,
+	  nullptr, -1, nullptr,
+	  "Which video decoder goes first (AV1), as the shadow server's /codec-first: hardware, the "
+	  "default: the GPU's when one takes the stream (the devices <id> of /codec-list in this "
+	  "order, or any), the software one as fallback; software: the software decoder (the GPU's "
+	  "only when none is built in)" },
+	{ "codec-list", COMMAND_LINE_VALUE_FLAG | COMMAND_LINE_PRINT, nullptr, nullptr, nullptr, -1,
+	  nullptr,
+	  "List this machine's hardware video decoders with the ids of /codec-first and exit" },
+#endif
 #if defined(WITH_FREERDP_DEPRECATED_COMMANDLINE)
 	{ "codec-cache", COMMAND_LINE_VALUE_REQUIRED, "[rfx|nsc|jpeg]", nullptr, nullptr, -1, nullptr,
 	  "[DEPRECATED, use /cache:codec:[rfx|nsc|jpeg]] Bitmap codec cache" },
