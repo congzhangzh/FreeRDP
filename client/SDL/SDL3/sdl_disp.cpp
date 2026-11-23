@@ -230,6 +230,8 @@ bool sdlDispContext::sendLayout(const rdpMonitor* monitors, size_t nmonitors)
 
 	std::vector<DISPLAY_CONTROL_MONITOR_LAYOUT> layouts;
 	layouts.reserve(nmonitors);
+	std::vector<SDL_DisplayID> displays; /* the display of each layout entry */
+	displays.reserve(nmonitors);
 
 	for (size_t i = 0; i < nmonitors; i++)
 	{
@@ -287,6 +289,7 @@ bool sdlDispContext::sendLayout(const rdpMonitor* monitors, size_t nmonitors)
 		else /* the step that goes with the desktop scale sent, which may be an override */
 			layout.DeviceScaleFactor = sdl::hidpi::deviceScaleFactor(layout.DesktopScaleFactor);
 		layouts.emplace_back(layout);
+		displays.emplace_back(monitor->orig_screen);
 	}
 
 	if (!settings_changed(layouts))
@@ -306,6 +309,22 @@ bool sdlDispContext::sendLayout(const rdpMonitor* monitors, size_t nmonitors)
 	                              static_cast<UINT32>(len), layouts.data());
 	if (ret != CHANNEL_RC_OK)
 		return false;
+
+	/* one line per monitor, for tools that show the session's mode (on the event thread, where
+	 * SDL's display functions may be called) */
+	for (size_t i = 0; i < layouts.size(); i++)
+	{
+		const auto& l = layouts.at(i);
+		const auto id = displays.at(i);
+		float density = 1.0f;
+		const auto* mode = SDL_GetCurrentDisplayMode(id);
+		if (mode && (mode->pixel_density > 0.0f))
+			density = mode->pixel_density;
+		const auto line = sdl::hidpi::layoutText(
+		    id, SdlWindow::hiDpiSetting(id), density, static_cast<int32_t>(l.Width),
+		    static_cast<int32_t>(l.Height), l.DesktopScaleFactor, l.DeviceScaleFactor);
+		WLog_Print(_sdl->getWLog(), WLOG_INFO, "%s", line.c_str());
+	}
 	_last_sent_layout = std::move(layouts);
 	return true;
 }

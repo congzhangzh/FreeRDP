@@ -264,10 +264,26 @@ static int checkDeviceScale()
 	return 0;
 }
 
+/* the INFO line per monitor of a layout sent: freerdp-tk parses it, so it stays as it is */
+static int checkLayoutText()
+{
+	CHECK(sdl::hidpi::layoutText(2, Mode::Points, 2.0f, 1280, 832, 200, 180) ==
+	      "HiDPI: 2 points (display 2x, 1280x832 -> desktop 200/180)");
+	CHECK(sdl::hidpi::layoutText(1, Mode::Pixels, 1.0f, 1920, 1080, 150, 140) ==
+	      "HiDPI: 1 pixels (display 1x, 1920x1080 -> desktop 150/140)");
+	CHECK(sdl::hidpi::layoutText(3, { Mode::Scale, 150 }, 2.0f, 2268, 1472, 100, 100) ==
+	      "HiDPI: 3 scale:150 (display 2x, 2268x1472 -> desktop 100/100)");
+	CHECK(sdl::hidpi::layoutText(4, Mode::Points, 1.5f, 1280, 720, 150, 140) ==
+	      "HiDPI: 4 points (display 1.5x, 1280x720 -> desktop 150/140)");
+	CHECK(sdl::hidpi::layoutText(5, Mode::Points, 0.0f, 800, 600, 100, 100) ==
+	      "HiDPI: 5 points (display 1x, 800x600 -> desktop 100/100)");
+	return 0;
+}
+
 int TestSDLHiDpi([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
 {
 	for (auto* check : { checkParse, checkPolicy, checkMonitors, checkMixedMac, checkMapping,
-	                     checkOverlay, checkDeviceScale })
+	                     checkOverlay, checkDeviceScale, checkLayoutText })
 	{
 		const int rc = check();
 		if (rc != 0)

@@ -21,6 +21,7 @@
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
+#include <cinttypes>
 #include <cstdlib>
 
 #include "sdl_hidpi.hpp"
@@ -167,6 +168,20 @@ namespace sdl::hidpi
 		const float sy = (m.scaleY > 0.0f) ? m.scaleY : 1.0f;
 		return { (x / sx) - static_cast<float>(m.offsetX),
 			     (y / sy) - static_cast<float>(m.offsetY) };
+	}
+
+	std::string layoutText(uint32_t displayId, const Setting& setting, float density, int32_t width,
+	                       int32_t height, uint32_t desktopScale, uint32_t deviceScale)
+	{
+		if (!(density > 0.0f))
+			density = 1.0f;
+		char line[160] = {};
+		(void)std::snprintf(line, sizeof(line),
+		                    "HiDPI: %" PRIu32 " %s (display %gx, %" PRId32 "x%" PRId32
+		                    " -> desktop %" PRIu32 "/%" PRIu32 ")",
+		                    displayId, describe(setting).c_str(), static_cast<double>(density),
+		                    width, height, desktopScale, deviceScale);
+		return line;
 	}
 
 	std::string overlayText(const Setting& setting, float density)

@@ -125,6 +125,13 @@ namespace sdl::hidpi
 	 * is 140, 200 is 180). */
 	[[nodiscard]] uint32_t deviceScaleFactor(uint32_t desktopScaleFactor);
 
+	/** @return the line logged (INFO) for each monitor of a layout sent, for tools that show a
+	 * session's mode: "HiDPI: 2 points (display 2x, 1280x832 -> desktop 200/180)". Keep it
+	 * stable, freerdp-tk parses it. */
+	[[nodiscard]] std::string layoutText(uint32_t displayId, const Setting& setting, float density,
+	                                     int32_t width, int32_t height, uint32_t desktopScale,
+	                                     uint32_t deviceScale);
+
 	/** @return the overlay's line for the setting on a display of that density */
 	[[nodiscard]] std::string overlayText(const Setting& setting, float density);
 } // namespace sdl::hidpi
