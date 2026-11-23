@@ -24,6 +24,7 @@ set(${MODULE_PREFIX}_TESTS
     TestSAM.c
     TestWLog.c
     TestWLogCallback.c
+    TestWLogConsoleFlush.c
     TestHashTable.c
     TestBufferPool.c
     TestStreamPool.c

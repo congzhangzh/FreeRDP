@@ -130,7 +130,13 @@ static BOOL WLog_ConsoleAppender_WriteMessage(wLog* log, wLogAppender* appender,
 	}
 
 	if (cmessage->Level != WLOG_OFF)
+	{
 		(void)fprintf(fp, "%s%s\n", prefix, cmessage->TextString);
+		/* stdout into a pipe or file is fully buffered (the MS CRT also
+		 * treats _IOLBF as full buffering): flush so a reader sees each
+		 * line when it is logged, not when the buffer fills or at exit. */
+		(void)fflush(fp);
+	}
 #endif
 	return TRUE;
 }
