@@ -27,6 +27,7 @@
 
 #include <freerdp/config.h>
 
+#include <stdio.h>
 #include <string.h>
 
 #include <winpr/assert.h>
@@ -671,14 +672,24 @@ void av1_vt_reset(AV1_VT* vt)
 		av1_vt_close(vt);
 }
 
-AV1_VT* av1_vt_new(wLog* log)
+static BOOL av1_vt_hardware(void)
 {
 	if (__builtin_available(macOS 10.13, iOS 11.0, tvOS 11.0, *))
-	{
-		if (!VTIsHardwareDecodeSupported(AV1_VT_CODEC_TYPE))
-			return nullptr;
-	}
-	else
+		return VTIsHardwareDecodeSupported(AV1_VT_CODEC_TYPE);
+	return FALSE;
+}
+
+size_t av1_vt_list(char names[][256], size_t max)
+{
+	if ((max == 0) || !av1_vt_hardware())
+		return 0;
+	(void)snprintf(names[0], 256, "%s", "Apple media engine");
+	return 1;
+}
+
+AV1_VT* av1_vt_new(wLog* log)
+{
+	if (!av1_vt_hardware())
 		return nullptr;
 
 	AV1_VT* vt = calloc(1, sizeof(AV1_VT));

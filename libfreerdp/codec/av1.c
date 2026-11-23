@@ -1834,6 +1834,13 @@ char** freerdp_av1_hardware_list(BOOL encoder, size_t* count)
 		api = "Media Foundation";
 	}
 #endif
+#if defined(WITH_AV1_VIDEOTOOLBOX)
+	if (!encoder)
+	{
+		n = av1_vt_list(names, ARRAYSIZE(names));
+		api = "VideoToolbox";
+	}
+#endif
 #if defined(WITH_AV1_D3D11VA)
 	if (!encoder)
 	{

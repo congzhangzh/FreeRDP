@@ -41,6 +41,10 @@ typedef struct
  * decoder is as it was and keeps the stream. */
 #define AV1_VT_INVALID (-101)
 
+/** The hardware AV1 decoder (the device) for /codec-list: VideoToolbox has one or none, it
+ * picks it itself. Its name in @p names. @return 1 or 0, at most @p max */
+size_t av1_vt_list(char names[][256], size_t max);
+
 /** @return a decoder, or nullptr when this machine has no hardware AV1 decoder. */
 AV1_VT* av1_vt_new(wLog* log);
 void av1_vt_free(AV1_VT* vt);
