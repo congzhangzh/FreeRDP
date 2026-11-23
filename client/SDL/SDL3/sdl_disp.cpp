@@ -350,6 +350,11 @@ bool sdlDispContext::updateMonitors(SDL_EventType type, SDL_DisplayID displayID)
 				return false;
 			break;
 		default:
+			/* a new scale, mode, orientation or place: the timer sends the new layout, with
+			 * the display's new desktop and device scale factors */
+			if (!_sdl->refreshDisplay(displayID))
+				WLog_Print(_sdl->getWLog(), WLOG_WARN,
+				           "display %" PRIu32 ": no new layout, the last one is kept", displayID);
 			break;
 	}
 

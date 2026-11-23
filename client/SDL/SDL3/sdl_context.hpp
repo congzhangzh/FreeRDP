@@ -157,6 +157,9 @@ class SdlContext
 
 	[[nodiscard]] bool addDisplayWindow(SDL_DisplayID id);
 	[[nodiscard]] bool removeDisplayWindow(SDL_DisplayID id);
+	/** /multimon: measure display id again after it changed its scale, mode or place, place the
+	 * displays again and give each window its part of the new layout (for the display channel) */
+	[[nodiscard]] bool refreshDisplay(SDL_DisplayID id);
 	[[nodiscard]] bool detectDisplays();
 	[[nodiscard]] rdpMonitor getDisplay(SDL_DisplayID id) const;
 	[[nodiscard]] std::vector<SDL_DisplayID> getDisplayIds() const;
@@ -325,7 +328,6 @@ class SdlContext
 	std::map<uint64_t, WTS_WINDOW_INFO> _railWindowInfo;
 	std::set<uint64_t> _railWindowInfoPending;
 
-	std::map<SDL_DisplayID, std::pair<SDL_Rect, SDL_Rect>> _offsets;
 	std::map<SDL_DisplayID, SDL_Rect> _displayBounds;
 	SDL_DisplayID _primaryDisplay = 0;
 

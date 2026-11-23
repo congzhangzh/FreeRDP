@@ -26,3 +26,7 @@
 
 [[nodiscard]] int sdl_list_monitors(SdlContext* sdl);
 [[nodiscard]] BOOL sdl_detect_monitors(SdlContext* sdl, UINT32* pMaxWidth, UINT32* ppMaxHeight);
+
+/** Sets the monitor array sent to the server from the selected displays (/multimon, /monitors,
+ * fullscreen or the work area) */
+[[nodiscard]] BOOL sdl_apply_display_properties(SdlContext* sdl);

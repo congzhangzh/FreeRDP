@@ -28,6 +28,7 @@
 #include "sdl_channels.hpp"
 #include "sdl_monitor.hpp"
 #include "sdl_display_offsets.hpp"
+#include "sdl_monitor_refresh.hpp"
 #include "sdl_pointer.hpp"
 #include "sdl_touch.hpp"
 #include "sdl_prefs.hpp"
@@ -1052,10 +1053,12 @@ void SdlContext::applyMonitorOffset(SDL_WindowID window, float& x, float& y) con
 
 void SdlContext::updateMonitorDataFromOffsets()
 {
+	/* _windows is keyed by window, _displays by display */
 	for (auto& entry : _windows)
 	{
-		const auto& monitor = _displays.at(entry.first);
-		entry.second.setMonitor(monitor);
+		const auto found = _displays.find(entry.second.displayIndex());
+		if (found != _displays.end())
+			entry.second.setMonitor(found->second);
 	}
 }
 
@@ -1643,29 +1646,62 @@ void SdlContext::updateDisplayOffsets()
 {
 	/* Update actual display rectangles from the logical display bounds and the known pixel
 	 * width and height of each display. */
-	_offsets.clear();
+	sdl_monitor_refresh::place(_displays, _displayBounds, _primaryDisplay, _monitorIds);
+}
+
+bool SdlContext::refreshDisplay(SDL_DisplayID id)
+{
+	/* /multimon only: a single window measures itself (updateWindow) */
+	if (!freerdp_settings_get_bool(context()->settings, FreeRDP_UseMultimon))
+		return true;
+	if (std::find(_monitorIds.begin(), _monitorIds.end(), id) == _monitorIds.end())
+		return true; /* not part of the session */
+
+	const auto monitor = SdlWindow::measureDisplay(id);
+	if ((monitor.width <= 0) || (monitor.height <= 0))
+	{
+		WLog_Print(getWLog(), WLOG_WARN, "display %" PRIu32 " has no usable size, kept", id);
+		return true;
+	}
+	_displays.insert_or_assign(id, monitor);
+
+	/* a new pixel size moves the displays beside it, and a display may have moved itself */
+	_displayBounds.clear();
 	for (const auto& entry : _displays)
 	{
 		SDL_Rect bounds{};
-		const auto found = _displayBounds.find(entry.first);
-		if (found != _displayBounds.end())
-			bounds = found->second;
-
-		SDL_Rect pixel{};
-		pixel.w = entry.second.width;
-		pixel.h = entry.second.height;
-		_offsets.emplace(entry.first, std::pair{ bounds, pixel });
+		std::ignore = SDL_GetDisplayBounds(entry.first, &bounds);
+		_displayBounds.emplace(entry.first, bounds);
 	}
+	_primaryDisplay = SDL_GetPrimaryDisplay();
+	updateDisplayOffsets();
+	if (!sdl_apply_display_properties(this))
+		return false;
 
-	if (_offsets.empty())
-		return;
-	sdl_display_offsets::update(_offsets, _primaryDisplay, _monitorIds);
-	for (auto& entry : _displays)
+	/* each window shows its display's part of the new layout */
+	auto settings = context()->settings;
+	const auto count = freerdp_settings_get_uint32(settings, FreeRDP_MonitorCount);
+	auto array = static_cast<const rdpMonitor*>(
+	    freerdp_settings_get_pointer(settings, FreeRDP_MonitorDefArray));
+	if (!array)
+		return true;
+	const std::vector<rdpMonitor> layout(array, array + count);
+	for (auto& entry : _windows)
 	{
-		const auto& pixel = _offsets.at(entry.first).second;
-		entry.second.x = pixel.x;
-		entry.second.y = pixel.y;
+		auto& window = entry.second;
+		const auto m = sdl_monitor_refresh::find(layout, window.displayIndex());
+		if (!m)
+			continue;
+		const auto [x, y] = sdl_monitor_refresh::windowOffset(layout, *m);
+		window.setOffsetX(x);
+		window.setOffsetY(y);
+		window.setMonitor(*m);
 	}
+	WLog_Print(getWLog(), WLOG_DEBUG,
+	           "display %" PRIu32 " now %" PRId32 "x%" PRId32 " scale %" PRIu32 " device %" PRIu32,
+	           id, monitor.width, monitor.height, monitor.attributes.desktopScaleFactor,
+	           monitor.attributes.deviceScaleFactor);
+	return true;
 }
 
 void SdlContext::deleteDisplay(SDL_DisplayID id)

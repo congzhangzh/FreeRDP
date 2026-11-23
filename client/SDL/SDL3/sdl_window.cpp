@@ -598,6 +598,11 @@ static rdpMonitor queryDisplay(SDL_DisplayID id, bool forceAsPrimary)
 	return makeMonitor(id, r, static_cast<float>(size.scale) / 100.0f, forceAsPrimary);
 }
 
+rdpMonitor SdlWindow::measureDisplay(SDL_DisplayID id)
+{
+	return queryDisplay(id, false);
+}
+
 SDL_Rect SdlWindow::rect(SDL_Window* window, bool forceAsPrimary)
 {
 	SDL_Rect rect = {};

@@ -46,6 +46,9 @@ class SdlWindow
 	[[nodiscard]] static SdlWindow createPopup(SDL_Window* parent, const SDL_Rect& rect,
 	                                           bool transparent, bool tooltip = false);
 	[[nodiscard]] static rdpMonitor query(SDL_DisplayID id, bool forceAsPrimary = false);
+	/** A display's monitor from its mode and bounds alone. Unlike query() it never creates a
+	 * window, so it does not take the events queued meanwhile: for a session that runs. */
+	[[nodiscard]] static rdpMonitor measureDisplay(SDL_DisplayID id);
 
 	/** /sdl-hidpi for the windows created from now on and the displays queried, each by its
 	 * display: points (one pixel per point, the system scales; the default), pixels or scale:N.

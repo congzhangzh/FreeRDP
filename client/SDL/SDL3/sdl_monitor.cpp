@@ -192,7 +192,7 @@ int sdl_list_monitors(SdlContext* sdl)
 	return TRUE;
 }
 
-[[nodiscard]] static BOOL sdl_apply_display_properties(SdlContext* sdl)
+BOOL sdl_apply_display_properties(SdlContext* sdl)
 {
 	WINPR_ASSERT(sdl);
 
