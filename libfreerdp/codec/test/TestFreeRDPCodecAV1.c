@@ -194,6 +194,15 @@ static BOOL checkLastDecode(FREERDP_AV1_CONTEXT* dec, FREERDP_DECODE_STATUS stat
 		hardware = FREERDP_DECODE_HARDWARE_YES;
 	}
 #endif
+#if defined(WITH_AV1_VAAPI)
+	/* a Linux machine with an AV1 GPU (and libva) decodes with VA-API, one without with the
+	 * software */
+	if (result.backend && (strcmp(result.backend, "VA-API") == 0))
+	{
+		backend = "VA-API";
+		hardware = FREERDP_DECODE_HARDWARE_YES;
+	}
+#endif
 	if ((result.status != status) || (result.keyFrame != keyFrame) || result.fellBack ||
 	    (result.hardware != hardware) || !result.backend || (strcmp(result.backend, backend) != 0))
 	{

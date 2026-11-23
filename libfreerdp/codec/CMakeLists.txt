@@ -231,7 +231,23 @@ if(WITH_AV1_MF)
   list(APPEND CODEC_LIBS ole32 oleaut32)
   message(STATUS "AV1 encoder: Media Foundation hardware first")
 endif()
-if(WITH_AV1_D3D11VA OR (BUILD_TESTING_INTERNAL AND WITH_GFX_AV1 AND WITH_DAV1D AND DAV1D_FOUND))
+# Hardware AV1 decoding on Linux with any GPU: the driver's VA-API AV1 decoder (Mesa for AMD and
+# Intel, intel-media, nvidia-vaapi-driver) on a DRM render node, the headers from av1_obu.c like
+# D3D11VA, dav1d as the fallback. libva is loaded at run time (libva.so.2, libva-drm.so.2), so
+# only its headers are needed to build and a machine without it decodes in software.
+cmake_dependent_option(
+  WITH_AV1_VAAPI "[AV1] decode with VA-API when the GPU can (libva loaded at run time)" OFF
+  "WITH_GFX_AV1;UNIX;NOT APPLE;NOT ANDROID;NOT EMSCRIPTEN;WITH_DAV1D;DAV1D_FOUND" OFF
+)
+if(WITH_AV1_VAAPI)
+  find_path(VAAPI_INCLUDE_DIR NAMES va/va_dec_av1.h va/va_drm.h REQUIRED)
+  include_directories(SYSTEM ${VAAPI_INCLUDE_DIR})
+  add_compile_definitions(WITH_AV1_VAAPI)
+  list(APPEND CODEC_SRCS av1_vaapi.c av1_vaapi.h)
+  list(APPEND CODEC_LIBS ${CMAKE_DL_LIBS})
+  message(STATUS "AV1 decoder: VA-API first")
+endif()
+if(WITH_AV1_D3D11VA OR WITH_AV1_VAAPI OR (BUILD_TESTING_INTERNAL AND WITH_GFX_AV1 AND WITH_DAV1D AND DAV1D_FOUND))
   list(APPEND CODEC_SRCS av1_obu.c av1_obu.h)
 endif()
 

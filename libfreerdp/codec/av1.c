@@ -60,6 +60,10 @@
 #include "av1_d3d11va.h"
 #endif
 
+#if defined(WITH_AV1_VAAPI)
+#include "av1_vaapi.h"
+#endif
+
 #if defined(WITH_AV1_MF)
 #include "av1_mf.h"
 #endif
@@ -122,6 +126,10 @@ struct S_FREERDP_AV1_CONTEXT
 #if defined(WITH_AV1_D3D11VA)
 	AV1_D3D11VA* d3d11va; /* nullptr without a GPU that decodes AV1 */
 	bool d3d11vaStream;   /* the current stream is the GPU's (else the software decoder's) */
+#endif
+#if defined(WITH_AV1_VAAPI)
+	AV1_VAAPI* vaapi; /* nullptr without a GPU that decodes AV1 */
+	bool vaapiStream; /* the current stream is the GPU's (else the software decoder's) */
 #endif
 	BYTE* yuvdata[3];
 	UINT32 yuvWidth;
@@ -1131,6 +1139,53 @@ INT32 freerdp_av1_decompress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, UIN
 	}
 #endif
 
+#if defined(WITH_AV1_VAAPI)
+	if (av1->vaapi && av1->vaapiStream)
+	{
+		av1->lastDecode.backend = "VA-API";
+		AV1_VAAPI_PICTURE pic = WINPR_C_ARRAY_INIT;
+		const INT32 drc = av1_vaapi_decode(av1->vaapi, pSrcData, SrcSize, &pic);
+		if (drc != AV1_VAAPI_UNSUPPORTED)
+		{
+			/* the GPU has the stream, whatever became of this decode */
+			av1->lastDecode.hardware = FREERDP_DECODE_HARDWARE_YES;
+		}
+		if (drc == TRUE)
+		{
+			const INT32 crc = av1_convert_planar(av1, FALSE, pic.planes, pic.strides, pic.width,
+			                                     pic.height, pDstData, DstFormat, nDstStep,
+			                                     nDstWidth, nDstHeight, regionRects, numRegionRect);
+			if (crc >= 0)
+				av1->lastDecode.status = FREERDP_DECODE_PICTURE;
+			return crc;
+		}
+		if (drc == FALSE)
+		{
+			av1->lastDecode.status = FREERDP_DECODE_NO_PICTURE;
+			return TRUE;
+		}
+		/* bad input: refused, the stream stays with the GPU */
+		if (drc == AV1_VAAPI_INVALID)
+			return -1;
+
+		/* The software decoder takes the rest of this stream (until the next reset). */
+		av1->vaapiStream = false;
+		av1->lastDecode.fellBack = TRUE;
+		if (drc != AV1_VAAPI_UNSUPPORTED)
+		{
+			/* In the middle of the stream: the software decoder has none of its references,
+			 * it only picks up at a new sequence header. */
+			WLog_Print(av1->log, WLOG_WARN,
+			           "VA-API AV1 decode failed (%" PRId32 "), software decoder from the "
+			           "next sequence header",
+			           drc);
+			return drc;
+		}
+		/* This temporal unit starts the stream, the software decoder starts with it. */
+		av1->lastDecode.backend = AV1_SOFTWARE_DECODER;
+	}
+#endif
+
 #if defined(WITH_AV1_WEBCODECS)
 	if (av1->webcodecs > 0)
 	{
@@ -1406,6 +1461,44 @@ BOOL freerdp_av1_context_reset(FREERDP_AV1_CONTEXT* av1, UINT32 width, UINT32 he
 			av1_d3d11va_reset(av1->d3d11va);
 		av1->d3d11vaStream = (av1->d3d11va != nullptr);
 #endif
+#if defined(WITH_AV1_VAAPI)
+		if (av1->backend == FREERDP_AV1_BACKEND_SOFTWARE)
+		{
+			/* the software decoder is always there with VA-API (CMake: dav1d) */
+			av1_vaapi_free(av1->vaapi);
+			av1->vaapi = nullptr;
+			if (!av1->backendLogged)
+				WLog_Print(av1->log, WLOG_INFO,
+				           "AV1 decoder: " AV1_SOFTWARE_DECODER
+				           " (software; /codec-first:software)");
+			av1->backendLogged = true;
+		}
+		else if (!av1->vaapi)
+		{
+			/* the devices of /codec-first in order, or the first with an AV1 decoder */
+			const size_t tries = av1->nDevices ? av1->nDevices : 1;
+			for (size_t x = 0; (x < tries) && !av1->vaapi; x++)
+				av1->vaapi =
+				    av1_vaapi_new(av1->log, av1->nDevices ? av1->devices[x] : AV1_VAAPI_ANY_DEVICE);
+			if (av1->vaapi)
+				WLog_Print(av1->log, WLOG_INFO,
+				           "AV1 decoder: VA-API %" PRId32 " %s (hardware), " AV1_SOFTWARE_DECODER
+				           " as fallback",
+				           av1_vaapi_device(av1->vaapi), av1_vaapi_name(av1->vaapi));
+			else if (av1->nDevices)
+				WLog_Print(av1->log, WLOG_WARN,
+				           "AV1 decoder: " AV1_SOFTWARE_DECODER
+				           " (software; no device of /codec-first, /codec-list lists them)");
+			else
+				WLog_Print(av1->log, WLOG_INFO,
+				           "AV1 decoder: " AV1_SOFTWARE_DECODER
+				           " (software, no GPU with a VA-API AV1 decoder)");
+			av1->backendLogged = true;
+		}
+		else
+			av1_vaapi_reset(av1->vaapi);
+		av1->vaapiStream = (av1->vaapi != nullptr);
+#endif
 #if defined(WITH_AV1_WEBCODECS)
 		if (av1->webcodecs == 0)
 		{
@@ -1508,6 +1601,9 @@ void freerdp_av1_context_free(FREERDP_AV1_CONTEXT* av1)
 #endif
 #if defined(WITH_AV1_D3D11VA)
 	av1_d3d11va_free(av1->d3d11va);
+#endif
+#if defined(WITH_AV1_VAAPI)
+	av1_vaapi_free(av1->vaapi);
 #endif
 	winpr_aligned_free(av1->yuvdata[0]);
 	winpr_aligned_free(av1->yuvdata[1]);
@@ -1743,6 +1839,13 @@ char** freerdp_av1_hardware_list(BOOL encoder, size_t* count)
 	{
 		n = av1_d3d11va_list(names, ARRAYSIZE(names));
 		api = "D3D11VA";
+	}
+#endif
+#if defined(WITH_AV1_VAAPI)
+	if (!encoder)
+	{
+		n = av1_vaapi_list(names, ARRAYSIZE(names));
+		api = "VA-API";
 	}
 #endif
 	char** list = calloc(n + 1, sizeof(char*));
