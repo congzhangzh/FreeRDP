@@ -37,6 +37,7 @@
 #define TAG CLIENT_TAG("sdl")
 
 #include "sdl_monitor.hpp"
+#include "sdl_hidpi.hpp"
 #include "sdl_context.hpp"
 
 typedef struct
@@ -79,8 +80,11 @@ int sdl_list_monitors(SdlContext* sdl)
 
 		if (!brc)
 			continue;
-		printf("     %s [%u] [%s] %dx%d\t+%d+%d\n", (i == 0) ? "*" : " ", id, name, rect.w, rect.h,
-		       rect.x, rect.y);
+		/* the display's own scale last, e.g. 150% (125% and 150% on Windows, 200% on a 2x
+		 * Wayland output): tools read it as an optional trailing field */
+		const auto scale = sdl::hidpi::percent(SDL_GetDisplayContentScale(id));
+		printf("     %s [%u] [%s] %dx%d\t+%d+%d\t%" PRIu32 "%%\n", (i == 0) ? "*" : " ", id, name,
+		       rect.w, rect.h, rect.x, rect.y, scale);
 	}
 	SDL_free(ids);
 	SDL_Quit();

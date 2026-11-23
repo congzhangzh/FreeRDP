@@ -139,6 +139,22 @@ namespace sdl::hidpi
 		return size;
 	}
 
+	uint32_t percent(float scale)
+	{
+		if (!(scale > 0.0f))
+			return 100;
+		return static_cast<uint32_t>(std::lround(scale * 100.0f));
+	}
+
+	uint32_t deviceScaleFactor(uint32_t desktopScaleFactor)
+	{
+		if (desktopScaleFactor >= 180)
+			return 180;
+		if (desktopScaleFactor >= 140)
+			return 140;
+		return 100;
+	}
+
 	std::pair<float, float> toWindow(float x, float y, const Mapping& m)
 	{
 		return { (x + static_cast<float>(m.offsetX)) * m.scaleX,

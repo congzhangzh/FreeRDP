@@ -26,6 +26,7 @@
 #include <SDL3/SDL.h>
 
 #include "sdl_disp.hpp"
+#include "sdl_hidpi.hpp"
 #include "sdl_input.hpp"
 #include "sdl_context.hpp"
 
@@ -274,6 +275,8 @@ bool sdlDispContext::sendLayout(const rdpMonitor* monitors, size_t nmonitors)
 		if ((mask & FREERDP_MONITOR_OVERRIDE_DEVICE_SCALE) != 0)
 			layout.DeviceScaleFactor =
 			    freerdp_settings_get_uint32(settings, FreeRDP_DeviceScaleFactor);
+		else /* the step that goes with the desktop scale sent, which may be an override */
+			layout.DeviceScaleFactor = sdl::hidpi::deviceScaleFactor(layout.DesktopScaleFactor);
 		layouts.emplace_back(layout);
 	}
 

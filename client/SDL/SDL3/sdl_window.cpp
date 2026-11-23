@@ -536,7 +536,8 @@ static rdpMonitor makeMonitor(SDL_DisplayID id, const SDL_Rect& r, float factor,
 	monitor.height = r.h;
 	monitor.is_primary = forceAsPrimary || (id == primary);
 	monitor.attributes.desktopScaleFactor = static_cast<UINT32>(dpi);
-	monitor.attributes.deviceScaleFactor = 100;
+	monitor.attributes.deviceScaleFactor =
+	    sdl::hidpi::deviceScaleFactor(monitor.attributes.desktopScaleFactor);
 	monitor.attributes.orientation = rdp_orientation;
 	/* The physical size is in millimetres and ignored outside 10 to 10000 ([MS-RDPBCGR]
 	 * 2.2.1.3.9.1, [MS-RDPEDISP] 2.2.2.2.1). SDL3 does not know a display's physical size, so

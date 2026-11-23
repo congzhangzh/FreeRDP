@@ -222,10 +222,52 @@ static int checkOverlay()
 	return 0;
 }
 
+/* [MS-RDPBCGR] 2.2.1.3.2, 2.2.1.3.10.1: the device scale is 100, 140 or 180, or the server drops
+ * both factors */
+static int checkDeviceScale()
+{
+	struct Case
+	{
+		uint32_t desktop;
+		uint32_t device;
+	};
+	for (const auto& c : { Case{ 0, 100 }, Case{ 100, 100 }, Case{ 125, 100 }, Case{ 139, 100 },
+	                       Case{ 140, 140 }, Case{ 150, 140 }, Case{ 175, 140 }, Case{ 179, 140 },
+	                       Case{ 180, 180 }, Case{ 200, 180 }, Case{ 300, 180 }, Case{ 500, 180 } })
+	{
+		const auto got = sdl::hidpi::deviceScaleFactor(c.desktop);
+		if (got != c.device)
+		{
+			(void)fprintf(stderr, "desktop %u: device %u, want %u\n", c.desktop, got, c.device);
+			return -1;
+		}
+	}
+
+	/* per display, from the desktop scale each one asks for (a mixed desktop) */
+	const auto win150 = sdl::hidpi::monitorSize(1280, 720, 1.0f, 1.5f, Mode::Points);
+	CHECK(sdl::hidpi::deviceScaleFactor(win150.scale) == 140);
+	const auto retinaPixels = sdl::hidpi::monitorSize(1512, 982, 2.0f, 1.0f, Mode::Pixels);
+	CHECK(sdl::hidpi::deviceScaleFactor(retinaPixels.scale) == 180);
+	const auto retinaPoints = sdl::hidpi::monitorSize(1512, 982, 2.0f, 1.0f, Mode::Points);
+	CHECK(sdl::hidpi::deviceScaleFactor(retinaPoints.scale) == 100);
+	const auto scaled = sdl::hidpi::monitorSize(1512, 982, 2.0f, 1.0f, { Mode::Scale, 150 });
+	CHECK(sdl::hidpi::deviceScaleFactor(scaled.scale) == 100);
+
+	/* the display's own scale in /list:monitor */
+	CHECK(sdl::hidpi::percent(1.0f) == 100);
+	CHECK(sdl::hidpi::percent(1.25f) == 125);
+	CHECK(sdl::hidpi::percent(1.5f) == 150);
+	CHECK(sdl::hidpi::percent(1.75f) == 175);
+	CHECK(sdl::hidpi::percent(2.0f) == 200);
+	CHECK(sdl::hidpi::percent(0.0f) == 100);
+	CHECK(sdl::hidpi::percent(-1.0f) == 100);
+	return 0;
+}
+
 int TestSDLHiDpi([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
 {
-	for (auto* check :
-	     { checkParse, checkPolicy, checkMonitors, checkMixedMac, checkMapping, checkOverlay })
+	for (auto* check : { checkParse, checkPolicy, checkMonitors, checkMixedMac, checkMapping,
+	                     checkOverlay, checkDeviceScale })
 	{
 		const int rc = check();
 		if (rc != 0)

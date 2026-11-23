@@ -106,7 +106,7 @@ SdlContext::SdlContext(rdpContext* context)
 	      "of the pixels at 2x). pixels: every pixel, at the scale times the density (the "
 	      "behaviour before this option). scale:<N> (50 to 400): the points times N/100 at "
 	      "scale 100, which the client draws scaled to fit the window (e.g. scale:150). "
-	      "<id>:<setting> gives the display of that /monitor-list id a setting of its own, "
+	      "<id>:<setting> gives the display of that /list:monitor id a setting of its own, "
 	      "e.g. points,2:scale:150. A window keeps the setting of the display it was created "
 	      "on when it moves. Where a window has one pixel per point (Windows, X11), points "
 	      "and pixels are the same." });
@@ -282,7 +282,13 @@ BOOL SdlContext::preConnect(freerdp* instance)
 			{
 				if (!freerdp_settings_set_uint32(settings, FreeRDP_DesktopScaleFactor, scale))
 					return FALSE;
-				WLog_Print(sdl->getWLog(), WLOG_DEBUG, "core data scale %" PRIu32, scale);
+				const auto device = sdl::hidpi::deviceScaleFactor(scale);
+				if (((overrides & FREERDP_MONITOR_OVERRIDE_DEVICE_SCALE) == 0) &&
+				    !freerdp_settings_set_uint32(settings, FreeRDP_DeviceScaleFactor, device))
+					return FALSE;
+				WLog_Print(sdl->getWLog(), WLOG_DEBUG,
+				           "core data scale %" PRIu32 " device %" PRIu32, scale,
+				           freerdp_settings_get_uint32(settings, FreeRDP_DeviceScaleFactor));
 			}
 
 			/* With /multimon the server also takes each monitor's own scale from the monitor
@@ -690,6 +696,7 @@ bool SdlContext::updateWindow(SDL_WindowID id)
 	const bool scaled = (w.hiDpiSetting().mode == sdl::hidpi::Mode::Scale);
 	m.attributes.desktopScaleFactor =
 	    scaled ? 100 : static_cast<UINT32>(std::roundf(w.scale() * 100.0f));
+	m.attributes.deviceScaleFactor = sdl::hidpi::deviceScaleFactor(m.attributes.desktopScaleFactor);
 	w.setMonitor(m);
 	return true;
 }

@@ -116,6 +116,15 @@ namespace sdl::hidpi
 	/** @return the session pixel of a window pixel (the inverse of toWindow) */
 	[[nodiscard]] std::pair<float, float> toSession(float x, float y, const Mapping& m);
 
+	/** @return a scale as a percentage (1.5 is 150), 100 for none */
+	[[nodiscard]] uint32_t percent(float scale);
+
+	/** The device scale factor that goes with a desktop scale factor (percent): 100, 140 or 180.
+	 * [MS-RDPBCGR] 2.2.1.3.2 and 2.2.1.3.10.1 allow only these and drop both factors for any other
+	 * value; they give no mapping, so take the step at or below the desktop scale (125 is 100, 150
+	 * is 140, 200 is 180). */
+	[[nodiscard]] uint32_t deviceScaleFactor(uint32_t desktopScaleFactor);
+
 	/** @return the overlay's line for the setting on a display of that density */
 	[[nodiscard]] std::string overlayText(const Setting& setting, float density);
 } // namespace sdl::hidpi
