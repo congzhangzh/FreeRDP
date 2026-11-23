@@ -119,6 +119,11 @@ namespace sdl::hidpi
 	/** @return a scale as a percentage (1.5 is 150), 100 for none */
 	[[nodiscard]] uint32_t percent(float scale);
 
+	/** @return the fields /list:monitor ends a display's line with: a tab, the OS scale in
+	 * percent, a tab, the pixel density ("\t150%\t1x", "\t100%\t2x" on a Retina Mac). Keep it
+	 * stable, freerdp-tk parses it. */
+	[[nodiscard]] std::string listMonitorFields(float contentScale, float density);
+
 	/** The device scale factor that goes with a desktop scale factor (percent): 100, 140 or 180.
 	 * [MS-RDPBCGR] 2.2.1.3.2 and 2.2.1.3.10.1 allow only these and drop both factors for any other
 	 * value; they give no mapping, so take the step at or below the desktop scale (125 is 100, 150

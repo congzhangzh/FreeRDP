@@ -253,6 +253,13 @@ static int checkDeviceScale()
 	const auto scaled = sdl::hidpi::monitorSize(1512, 982, 2.0f, 1.0f, { Mode::Scale, 150 });
 	CHECK(sdl::hidpi::deviceScaleFactor(scaled.scale) == 100);
 
+	/* /list:monitor's trailing fields: freerdp-tk parses them, so they stay as they are */
+	CHECK(sdl::hidpi::listMonitorFields(1.0f, 2.0f) == "\t100%\t2x");
+	CHECK(sdl::hidpi::listMonitorFields(1.5f, 1.0f) == "\t150%\t1x");
+	CHECK(sdl::hidpi::listMonitorFields(1.25f, 1.5f) == "\t125%\t1.5x");
+	CHECK(sdl::hidpi::listMonitorFields(2.0f, 2.0f) == "\t200%\t2x");
+	CHECK(sdl::hidpi::listMonitorFields(0.0f, 0.0f) == "\t100%\t1x");
+
 	/* the display's own scale in /list:monitor */
 	CHECK(sdl::hidpi::percent(1.0f) == 100);
 	CHECK(sdl::hidpi::percent(1.25f) == 125);

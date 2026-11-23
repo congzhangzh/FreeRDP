@@ -147,6 +147,16 @@ namespace sdl::hidpi
 		return static_cast<uint32_t>(std::lround(scale * 100.0f));
 	}
 
+	std::string listMonitorFields(float contentScale, float density)
+	{
+		if (!(density > 0.0f))
+			density = 1.0f;
+		char fields[48] = {};
+		(void)std::snprintf(fields, sizeof(fields), "\t%" PRIu32 "%%\t%gx", percent(contentScale),
+		                    static_cast<double>(density));
+		return fields;
+	}
+
 	uint32_t deviceScaleFactor(uint32_t desktopScaleFactor)
 	{
 		if (desktopScaleFactor >= 180)

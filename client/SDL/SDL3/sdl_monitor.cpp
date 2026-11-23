@@ -80,11 +80,15 @@ int sdl_list_monitors(SdlContext* sdl)
 
 		if (!brc)
 			continue;
-		/* the display's own scale last, e.g. 150% (125% and 150% on Windows, 200% on a 2x
-		 * Wayland output): tools read it as an optional trailing field */
-		const auto scale = sdl::hidpi::percent(SDL_GetDisplayContentScale(id));
-		printf("     %s [%u] [%s] %dx%d\t+%d+%d\t%" PRIu32 "%%\n", (i == 0) ? "*" : " ", id, name,
-		       rect.w, rect.h, rect.x, rect.y, scale);
+		/* the display's own scale and its pixel density last, e.g. 150% and 1x on Windows,
+		 * 100% and 2x on a Retina Mac: tools read them as optional trailing fields */
+		float density = 1.0f;
+		const auto* mode = SDL_GetCurrentDisplayMode(id);
+		if (mode && (mode->pixel_density > 0.0f))
+			density = mode->pixel_density;
+		const auto fields = sdl::hidpi::listMonitorFields(SDL_GetDisplayContentScale(id), density);
+		printf("     %s [%u] [%s] %dx%d\t+%d+%d%s\n", (i == 0) ? "*" : " ", id, name, rect.w,
+		       rect.h, rect.x, rect.y, fields.c_str());
 	}
 	SDL_free(ids);
 	SDL_Quit();
