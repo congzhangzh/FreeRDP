@@ -21,97 +21,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <dlfcn.h>
-#include <fcntl.h>
-#include <unistd.h>
-
 #include <winpr/assert.h>
-#include <winpr/synch.h>
 #include <winpr/wlog.h>
-
-#include <va/va.h>
-#include <va/va_drm.h>
 
 #include "av1_obu.h"
 #include "av1_vaapi.h"
+#include "av1_vaapi_lib.h"
 
 /* 8 reference slots, the frame being decoded and one spare */
 #define AV1_SURFACES 10
-/* the DRM render nodes, /dev/dri/renderD128 and up */
-#define AV1_RENDER_FIRST 128
-#define AV1_RENDER_COUNT 64
-
-/* libva is loaded at run time: a client without it (or without a driver for its GPU) still
- * starts and decodes in software. The prototypes come from the headers. */
-#define VA_FUNCTIONS(X)         \
-	X(vaInitialize)             \
-	X(vaTerminate)              \
-	X(vaErrorStr)               \
-	X(vaSetErrorCallback)       \
-	X(vaSetInfoCallback)        \
-	X(vaQueryVendorString)      \
-	X(vaMaxNumProfiles)         \
-	X(vaQueryConfigProfiles)    \
-	X(vaMaxNumEntrypoints)      \
-	X(vaQueryConfigEntrypoints) \
-	X(vaGetConfigAttributes)    \
-	X(vaCreateConfig)           \
-	X(vaDestroyConfig)          \
-	X(vaCreateSurfaces)         \
-	X(vaDestroySurfaces)        \
-	X(vaCreateContext)          \
-	X(vaDestroyContext)         \
-	X(vaCreateBuffer)           \
-	X(vaDestroyBuffer)          \
-	X(vaBeginPicture)           \
-	X(vaRenderPicture)          \
-	X(vaEndPicture)             \
-	X(vaSyncSurface)            \
-	X(vaCreateImage)            \
-	X(vaDestroyImage)           \
-	X(vaGetImage)               \
-	X(vaMapBuffer)              \
-	X(vaUnmapBuffer)
-
-#define VA_FIELD(name) __typeof__(name)* name;
-typedef struct
-{
-	BOOL loaded;
-	__typeof__(vaGetDisplayDRM)* vaGetDisplayDRM;
-	VA_FUNCTIONS(VA_FIELD)
-} AV1_VA_API;
-
-static AV1_VA_API va = WINPR_C_ARRAY_INIT;
-static INIT_ONCE vaOnce = INIT_ONCE_STATIC_INIT;
-
-static BOOL CALLBACK va_load(PINIT_ONCE once, PVOID param, PVOID* context)
-{
-	WINPR_UNUSED(once);
-	WINPR_UNUSED(param);
-	WINPR_UNUSED(context);
-
-	/* never closed: a driver may keep threads of its own */
-	void* lib = dlopen("libva.so.2", RTLD_NOW | RTLD_LOCAL);
-	void* drm = lib ? dlopen("libva-drm.so.2", RTLD_NOW | RTLD_LOCAL) : nullptr;
-	if (!lib || !drm)
-		return TRUE;
-	BOOL ok = TRUE;
-	va.vaGetDisplayDRM = (__typeof__(va.vaGetDisplayDRM))dlsym(drm, "vaGetDisplayDRM");
-	ok = ok && va.vaGetDisplayDRM;
-#define VA_LOAD(name)                                 \
-	va.name = (__typeof__(va.name))dlsym(lib, #name); \
-	ok = ok && va.name;
-	VA_FUNCTIONS(VA_LOAD)
-	va.loaded = ok;
-	return TRUE;
-}
-
-static BOOL va_loaded(void)
-{
-	if (!InitOnceExecuteOnce(&vaOnce, va_load, nullptr, nullptr))
-		return FALSE;
-	return va.loaded;
-}
 
 struct S_AV1_VAAPI
 {
@@ -144,21 +62,10 @@ struct S_AV1_VAAPI
 	size_t chromaSize;
 };
 
-/* libva's own messages go to the log (not to stderr) */
-static void va_message(void* context, const char* message)
-{
-	wLog* log = context;
-	if (!log || !message)
-		return;
-	const size_t len = strlen(message);
-	const int n = (len > 0) && (message[len - 1] == '\n') ? (int)len - 1 : (int)len;
-	WLog_Print(log, WLOG_DEBUG, "libva: %.*s", n, message);
-}
-
 static void unmap_image(AV1_VAAPI* dec)
 {
 	if (dec->mapped)
-		(void)va.vaUnmapBuffer(dec->dpy, dec->image.buf);
+		(void)av1_va.vaUnmapBuffer(dec->dpy, dec->image.buf);
 	dec->mapped = FALSE;
 }
 
@@ -166,7 +73,7 @@ static void free_image(AV1_VAAPI* dec)
 {
 	unmap_image(dec);
 	if (dec->haveImage)
-		(void)va.vaDestroyImage(dec->dpy, dec->image.image_id);
+		(void)av1_va.vaDestroyImage(dec->dpy, dec->image.image_id);
 	dec->haveImage = FALSE;
 }
 
@@ -176,10 +83,10 @@ static void free_sequence(AV1_VAAPI* dec)
 		return;
 	free_image(dec);
 	if (dec->context != VA_INVALID_ID)
-		(void)va.vaDestroyContext(dec->dpy, dec->context);
+		(void)av1_va.vaDestroyContext(dec->dpy, dec->context);
 	dec->context = VA_INVALID_ID;
 	if (dec->haveSurfaces)
-		(void)va.vaDestroySurfaces(dec->dpy, dec->surfaces, AV1_SURFACES);
+		(void)av1_va.vaDestroySurfaces(dec->dpy, dec->surfaces, AV1_SURFACES);
 	dec->haveSurfaces = FALSE;
 	dec->maxWidth = dec->maxHeight = 0;
 	for (size_t i = 0; i < DAV1D_NUM_REF_FRAMES; i++)
@@ -189,110 +96,36 @@ static void free_sequence(AV1_VAAPI* dec)
 static void close_device(AV1_VAAPI* dec)
 {
 	free_sequence(dec);
-	if (dec->dpy)
-	{
-		if (dec->config != VA_INVALID_ID)
-			(void)va.vaDestroyConfig(dec->dpy, dec->config);
-		(void)va.vaTerminate(dec->dpy);
-	}
+	if (dec->dpy && (dec->config != VA_INVALID_ID))
+		(void)av1_va.vaDestroyConfig(dec->dpy, dec->config);
+	av1_va_close(dec->fd, dec->dpy);
 	dec->config = VA_INVALID_ID;
 	dec->dpy = nullptr;
-	if (dec->fd >= 0)
-		close(dec->fd);
 	dec->fd = -1;
 	dec->name[0] = '\0';
 }
 
 static BOOL device_decodes_av1(VADisplay dpy)
 {
-	const int maxProfiles = va.vaMaxNumProfiles(dpy);
-	if (maxProfiles <= 0)
-		return FALSE;
-	VAProfile* profiles = calloc((size_t)maxProfiles, sizeof(VAProfile));
-	if (!profiles)
-		return FALSE;
-	int n = 0;
-	BOOL have = FALSE;
-	if (va.vaQueryConfigProfiles(dpy, profiles, &n) == VA_STATUS_SUCCESS)
-	{
-		for (int i = 0; (i < n) && !have; i++)
-			have = (profiles[i] == VAProfileAV1Profile0);
-	}
-	free(profiles);
-	if (!have)
-		return FALSE;
-
-	const int maxEntrypoints = va.vaMaxNumEntrypoints(dpy);
-	if (maxEntrypoints <= 0)
-		return FALSE;
-	VAEntrypoint* entrypoints = calloc((size_t)maxEntrypoints, sizeof(VAEntrypoint));
-	if (!entrypoints)
-		return FALSE;
-	have = FALSE;
-	if (va.vaQueryConfigEntrypoints(dpy, VAProfileAV1Profile0, entrypoints, &n) ==
-	    VA_STATUS_SUCCESS)
-	{
-		for (int i = 0; (i < n) && !have; i++)
-			have = (entrypoints[i] == VAEntrypointVLD);
-	}
-	free(entrypoints);
-	if (!have)
-		return FALSE;
-
-	VAConfigAttrib attrib = { .type = VAConfigAttribRTFormat };
-	if (va.vaGetConfigAttributes(dpy, VAProfileAV1Profile0, VAEntrypointVLD, &attrib, 1) !=
-	    VA_STATUS_SUCCESS)
-		return FALSE;
-	return (attrib.value != VA_ATTRIB_NOT_SUPPORTED) && (attrib.value & VA_RT_FORMAT_YUV420);
+	return av1_va_supports(dpy, VAEntrypointVLD);
 }
 
 /* the display on render node @p node when it decodes AV1 */
 static BOOL open_device(AV1_VAAPI* dec, wLog* log, int node)
 {
-	char path[64] = WINPR_C_ARRAY_INIT;
-	(void)snprintf(path, sizeof(path), "/dev/dri/renderD%d", node);
-	const int fd = open(path, O_RDWR | O_CLOEXEC);
-	if (fd < 0)
-		return FALSE;
-	VADisplay dpy = va.vaGetDisplayDRM(fd);
-	if (!dpy)
-	{
-		close(fd);
-		return FALSE;
-	}
-	(void)va.vaSetErrorCallback(dpy, va_message, log);
-	(void)va.vaSetInfoCallback(dpy, va_message, log);
-	int major = 0;
-	int minor = 0;
-	if (va.vaInitialize(dpy, &major, &minor) != VA_STATUS_SUCCESS)
-	{
-		/* the display is terminated, which also releases it */
-		(void)va.vaTerminate(dpy);
-		close(fd);
-		return FALSE;
-	}
-	if (!device_decodes_av1(dpy))
-	{
-		(void)va.vaTerminate(dpy);
-		close(fd);
-		return FALSE;
-	}
-	dec->fd = fd;
-	dec->dpy = dpy;
-	const char* vendor = va.vaQueryVendorString(dpy);
-	(void)snprintf(dec->name, sizeof(dec->name), "%s (%s)", vendor ? vendor : "VA-API", path);
-	return TRUE;
+	return av1_va_open(log, node, device_decodes_av1, &dec->fd, &dec->dpy, dec->name,
+	                   sizeof(dec->name));
 }
 
 size_t av1_vaapi_list(char names[][256], size_t max)
 {
-	if (!va_loaded())
+	if (!av1_va_load())
 		return 0;
 	size_t count = 0;
-	for (int i = 0; (i < AV1_RENDER_COUNT) && (count < max); i++)
+	for (int i = 0; (i < AV1_VA_RENDER_COUNT) && (count < max); i++)
 	{
 		AV1_VAAPI probe = { .fd = -1, .config = VA_INVALID_ID, .context = VA_INVALID_ID };
-		if (open_device(&probe, nullptr, AV1_RENDER_FIRST + i))
+		if (open_device(&probe, nullptr, AV1_VA_RENDER_FIRST + i))
 		{
 			(void)snprintf(names[count], 256, "%s", probe.name);
 			count++;
@@ -320,7 +153,7 @@ void av1_vaapi_free(AV1_VAAPI* dec)
 
 AV1_VAAPI* av1_vaapi_new(wLog* log, INT32 device)
 {
-	if (!va_loaded())
+	if (!av1_va_load())
 	{
 		WLog_Print(log, WLOG_DEBUG, "VA-API: no libva.so.2 / libva-drm.so.2");
 		return nullptr;
@@ -340,9 +173,9 @@ AV1_VAAPI* av1_vaapi_new(wLog* log, INT32 device)
 
 	/* the devices are the render nodes with an AV1 decoder, in order (/codec-list) */
 	INT32 id = 0;
-	for (int i = 0; (i < AV1_RENDER_COUNT) && !dec->dpy; i++)
+	for (int i = 0; (i < AV1_VA_RENDER_COUNT) && !dec->dpy; i++)
 	{
-		if (open_device(dec, log, AV1_RENDER_FIRST + i))
+		if (open_device(dec, log, AV1_VA_RENDER_FIRST + i))
 		{
 			if ((device >= 0) && (id != device))
 				close_device(dec);
@@ -355,12 +188,12 @@ AV1_VAAPI* av1_vaapi_new(wLog* log, INT32 device)
 		goto fail;
 
 	VAConfigAttrib attrib = { .type = VAConfigAttribRTFormat, .value = VA_RT_FORMAT_YUV420 };
-	const VAStatus st = va.vaCreateConfig(dec->dpy, VAProfileAV1Profile0, VAEntrypointVLD, &attrib,
-	                                      1, &dec->config);
+	const VAStatus st = av1_va.vaCreateConfig(dec->dpy, VAProfileAV1Profile0, VAEntrypointVLD,
+	                                          &attrib, 1, &dec->config);
 	if (st != VA_STATUS_SUCCESS)
 	{
 		WLog_Print(log, WLOG_WARN, "VA-API: vaCreateConfig on %s: %s", dec->name,
-		           va.vaErrorStr(st));
+		           av1_va.vaErrorStr(st));
 		dec->config = VA_INVALID_ID;
 		goto fail;
 	}
@@ -409,22 +242,22 @@ static INT32 setup_sequence(AV1_VAAPI* dec, const Dav1dSequenceHeader* seq)
 		                       .flags = VA_SURFACE_ATTRIB_SETTABLE,
 		                       .value = { .type = VAGenericValueTypeInteger,
 		                                  .value = { .i = VA_FOURCC_NV12 } } };
-	VAStatus st = va.vaCreateSurfaces(dec->dpy, VA_RT_FORMAT_YUV420, sw, sh, dec->surfaces,
-	                                  AV1_SURFACES, &attrib, 1);
+	VAStatus st = av1_va.vaCreateSurfaces(dec->dpy, VA_RT_FORMAT_YUV420, sw, sh, dec->surfaces,
+	                                      AV1_SURFACES, &attrib, 1);
 	if (st != VA_STATUS_SUCCESS)
 	{
 		WLog_Print(dec->log, WLOG_WARN, "VA-API: vaCreateSurfaces %" PRIu32 "x%" PRIu32 ": %s", sw,
-		           sh, va.vaErrorStr(st));
+		           sh, av1_va.vaErrorStr(st));
 		return AV1_VAAPI_UNSUPPORTED;
 	}
 	dec->haveSurfaces = TRUE;
 
-	st = va.vaCreateContext(dec->dpy, dec->config, (int)w, (int)h, VA_PROGRESSIVE, dec->surfaces,
-	                        AV1_SURFACES, &dec->context);
+	st = av1_va.vaCreateContext(dec->dpy, dec->config, (int)w, (int)h, VA_PROGRESSIVE,
+	                            dec->surfaces, AV1_SURFACES, &dec->context);
 	if (st != VA_STATUS_SUCCESS)
 	{
 		WLog_Print(dec->log, WLOG_WARN, "VA-API: vaCreateContext %" PRIu32 "x%" PRIu32 ": %s", w, h,
-		           va.vaErrorStr(st));
+		           av1_va.vaErrorStr(st));
 		dec->context = VA_INVALID_ID;
 		return AV1_VAAPI_UNSUPPORTED;
 	}
@@ -658,33 +491,33 @@ static BOOL decode_frame(AV1_VAAPI* dec, const Dav1dSequenceHeader* seq, const B
 	           "VA-API: frame type %d %dx%d into surface %d, %" PRIu32 " tiles, %" PRIuz " bytes",
 	           ev->hdr->d.frame_type, ev->hdr->d.width[1], ev->hdr->d.height, cur, ev->nTiles,
 	           total);
-	VAStatus st = va.vaCreateBuffer(dec->dpy, dec->context, VAPictureParameterBufferType,
-	                                sizeof(pp), 1, &pp, &bufs[0]);
+	VAStatus st = av1_va.vaCreateBuffer(dec->dpy, dec->context, VAPictureParameterBufferType,
+	                                    sizeof(pp), 1, &pp, &bufs[0]);
 	if (st == VA_STATUS_SUCCESS)
-		st = va.vaCreateBuffer(dec->dpy, dec->context, VASliceParameterBufferType,
-		                       sizeof(VASliceParameterBufferAV1), ev->nTiles, tiles, &bufs[1]);
+		st = av1_va.vaCreateBuffer(dec->dpy, dec->context, VASliceParameterBufferType,
+		                           sizeof(VASliceParameterBufferAV1), ev->nTiles, tiles, &bufs[1]);
 	if (st == VA_STATUS_SUCCESS)
-		st = va.vaCreateBuffer(dec->dpy, dec->context, VASliceDataBufferType, (unsigned)total, 1,
-		                       data, &bufs[2]);
+		st = av1_va.vaCreateBuffer(dec->dpy, dec->context, VASliceDataBufferType, (unsigned)total,
+		                           1, data, &bufs[2]);
 	if (st != VA_STATUS_SUCCESS)
 	{
-		WLog_Print(dec->log, WLOG_ERROR, "VA-API: vaCreateBuffer: %s", va.vaErrorStr(st));
+		WLog_Print(dec->log, WLOG_ERROR, "VA-API: vaCreateBuffer: %s", av1_va.vaErrorStr(st));
 		goto end;
 	}
 
-	st = va.vaBeginPicture(dec->dpy, dec->context, dec->surfaces[cur]);
+	st = av1_va.vaBeginPicture(dec->dpy, dec->context, dec->surfaces[cur]);
 	if (st != VA_STATUS_SUCCESS)
 	{
-		WLog_Print(dec->log, WLOG_ERROR, "VA-API: vaBeginPicture: %s", va.vaErrorStr(st));
+		WLog_Print(dec->log, WLOG_ERROR, "VA-API: vaBeginPicture: %s", av1_va.vaErrorStr(st));
 		goto end;
 	}
-	st = va.vaRenderPicture(dec->dpy, dec->context, bufs, 3);
+	st = av1_va.vaRenderPicture(dec->dpy, dec->context, bufs, 3);
 	if (st != VA_STATUS_SUCCESS)
-		WLog_Print(dec->log, WLOG_ERROR, "VA-API: vaRenderPicture: %s", va.vaErrorStr(st));
+		WLog_Print(dec->log, WLOG_ERROR, "VA-API: vaRenderPicture: %s", av1_va.vaErrorStr(st));
 	/* always ended once begun */
-	const VAStatus est = va.vaEndPicture(dec->dpy, dec->context);
+	const VAStatus est = av1_va.vaEndPicture(dec->dpy, dec->context);
 	if (est != VA_STATUS_SUCCESS)
-		WLog_Print(dec->log, WLOG_ERROR, "VA-API: vaEndPicture: %s", va.vaErrorStr(est));
+		WLog_Print(dec->log, WLOG_ERROR, "VA-API: vaEndPicture: %s", av1_va.vaErrorStr(est));
 	rc = (st == VA_STATUS_SUCCESS) && (est == VA_STATUS_SUCCESS);
 
 end:
@@ -692,7 +525,7 @@ end:
 	for (size_t i = 0; i < ARRAYSIZE(bufs); i++)
 	{
 		if (bufs[i] != VA_INVALID_ID)
-			(void)va.vaDestroyBuffer(dec->dpy, bufs[i]);
+			(void)av1_va.vaDestroyBuffer(dec->dpy, bufs[i]);
 	}
 	free(data);
 	free(tiles);
@@ -710,29 +543,29 @@ static BOOL copy_back(AV1_VAAPI* dec, int s, UINT32 w, UINT32 h, AV1_VAAPI_PICTU
 		VAImageFormat fmt = { .fourcc = VA_FOURCC_NV12,
 			                  .byte_order = VA_LSB_FIRST,
 			                  .bits_per_pixel = 12 };
-		const VAStatus st = va.vaCreateImage(dec->dpy, &fmt, (int)w2, (int)h2, &dec->image);
+		const VAStatus st = av1_va.vaCreateImage(dec->dpy, &fmt, (int)w2, (int)h2, &dec->image);
 		if (st != VA_STATUS_SUCCESS)
 		{
-			WLog_Print(dec->log, WLOG_ERROR, "VA-API: vaCreateImage: %s", va.vaErrorStr(st));
+			WLog_Print(dec->log, WLOG_ERROR, "VA-API: vaCreateImage: %s", av1_va.vaErrorStr(st));
 			return FALSE;
 		}
 		dec->haveImage = TRUE;
 	}
 
 	WLog_Print(dec->log, WLOG_TRACE, "VA-API: copy back surface %d %" PRIu32 "x%" PRIu32, s, w, h);
-	VAStatus st = va.vaSyncSurface(dec->dpy, dec->surfaces[s]);
+	VAStatus st = av1_va.vaSyncSurface(dec->dpy, dec->surfaces[s]);
 	if (st == VA_STATUS_SUCCESS)
-		st = va.vaGetImage(dec->dpy, dec->surfaces[s], 0, 0, w2, h2, dec->image.image_id);
+		st = av1_va.vaGetImage(dec->dpy, dec->surfaces[s], 0, 0, w2, h2, dec->image.image_id);
 	if (st != VA_STATUS_SUCCESS)
 	{
-		WLog_Print(dec->log, WLOG_ERROR, "VA-API: vaGetImage: %s", va.vaErrorStr(st));
+		WLog_Print(dec->log, WLOG_ERROR, "VA-API: vaGetImage: %s", av1_va.vaErrorStr(st));
 		return FALSE;
 	}
 	void* p = nullptr;
-	st = va.vaMapBuffer(dec->dpy, dec->image.buf, &p);
+	st = av1_va.vaMapBuffer(dec->dpy, dec->image.buf, &p);
 	if (st != VA_STATUS_SUCCESS)
 	{
-		WLog_Print(dec->log, WLOG_ERROR, "VA-API: vaMapBuffer: %s", va.vaErrorStr(st));
+		WLog_Print(dec->log, WLOG_ERROR, "VA-API: vaMapBuffer: %s", av1_va.vaErrorStr(st));
 		return FALSE;
 	}
 	dec->mapped = TRUE;

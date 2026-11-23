@@ -60,12 +60,16 @@
 #include "av1_d3d11va.h"
 #endif
 
-#if defined(WITH_AV1_VAAPI)
+#if defined(WITH_AV1_VAAPI_DECODE)
 #include "av1_vaapi.h"
 #endif
 
 #if defined(WITH_AV1_MF)
 #include "av1_mf.h"
+#endif
+
+#if defined(WITH_AV1_VAAPI_ENCODE)
+#include "av1_vaapi_enc.h"
 #endif
 
 #if defined(WITH_LIBAOM) || defined(WITH_DAV1D)
@@ -100,6 +104,9 @@ struct S_FREERDP_AV1_CONTEXT
 #if defined(WITH_AV1_MF)
 	AV1_MF* mf; /* the GPU's encoder for this stream, nullptr: libaom */
 #endif
+#if defined(WITH_AV1_VAAPI_ENCODE)
+	AV1_VAAPI_ENC* vaapiEnc; /* the GPU's encoder for this stream, nullptr: libaom */
+#endif
 	/* encoder statistics, see av1_encoder_stats() */
 	struct
 	{
@@ -127,7 +134,7 @@ struct S_FREERDP_AV1_CONTEXT
 	AV1_D3D11VA* d3d11va; /* nullptr without a GPU that decodes AV1 */
 	bool d3d11vaStream;   /* the current stream is the GPU's (else the software decoder's) */
 #endif
-#if defined(WITH_AV1_VAAPI)
+#if defined(WITH_AV1_VAAPI_DECODE)
 	AV1_VAAPI* vaapi; /* nullptr without a GPU that decodes AV1 */
 	bool vaapiStream; /* the current stream is the GPU's (else the software decoder's) */
 #endif
@@ -548,6 +555,76 @@ static void av1_mf_start(FREERDP_AV1_CONTEXT* av1, UINT32 width, UINT32 height)
 }
 #endif
 
+#if defined(WITH_AV1_VAAPI_ENCODE)
+/* libaom's cq-level (quantizer 0 to 63) as a qindex: its quantizer_to_qindex[] table */
+static UINT32 av1_cq_level_qindex(UINT32 cq)
+{
+	if (cq >= 63)
+		return 255;
+	if (cq == 62)
+		return 249;
+	return cq * 4;
+}
+
+/* The GPU's encoder takes the stream when it can: 4:2:0 at a bit rate (CBR, VBR) or at the
+ * cq-level's quantizer (CQ and Q, as constant quantizers); libaom keeps 4:4:4 and takes over
+ * when the GPU refuses or fails. FREERDP_AV1_BACKEND_SOFTWARE keeps libaom. */
+static void av1_vaapi_enc_start(FREERDP_AV1_CONTEXT* av1, UINT32 width, UINT32 height)
+{
+	av1_vaapi_enc_free(av1->vaapiEnc);
+	av1->vaapiEnc = nullptr;
+
+	const char* why = nullptr;
+	UINT32 qindex = 0;
+	AV1_VAAPI_ENC_RATE rate = AV1_VAAPI_ENC_CQP;
+	if (av1->backend == FREERDP_AV1_BACKEND_SOFTWARE)
+		why = "/codec-first:software";
+	else if (av1->ecfg.g_profile != 0)
+		why = "4:4:4";
+	else
+	{
+		if (av1->ecfg.rc_end_usage == AOM_CBR)
+			rate = AV1_VAAPI_ENC_CBR;
+		else if (av1->ecfg.rc_end_usage == AOM_VBR)
+			rate = AV1_VAAPI_ENC_VBR;
+		else
+		{
+			/* the quantizer libaom keeps for the cq-level; 0, libaom's own, counts as its 10 */
+			qindex = av1_cq_level_qindex((av1->cqLevel > 0) ? av1->cqLevel : 10);
+			if (qindex < 1)
+				qindex = 1;
+		}
+
+		/* the devices of /codec-first in order, or the first that takes it */
+		const size_t tries = av1->nDevices ? av1->nDevices : 1;
+		for (size_t x = 0; (x < tries) && !av1->vaapiEnc; x++)
+			av1->vaapiEnc =
+			    av1_vaapi_enc_new(av1->log, width, height, rate, av1->ecfg.rc_target_bitrate,
+			                      qindex, av1->nDevices ? av1->devices[x] : -1);
+		if (!av1->vaapiEnc)
+			why = av1->nDevices ? "no device of /codec-first takes it"
+			                    : "no GPU with a VA-API AV1 encoder takes it";
+	}
+	if (av1->vaapiEnc)
+	{
+		if (rate == AV1_VAAPI_ENC_CQP)
+			WLog_Print(av1->log, WLOG_INFO,
+			           "AV1 encoder: VA-API %" PRId32 " %s (hardware, qindex %" PRIu32
+			           " for cq-level %" PRIu32 "), libaom as fallback",
+			           av1_vaapi_enc_device(av1->vaapiEnc), av1_vaapi_enc_name(av1->vaapiEnc),
+			           qindex, av1->cqLevel);
+		else
+			WLog_Print(av1->log, WLOG_INFO,
+			           "AV1 encoder: VA-API %" PRId32 " %s (hardware, %" PRIu32
+			           " kbit/s %s), libaom as fallback",
+			           av1_vaapi_enc_device(av1->vaapiEnc), av1_vaapi_enc_name(av1->vaapiEnc),
+			           av1->ecfg.rc_target_bitrate, (rate == AV1_VAAPI_ENC_CBR) ? "CBR" : "VBR");
+	}
+	else
+		WLog_Print(av1->log, WLOG_INFO, "AV1 encoder: libaom (software; %s)", why);
+}
+#endif
+
 INT32 freerdp_av1_compress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, DWORD SrcFormat,
                            UINT32 nSrcStep, UINT32 nSrcWidth, UINT32 nSrcHeight,
                            const RECTANGLE_16* regionRect, BYTE** ppDstData, UINT32* pDstSize,
@@ -723,6 +800,31 @@ INT32 freerdp_av1_compress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, DWORD
 		av1->mf = nullptr;
 	}
 #endif
+#if defined(WITH_AV1_VAAPI_ENCODE)
+	if (av1->vaapiEnc)
+	{
+		const BYTE* const planes[3] = { av1->yuvdata[0], av1->yuvdata[1], av1->yuvdata[2] };
+		const BYTE* out = nullptr;
+		UINT32 outSize = 0;
+		const INT32 vrc = av1_vaapi_enc_encode(av1->vaapiEnc, planes, av1->yuvStride,
+		                                       (UINT32)duration, &out, &outSize);
+		if (vrc > 0)
+		{
+			av1->pts += WINPR_ASSERTING_INT_CAST(aom_codec_pts_t, duration);
+			*ppDstData = WINPR_CAST_CONST_PTR_AWAY(out, BYTE*);
+			*pDstSize = outSize;
+			goto encoded;
+		}
+		/* libaom has seen no frame of this stream: its first one is a key frame with a sequence
+		 * header, so the client starts over with it */
+		WLog_Print(av1->log, WLOG_WARN,
+		           "AV1 encoder: VA-API %s failed (%" PRId32 "), libaom from this frame on (a key "
+		           "frame)",
+		           av1_vaapi_enc_name(av1->vaapiEnc), vrc);
+		av1_vaapi_enc_free(av1->vaapiEnc);
+		av1->vaapiEnc = nullptr;
+	}
+#endif
 	const aom_codec_err_t rc = aom_codec_encode(&av1->ctx, img, av1->pts, duration, av1->eflags);
 	aom_img_free(img);
 	av1->pts += WINPR_ASSERTING_INT_CAST(aom_codec_pts_t, duration);
@@ -747,7 +849,7 @@ INT32 freerdp_av1_compress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, DWORD
 	}
 	if (*pDstSize == 0)
 		return 0;
-#if defined(WITH_AV1_MF)
+#if defined(WITH_AV1_MF) || defined(WITH_AV1_VAAPI_ENCODE)
 encoded:
 #endif
 
@@ -1139,7 +1241,7 @@ INT32 freerdp_av1_decompress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, UIN
 	}
 #endif
 
-#if defined(WITH_AV1_VAAPI)
+#if defined(WITH_AV1_VAAPI_DECODE)
 	if (av1->vaapi && av1->vaapiStream)
 	{
 		av1->lastDecode.backend = "VA-API";
@@ -1383,6 +1485,9 @@ BOOL freerdp_av1_context_reset(FREERDP_AV1_CONTEXT* av1, UINT32 width, UINT32 he
 #if defined(WITH_AV1_MF)
 		av1_mf_start(av1, width, height);
 #endif
+#if defined(WITH_AV1_VAAPI_ENCODE)
+		av1_vaapi_enc_start(av1, width, height);
+#endif
 
 		static const char* const modes[] = { "vbr", "cbr", "cq", "q" };
 		const UINT32 mode = (UINT32)av1->ecfg.rc_end_usage;
@@ -1461,7 +1566,7 @@ BOOL freerdp_av1_context_reset(FREERDP_AV1_CONTEXT* av1, UINT32 width, UINT32 he
 			av1_d3d11va_reset(av1->d3d11va);
 		av1->d3d11vaStream = (av1->d3d11va != nullptr);
 #endif
-#if defined(WITH_AV1_VAAPI)
+#if defined(WITH_AV1_VAAPI_DECODE)
 		if (av1->backend == FREERDP_AV1_BACKEND_SOFTWARE)
 		{
 			/* the software decoder is always there with VA-API (CMake: dav1d) */
@@ -1593,6 +1698,9 @@ void freerdp_av1_context_free(FREERDP_AV1_CONTEXT* av1)
 #if defined(WITH_AV1_MF)
 	av1_mf_free(av1->mf);
 #endif
+#if defined(WITH_AV1_VAAPI_ENCODE)
+	av1_vaapi_enc_free(av1->vaapiEnc);
+#endif
 #if defined(WITH_AV1_WEBCODECS)
 	av1_wc_close(av1->webcodecs);
 #endif
@@ -1602,7 +1710,7 @@ void freerdp_av1_context_free(FREERDP_AV1_CONTEXT* av1)
 #if defined(WITH_AV1_D3D11VA)
 	av1_d3d11va_free(av1->d3d11va);
 #endif
-#if defined(WITH_AV1_VAAPI)
+#if defined(WITH_AV1_VAAPI_DECODE)
 	av1_vaapi_free(av1->vaapi);
 #endif
 	winpr_aligned_free(av1->yuvdata[0]);
@@ -1834,6 +1942,13 @@ char** freerdp_av1_hardware_list(BOOL encoder, size_t* count)
 		api = "Media Foundation";
 	}
 #endif
+#if defined(WITH_AV1_VAAPI_ENCODE)
+	if (encoder)
+	{
+		n = av1_vaapi_enc_list(names, ARRAYSIZE(names));
+		api = "VA-API";
+	}
+#endif
 #if defined(WITH_AV1_VIDEOTOOLBOX)
 	if (!encoder)
 	{
@@ -1848,7 +1963,7 @@ char** freerdp_av1_hardware_list(BOOL encoder, size_t* count)
 		api = "D3D11VA";
 	}
 #endif
-#if defined(WITH_AV1_VAAPI)
+#if defined(WITH_AV1_VAAPI_DECODE)
 	if (!encoder)
 	{
 		n = av1_vaapi_list(names, ARRAYSIZE(names));
