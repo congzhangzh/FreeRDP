@@ -265,6 +265,12 @@ static void sdl_term_handler([[maybe_unused]] int signum, [[maybe_unused]] const
 						if (!sdl->updateOverlay())
 							throw ErrorMsg{ -1, windowEvent.type, "sdl->updateOverlay" };
 						break;
+					case SDL_EVENT_USER_DISPLAY_LAYOUT:
+						/* a layout not sent is sent by the next check, as before */
+						if (!sdl->getDisplayChannelContext().handleLayoutEvent(
+						        windowEvent.user.code))
+							WLog_Print(sdl->getWLog(), WLOG_TRACE, "display layout not sent");
+						break;
 					case SDL_EVENT_USER_CREATE_WINDOWS:
 					{
 						auto ctx = static_cast<SdlContext*>(windowEvent.user.data1);

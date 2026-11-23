@@ -18,6 +18,7 @@
  */
 #pragma once
 
+#include <atomic>
 #include <vector>
 
 #include <freerdp/types.h>
@@ -46,6 +47,18 @@ class sdlDispContext
 	[[nodiscard]] bool handleEvent(const SDL_DisplayEvent& ev);
 	[[nodiscard]] bool handleEvent(const SDL_WindowEvent& ev);
 
+	/** What an SDL_EVENT_USER_DISPLAY_LAYOUT asks for */
+	enum LayoutRequest
+	{
+		LAYOUT_ARM = 0,  /**< send now if due and check again every second (addTimer) */
+		LAYOUT_TICK = 1, /**< the timer: send if the layout changed */
+		LAYOUT_CAPS = 2  /**< a new display channel: forget the layout sent, then arm */
+	};
+
+	/** On the event thread: the layout is read from the monitor array, which that thread
+	 * replaces when a window or display changes, so it is only read and sent there. */
+	[[nodiscard]] bool handleLayoutEvent(int request);
+
   private:
 	[[nodiscard]] UINT DisplayControlCaps(UINT32 maxNumMonitors, UINT32 maxMonitorAreaFactorA,
 	                                      UINT32 maxMonitorAreaFactorB);
@@ -56,6 +69,8 @@ class sdlDispContext
 	[[nodiscard]] bool sendLayout(const rdpMonitor* monitors, size_t nmonitors);
 
 	[[nodiscard]] bool addTimer();
+	/** Any thread: ask the event thread for handleLayoutEvent(request) */
+	[[nodiscard]] static bool requestLayout(LayoutRequest request);
 
 	[[nodiscard]] bool updateMonitor(SDL_WindowID id);
 	[[nodiscard]] bool updateMonitors(SDL_EventType type, SDL_DisplayID displayID);
@@ -70,9 +85,10 @@ class sdlDispContext
 	SdlContext* _sdl = nullptr;
 	DispClientContext* _disp = nullptr;
 	UINT64 _lastSentDate = 0;
-	bool _activated = false;
+	std::atomic<bool> _activated = false; /* set by the channel's thread */
 	bool _waitingResize = false;
 	SDL_TimerID _timer = 0;
-	unsigned _timer_retries = 0;
+	std::atomic<unsigned> _timer_retries = 0; /* counted by SDL's timer thread */
+	SDL_ThreadID _eventThread = 0;
 	std::vector<DISPLAY_CONTROL_MONITOR_LAYOUT> _last_sent_layout;
 };

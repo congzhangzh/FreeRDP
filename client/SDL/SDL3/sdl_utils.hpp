@@ -47,6 +47,9 @@ enum
 	SDL_EVENT_USER_POINTER_SET,
 	SDL_EVENT_USER_RAIL_MOVE,
 	SDL_EVENT_USER_OVERLAY,
+	/* the display channel: check the layout and send it, on the thread that owns the monitor
+	 * array (code: sdlDispContext::LayoutRequest) */
+	SDL_EVENT_USER_DISPLAY_LAYOUT,
 	SDL_EVENT_USER_QUIT,
 	/* a mapped renderer (rdpContext::bitmapRenderService) got a frame. Before the dialogs:
 	 * sdl_run() only takes the events up to SDL_EVENT_USER_RETRY_DIALOG, the *_RESULT ones are

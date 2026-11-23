@@ -77,6 +77,14 @@ bool sdlDispContext::sendResize()
 	if (!_activated || !_disp)
 		return true;
 
+	/* the monitor array is replaced on the event thread (a window or display changed), so it
+	 * is read there only: other threads post SDL_EVENT_USER_DISPLAY_LAYOUT (requestLayout) */
+	if (SDL_GetCurrentThreadID() != _eventThread)
+	{
+		WLog_Print(_sdl->getWLog(), WLOG_ERROR, "display layout asked off the event thread");
+		return false;
+	}
+
 	if (GetTickCount64() - _lastSentDate < RESIZE_MIN_DELAY)
 		return true;
 
@@ -156,7 +164,7 @@ void sdlDispContext::OnActivated(void* context, const ActivatedEventArgs* e)
 			return;
 	}
 
-	std::ignore = sdlDisp->addTimer();
+	std::ignore = requestLayout(LAYOUT_ARM);
 }
 
 void sdlDispContext::OnGraphicsReset(void* context, const GraphicsResetEventArgs* e)
@@ -175,9 +183,9 @@ void sdlDispContext::OnGraphicsReset(void* context, const GraphicsResetEventArgs
 		return;
 
 	if (freerdp_settings_get_bool(settings, FreeRDP_Fullscreen))
-		std::ignore = sdlDisp->addTimer();
+		std::ignore = requestLayout(LAYOUT_ARM);
 	else if (sdlDisp->setWindowResizeable())
-		std::ignore = sdlDisp->addTimer();
+		std::ignore = requestLayout(LAYOUT_ARM);
 }
 
 Uint32 sdlDispContext::OnTimer(void* param, [[maybe_unused]] SDL_TimerID timerID, Uint32 interval)
@@ -198,8 +206,9 @@ Uint32 sdlDispContext::OnTimer(void* param, [[maybe_unused]] SDL_TimerID timerID
 
 	WLog_Print(sdl->getWLog(), WLOG_TRACE, "checking for display changes...");
 
-	if (!sdlDisp->sendResize())
-		WLog_Print(sdl->getWLog(), WLOG_TRACE, "failed to send the display layout");
+	/* SDL's timer thread: the check runs on the event thread */
+	if (!requestLayout(LAYOUT_TICK))
+		WLog_Print(sdl->getWLog(), WLOG_TRACE, "failed to ask for the display layout");
 
 	if (sdlDisp->_timer_retries++ >= MAX_RETRIES)
 	{
@@ -314,6 +323,34 @@ bool sdlDispContext::addTimer()
 		return false;
 	_timer = SDL_AddTimer(1000, sdlDispContext::OnTimer, this);
 	return true;
+}
+
+bool sdlDispContext::requestLayout(LayoutRequest request)
+{
+	return sdl_push_user_event(SDL_EVENT_USER_DISPLAY_LAYOUT, static_cast<int>(request));
+}
+
+bool sdlDispContext::handleLayoutEvent(int request)
+{
+	switch (request)
+	{
+		case LAYOUT_TICK:
+			return sendResize();
+		case LAYOUT_CAPS:
+			/* A new display channel means a new server instance, e.g. after a server redirection
+			 * (GNOME Remote Desktop hands the connection over from the login screen to the user
+			 * session). It does not know the layout sent to the previous instance, and the
+			 * window size did not change, so settings_changed() would suppress it: forget it
+			 * and send the current layout again. Windows ignores a layout sent right after the
+			 * caps: count the caps as a send, so the timer sends the layout once
+			 * RESIZE_MIN_DELAY has passed instead of addTimer() sending it now. */
+			_last_sent_layout.clear();
+			_lastSentDate = GetTickCount64();
+			return addTimer();
+		case LAYOUT_ARM:
+		default:
+			return addTimer();
+	}
 }
 
 bool sdlDispContext::updateMonitor(SDL_WindowID id)
@@ -473,28 +510,20 @@ UINT sdlDispContext::DisplayControlCaps(UINT32 maxNumMonitors, UINT32 maxMonitor
 	         maxNumMonitors, maxMonitorAreaFactorA, maxMonitorAreaFactorB);
 	_activated = true;
 
-	/* A new display channel means a new server instance, e.g. after a server redirection (GNOME
-	 * Remote Desktop hands the connection over from the login screen to the user session). It
-	 * does not know the layout sent to the previous instance, and the window size did not change,
-	 * so settings_changed() would suppress it: forget it and send the current layout again. */
-	_last_sent_layout.clear();
-
-	/* Windows ignores a layout sent right after the caps. Count the caps as a send, so the timer
-	 * sends the layout once RESIZE_MIN_DELAY has passed instead of addTimer() sending it now. */
-	_lastSentDate = GetTickCount64();
-
+	/* the channel's thread: forgetting the last layout and the timer run on the event thread,
+	 * where the layout is sent (handleLayoutEvent) */
 	if (freerdp_settings_get_bool(settings, FreeRDP_Fullscreen))
 	{
 		/* Window events have long passed by the time the channel comes up, and a fullscreen
 		 * window produces no further ones, so let the timer send the layout. */
-		std::ignore = addTimer();
+		std::ignore = requestLayout(LAYOUT_CAPS);
 		return CHANNEL_RC_OK;
 	}
 
 	WLog_DBG(TAG, "DisplayControlCapsPdu: setting the window as resizable");
 	if (!setWindowResizeable())
 		return CHANNEL_RC_NO_MEMORY;
-	std::ignore = addTimer();
+	std::ignore = requestLayout(LAYOUT_CAPS);
 	return CHANNEL_RC_OK;
 }
 
@@ -528,7 +557,8 @@ bool sdlDispContext::uninit(DispClientContext* disp)
 	return _sdl->setResizeable(false);
 }
 
-sdlDispContext::sdlDispContext(SdlContext* sdl) : _sdl(sdl)
+sdlDispContext::sdlDispContext(SdlContext* sdl)
+    : _sdl(sdl), _eventThread(SDL_GetCurrentThreadID()) /* created on the event thread */
 {
 	WINPR_ASSERT(_sdl);
 	WINPR_ASSERT(_sdl->context()->settings);
