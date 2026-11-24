@@ -147,4 +147,11 @@ namespace sdl::overlay
 
 	/** The build lines of freerdp_get_build_config(): its type, compiler and architecture. */
 	[[nodiscard]] std::string buildSummary(const char* config);
+
+	/** The overlay's FreeRDP row: the version and the build's revision, "3.33.2 (8e629d271)".
+	 * A revision that names a release (release-YYYYMMDD.N, written by a build into FreeRDP's
+	 * .source_version) is shown alone: the version a release is built from is a development one
+	 * ("3.33.2-dev0"), which the release's name replaces. No revision ("n/a", outside a git
+	 * tree): the version alone. */
+	[[nodiscard]] std::string versionText(const char* version, const char* revision);
 } // namespace sdl::overlay

@@ -328,6 +328,16 @@ static int checkClient()
 	                     "Target architecture: x86_64\n";
 	CHECK(sdl::overlay::buildSummary(config) == "Release, GNU, 16.2.0, x86_64");
 	CHECK(sdl::overlay::buildSummary(nullptr).empty());
+
+	/* the FreeRDP row: a release's name alone, else the version and the revision */
+	CHECK(sdl::overlay::versionText("3.33.2-dev0", "release-20261123.9") == "release-20261123.9");
+	CHECK(sdl::overlay::versionText("3.33.2-dev0", "release-20261123.9\n") == "release-20261123.9");
+	CHECK(sdl::overlay::versionText("3.33.2-dev0", "8e629d271") == "3.33.2-dev0 (8e629d271)");
+	CHECK(sdl::overlay::versionText("3.33.2-dev0", "n/a") == "3.33.2-dev0");
+	CHECK(sdl::overlay::versionText("3.33.2-dev0", "") == "3.33.2-dev0");
+	CHECK(sdl::overlay::versionText("3.33.2-dev0", nullptr) == "3.33.2-dev0");
+	CHECK(sdl::overlay::versionText("3.33.2", "release-") == "3.33.2 (release-)");
+	CHECK(sdl::overlay::versionText(nullptr, "8e629d271") == "8e629d271");
 	return 0;
 }
 static bool overlap(const sdl::overlay::Box& a, const sdl::overlay::Box& b)

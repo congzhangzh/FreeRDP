@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
@@ -589,6 +590,21 @@ namespace sdl::overlay
 		if ((columnWidth > 0) && (margin + columnWidth + margin + right.w + margin > width))
 			l.right.y = columnBottom + margin;
 		return l;
+	}
+
+	std::string versionText(const char* version, const char* revision)
+	{
+		const std::string v = version ? version : "";
+		std::string r = revision ? revision : "";
+		/* .source_version may end with a newline */
+		while (!r.empty() && std::isspace(static_cast<unsigned char>(r.back())))
+			r.pop_back();
+		if (r.empty() || (r == "n/a"))
+			return v;
+		const std::string prefix = "release-";
+		if ((r.size() > prefix.size()) && (r.compare(0, prefix.size(), prefix) == 0))
+			return r;
+		return v.empty() ? r : v + " (" + r + ")";
 	}
 
 	std::string buildSummary(const char* config)
