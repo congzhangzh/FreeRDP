@@ -29,6 +29,8 @@
 #include <freerdp/codecs.h>
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/log.h>
+#include <winpr/synch.h>
+#include <winpr/sysinfo.h>
 
 #include "sdl_overlay.hpp"
 #include "sdl_stats_json.hpp"
@@ -141,6 +143,42 @@ static bool sameScale(float a, float b)
 SdlOverlay::SdlOverlay(SdlContext* sdl) : _sdl(sdl)
 {
 	WINPR_ASSERT(_sdl);
+#if defined(__EMSCRIPTEN__)
+	/* made here, before the session thread can wait on it */
+	_tick = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+#endif
+}
+
+SdlOverlay::~SdlOverlay()
+{
+#if defined(__EMSCRIPTEN__)
+	if (_sdlTimer)
+		std::ignore = SDL_RemoveTimer(_sdlTimer);
+	if (_tick)
+		(void)CloseHandle(_tick);
+#endif
+}
+
+HANDLE SdlOverlay::tickEvent() const
+{
+#if defined(__EMSCRIPTEN__)
+	return _tick;
+#else
+	return nullptr;
+#endif
+}
+
+void SdlOverlay::sessionTick(rdpContext* context)
+{
+#if defined(__EMSCRIPTEN__)
+	if (!_tick || (WaitForSingleObject(_tick, 0) != WAIT_OBJECT_0))
+		return;
+	(void)ResetEvent(_tick);
+	if (wanted() && !read(context, winpr_GetTickCount64NS()))
+		WLog_Print(_sdl->getWLog(), WLOG_WARN, "the overlay's reading was not passed on");
+#else
+	WINPR_UNUSED(context);
+#endif
 }
 
 bool SdlOverlay::visible() const
@@ -224,7 +262,17 @@ bool SdlOverlay::arm()
 	if (!_armed.compare_exchange_strong(expected, true))
 		return true;
 
-	if (freerdp_timer_add(_sdl->context(), firstIntervalNS, onTimer, this, true) == 0)
+#if defined(__EMSCRIPTEN__)
+	/* libfreerdp has no freerdp_timer_* in the browser: SDL's timer wakes the session thread,
+	 * which takes the reading (sessionTick) */
+	if (_tick)
+		_sdlTimer = SDL_AddTimerNS(firstIntervalNS, onSdlTimer, this);
+	const bool started = _tick && (_sdlTimer != 0);
+#else
+	const bool started =
+	    freerdp_timer_add(_sdl->context(), firstIntervalNS, onTimer, this, true) != 0;
+#endif
+	if (!started)
 	{
 		_armed = false;
 		WLog_Print(_sdl->getWLog(), WLOG_ERROR, "the overlay's timer could not start");
@@ -233,6 +281,32 @@ bool SdlOverlay::arm()
 	return true;
 }
 
+bool SdlOverlay::keepTimer()
+{
+	if (wanted())
+		return true;
+	/* Stop, unless it was shown again meanwhile: then this timer goes on, or the one a show
+	 * added does (the compare exchange lets only one go on). */
+	_armed = false;
+	if (!wanted())
+		return false;
+	bool expected = false;
+	return _armed.compare_exchange_strong(expected, true);
+}
+
+#if defined(__EMSCRIPTEN__)
+Uint64 SDLCALL SdlOverlay::onSdlTimer(void* userdata, WINPR_ATTR_UNUSED SDL_TimerID timerID,
+                                      WINPR_ATTR_UNUSED Uint64 interval)
+{
+	auto overlay = static_cast<SdlOverlay*>(userdata);
+	WINPR_ASSERT(overlay);
+	if (!overlay->keepTimer())
+		return 0;
+	(void)SetEvent(overlay->_tick);
+	return intervalNS;
+}
+#endif
+
 uint64_t SdlOverlay::onTimer(rdpContext* context, void* userdata,
                              WINPR_ATTR_UNUSED FreeRDP_TimerID timerID, uint64_t timestamp,
                              WINPR_ATTR_UNUSED uint64_t interval)
@@ -240,17 +314,8 @@ uint64_t SdlOverlay::onTimer(rdpContext* context, void* userdata,
 	auto overlay = static_cast<SdlOverlay*>(userdata);
 	WINPR_ASSERT(overlay);
 
-	if (!overlay->wanted())
-	{
-		/* Stop, unless it was shown again meanwhile: then this timer goes on, or the one a
-		 * show added does (the compare exchange lets only one go on). */
-		overlay->_armed = false;
-		if (!overlay->wanted())
-			return 0;
-		bool expected = false;
-		if (!overlay->_armed.compare_exchange_strong(expected, true))
-			return 0;
-	}
+	if (!overlay->keepTimer())
+		return 0;
 
 	if (!overlay->read(context, timestamp))
 		WLog_Print(overlay->_sdl->getWLog(), WLOG_WARN, "the overlay's reading was not passed on");

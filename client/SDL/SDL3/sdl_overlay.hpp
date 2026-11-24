@@ -56,7 +56,7 @@ class SdlOverlay
 	explicit SdlOverlay(SdlContext* sdl);
 	SdlOverlay(const SdlOverlay& other) = delete;
 	SdlOverlay(SdlOverlay&& other) = delete;
-	~SdlOverlay() = default;
+	~SdlOverlay();
 	SdlOverlay& operator=(const SdlOverlay& other) = delete;
 	SdlOverlay& operator=(SdlOverlay&& other) = delete;
 
@@ -85,6 +85,13 @@ class SdlOverlay
 	[[nodiscard]] const std::vector<sdl::overlay::Row>& right() const;
 	[[nodiscard]] uint64_t generation() const;
 
+	/** The session thread: a handle its loop waits on as well, nullptr for none. In the browser,
+	 * where libfreerdp has no freerdp_timer_* (libfreerdp/core/timer.c), SDL's timer sets it and
+	 * the loop calls sessionTick(), so the reading is still taken on the session thread. */
+	[[nodiscard]] HANDLE tickEvent() const;
+	/** The session thread, after its wait: take a reading if SDL's timer asked for one */
+	void sessionTick(rdpContext* context);
+
   private:
 	[[nodiscard]] bool ipcOn() const;
 	[[nodiscard]] bool wanted() const;
@@ -94,6 +101,14 @@ class SdlOverlay
 	                                      FreeRDP_TimerID timerID, uint64_t timestamp,
 	                                      uint64_t interval);
 	[[nodiscard]] bool read(rdpContext* context, uint64_t timestamp);
+	/** false: stop the timer (nothing wants a reading), true: go on */
+	[[nodiscard]] bool keepTimer();
+#if defined(__EMSCRIPTEN__)
+	[[nodiscard]] static Uint64 SDLCALL onSdlTimer(void* userdata, SDL_TimerID timerID,
+	                                               Uint64 interval);
+	HANDLE _tick = nullptr;    /* set by SDL's timer, waited on by the session thread */
+	SDL_TimerID _sdlTimer = 0; /* the last timer armed (one arm at a time, _armed) */
+#endif
 	void clientRows(const char* rendererName, const std::string& hidpi);
 
 	SdlContext* _sdl;

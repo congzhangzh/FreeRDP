@@ -436,8 +436,11 @@ BOOL SdlContext::postConnect(freerdp* instance)
 	                        true))
 		return FALSE;
 	sdl->setConnected(true);
-	/* also after a reconnect: the overlay's rates and totals are this connection's */
-	return sdl->_overlay.connected();
+	/* also after a reconnect: the overlay's rates and totals are this connection's. An overlay
+	 * that can't show is no reason to fail the connection. */
+	if (!sdl->_overlay.connected())
+		WLog_Print(sdl->getWLog(), WLOG_WARN, "the overlay could not start, the session goes on");
+	return TRUE;
 }
 
 /* This function is called whether a session ends by failure or success.
@@ -919,15 +922,20 @@ int SdlContext::sdl_client_thread_run(std::string& error_msg)
 				break;
 		}
 
-		const DWORD nCount = freerdp_get_event_handles(context(), handles, ARRAYSIZE(handles));
+		DWORD nCount = freerdp_get_event_handles(context(), handles, ARRAYSIZE(handles));
 
 		if (nCount == 0)
 		{
 			WLog_Print(getWLog(), WLOG_ERROR, "freerdp_get_event_handles failed");
 			break;
 		}
+		/* the overlay's reading where libfreerdp has no timers (the browser) */
+		const HANDLE tick = _overlay.tickEvent();
+		if (tick && (nCount < ARRAYSIZE(handles)))
+			handles[nCount++] = tick;
 
 		const DWORD status = WaitForMultipleObjects(nCount, handles, FALSE, INFINITE);
+		_overlay.sessionTick(context());
 
 		if (status == WAIT_FAILED)
 		{

@@ -636,7 +636,11 @@ bool sdlInput::handleEvent(const SDL_KeyboardEvent& ev)
 				           masktostr(_hotkeyModmask).c_str(), sdl_scancode_name(_hotkeyInfo));
 				if (!keyboard_sync_state())
 					return false;
-				return _sdl->toggleOverlay();
+				/* the overlay is an extra: one that can't show never ends the session */
+				if (!_sdl->toggleOverlay())
+					WLog_Print(_sdl->getWLog(), WLOG_WARN,
+					           "the overlay could not be shown, the session goes on");
+				return true;
 			}
 			if (ev.scancode == _hotkeyMinimize)
 			{
