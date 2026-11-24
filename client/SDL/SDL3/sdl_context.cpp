@@ -126,6 +126,8 @@ SdlContext::SdlContext(rdpContext* context)
 
 SdlContext::~SdlContext()
 {
+	if (_displayWatch)
+		SDL_RemoveEventWatch(keepFullscreenDisplay, this);
 	/* the channels, freed after us, may still hold the services */
 	if (_context->windowInfoService)
 	{
@@ -594,7 +596,57 @@ bool SdlContext::createWindows()
 		_windows.insert({ window.id(), std::move(window) });
 	}
 
+	/* /multimon on Wayland: a window stays fullscreen on its own display (keepFullscreenDisplay) */
+	if (freerdp_settings_get_bool(settings, FreeRDP_UseMultimon) && sdl::utils::isWaylandDriver() &&
+	    !_displayWatch)
+		_displayWatch = SDL_AddEventWatch(keepFullscreenDisplay, this);
+
 	updateWindowInfo();
+	return true;
+}
+
+/* SDL 3.4 on Wayland: a compositor may report a fullscreen window's surface on another output for
+ * a moment (wl_surface.enter, then back, weston does). SDL takes that for a move: its MOVED event
+ * clears the window's pending display, its DISPLAY_CHANGED makes the window fullscreen on the other
+ * display, and SDL_UpdateFullscreenMode minimizes the window that is fullscreen there. With
+ * /multimon that is the client's other window: the compositor hides it, its screen stays black for
+ * the whole session, and Wayland has no request to bring a minimized window back. A /multimon
+ * window belongs to its display, so it gets that display's desktop mode as an explicit fullscreen
+ * mode: an event watch runs before SDL's own handling of the event, and the explicit mode both
+ * keeps SDL on the window's display and ends the display change there. Wayland only: mode switches
+ * are emulated there, so the mode changes nothing else (elsewhere an explicit mode is a real mode
+ * switch, which SDL minimizes on focus loss). */
+bool SDLCALL SdlContext::keepFullscreenDisplay(void* userdata, SDL_Event* event)
+{
+	/* SDL calls watches on the thread that sends an event: the client's own events come from
+	 * other threads, so nothing is touched before the type is known */
+	if (!event || (event->type != SDL_EVENT_WINDOW_DISPLAY_CHANGED))
+		return true;
+	auto sdl = static_cast<SdlContext*>(userdata);
+	if (!sdl)
+		return true;
+	auto window = sdl->getWindowForId(event->window.windowID);
+	if (!window || !window->window())
+		return true;
+	const SDL_DisplayID own = window->displayId();
+	const auto to = static_cast<SDL_DisplayID>(event->window.data1);
+	if ((own == 0) || (to == 0) || (to == own))
+		return true;
+	if ((SDL_GetWindowFlags(window->window()) & SDL_WINDOW_FULLSCREEN) == 0)
+		return true;
+	const SDL_DisplayMode* mode = SDL_GetDesktopDisplayMode(own);
+	if (!mode || !SDL_SetWindowFullscreenMode(window->window(), mode))
+	{
+		WLog_Print(sdl->getWLog(), WLOG_WARN,
+		           "window %" PRIu32 " reported on display %" PRIu32
+		           ", could not keep it on display %" PRIu32 ": %s",
+		           event->window.windowID, to, own, SDL_GetError());
+		return true;
+	}
+	WLog_Print(sdl->getWLog(), WLOG_DEBUG,
+	           "window %" PRIu32 " reported on display %" PRIu32
+	           " for a moment, kept on display %" PRIu32,
+	           event->window.windowID, to, own);
 	return true;
 }
 

@@ -252,6 +252,10 @@ class SdlContext
 	void updateDisplayOffsets();
 	void updateMonitorDataFromOffsets();
 
+	/** /multimon on Wayland: keeps each window fullscreen on its own display (sdl_context.cpp) */
+	static bool SDLCALL keepFullscreenDisplay(void* userdata, SDL_Event* event);
+	bool _displayWatch = false;
+
 	rdpContext* _context = nullptr;
 	wLog* _log = nullptr;
 
