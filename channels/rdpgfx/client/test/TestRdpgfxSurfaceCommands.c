@@ -36,6 +36,8 @@
 #include <freerdp/client/rdpgfx.h>
 #include <freerdp/channels/rdpgfx.h>
 #include <freerdp/codec/zgfx.h>
+#include <freerdp/codec/color.h>
+#include <freerdp/codecs.h>
 #include <freerdp/dvc.h>
 
 #define TEST_CHECK(cond)                                                             \
@@ -75,6 +77,9 @@ static UINT32 testCodecOrder = 0;
 
 /* FreeRDP_GfxCodecAV1Profile and FreeRDP_GfxCodecAV2Profile for the next test_open() */
 static UINT32 testAvProfile = 1;
+
+/* FreeRDP_GfxCodecHEVC for the next test_open() (4:4:4 stays off) */
+static BOOL testHevc = FALSE;
 
 static test_seen seen = WINPR_C_ARRAY_INIT;
 
@@ -372,6 +377,12 @@ static BOOL test_open(test_session* session, UINT32 version, wStream* s)
 	                                       testAvProfile));
 	TEST_CHECK(freerdp_settings_set_uint32(session->context->settings, FreeRDP_GfxCodecAV2Profile,
 	                                       testAvProfile));
+#if defined(WITH_GFX_AZURE)
+	TEST_CHECK(
+	    freerdp_settings_set_bool(session->context->settings, FreeRDP_GfxCodecHEVC, testHevc));
+	TEST_CHECK(
+	    freerdp_settings_set_bool(session->context->settings, FreeRDP_GfxCodecHEVC444, FALSE));
+#endif
 
 	PDVC_PLUGIN_ENTRY pluginEntry = WINPR_FUNC_PTR_CAST(
 	    freerdp_channels_load_static_addin_entry(RDPGFX_CHANNEL_NAME, nullptr, nullptr,
@@ -664,6 +675,72 @@ static BOOL test_av_i444_offer(wStream* s)
 }
 #endif
 
+#if defined(WITH_GFX_AZURE)
+/* The flags of a set in the last caps advertise: TRUE when it is there */
+static BOOL offered_flags(UINT32 version, UINT32* flags)
+{
+	for (UINT32 x = 0; x < seen.capsCount; x++)
+	{
+		if (seen.capsVersions[x] == version)
+		{
+			*flags = seen.capsFlags[x];
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
+
+/* HEVC comes only in the 11.x sets. A client that can scale images offers them as before; one
+ * that cannot (FreeRDP Web: no swscale, no Cairo) offers them when HEVC is asked for and can be
+ * decoded, with RDPGFX_CAPS_FLAG_SCALEDMAP_DISABLE, and otherwise not at all, as before. */
+static BOOL test_hevc_offer(wStream* s)
+{
+	const BOOL scaling = freerdp_image_scaling_supported();
+	const UINT32 azure[] = { RDPGFX_CAPVERSION_111, RDPGFX_CAPVERSION_112, RDPGFX_CAPVERSION_113,
+		                     RDPGFX_CAPVERSION_115 };
+	for (UINT32 hevc = 0; hevc <= 1; hevc++)
+	{
+		test_session session = WINPR_C_ARRAY_INIT;
+		testHevc = hevc ? TRUE : FALSE;
+		TEST_CHECK(test_open(&session, RDPGFX_CAPVERSION_107, s));
+		const BOOL decodable =
+		    freerdp_codec_supported(session.context, FREERDP_CODEC_HEVC_I420, FALSE);
+		test_close(&session);
+
+		UINT32 flags = 0;
+		const BOOL has112 = offered_flags(RDPGFX_CAPVERSION_112, &flags);
+		size_t azureSets = 0;
+		for (size_t x = 0; x < ARRAYSIZE(azure); x++)
+		{
+			UINT32 f = 0;
+			if (offered_flags(azure[x], &f))
+				azureSets++;
+		}
+		(void)fprintf(stderr,
+		              "HEVC %s, scaling %s, HEVC decoder %s: %" PRIuz
+		              " 11.x sets, 11.2 %s flags 0x%08" PRIx32 "\n",
+		              hevc ? "asked for" : "off", scaling ? "yes" : "no", decodable ? "yes" : "no",
+		              azureSets, has112 ? "offered," : "not offered,", flags);
+
+		if (hevc && decodable)
+		{
+			TEST_CHECK(has112);
+			TEST_CHECK((flags & RDPGFX_CAPS_FLAG_HEVC_ENABLE) != 0);
+			TEST_CHECK(((flags & RDPGFX_CAPS_FLAG_SCALEDMAP_DISABLE) != 0) == !scaling);
+		}
+		else if (!scaling)
+			TEST_CHECK(azureSets == 0);
+		else
+		{
+			TEST_CHECK(has112);
+			TEST_CHECK((flags & RDPGFX_CAPS_FLAG_HEVC_ENABLE) == 0);
+		}
+	}
+	testHevc = FALSE;
+	return TRUE;
+}
+#endif
+
 int TestRdpgfxSurfaceCommands(int argc, char* argv[])
 {
 	WINPR_UNUSED(argc);
@@ -678,6 +755,10 @@ int TestRdpgfxSurfaceCommands(int argc, char* argv[])
 		goto out;
 	if (!test_codec_order(s))
 		goto out;
+#if defined(WITH_GFX_AZURE)
+	if (!test_hevc_offer(s))
+		goto out;
+#endif
 #if defined(WITH_GFX_AV1) || defined(WITH_GFX_AV2)
 	if (!test_av_i444_offer(s))
 		goto out;
