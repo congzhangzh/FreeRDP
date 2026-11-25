@@ -19,8 +19,13 @@
 #ifndef FREERDP_SERVER_SHADOW_GFX_CAPS_H
 #define FREERDP_SERVER_SHADOW_GFX_CAPS_H
 
+#include <freerdp/config.h>
+
 #include <winpr/wtypes.h>
 #include <freerdp/api.h>
+
+/* HEVC (RDPGFX_CAPVERSION_112 and later, the HEVC caps flags) exists only with WITH_GFX_AZURE */
+#if defined(WITH_GFX_AZURE)
 
 /** @brief The HEVC flags of a GFX caps confirm
  *
@@ -51,5 +56,7 @@ FREERDP_LOCAL UINT32 shadow_gfx_hevc_confirm_flags(UINT32 offered, UINT32 confir
  */
 WINPR_ATTR_NODISCARD
 FREERDP_LOCAL BOOL shadow_gfx_hevc_used(UINT32 version, UINT32 confirm, BOOL hevc, BOOL hevc444);
+
+#endif /* WITH_GFX_AZURE */
 
 #endif /* FREERDP_SERVER_SHADOW_GFX_CAPS_H */
