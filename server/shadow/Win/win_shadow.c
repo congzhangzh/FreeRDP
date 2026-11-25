@@ -25,6 +25,7 @@
 
 #include <freerdp/constants.h>
 #include <freerdp/log.h>
+#include <freerdp/types.h>
 #include <freerdp/codec/color.h>
 #include <freerdp/codec/region.h>
 #include <freerdp/server/server-common.h>
@@ -275,13 +276,38 @@ static BOOL win_shadow_input_unicode_keyboard_event(rdpShadowSubsystem* subsyste
 	return TRUE;
 }
 
+/* The absolute coordinates SendInput takes for a point of the server's surface: with
+ * MOUSEEVENTF_VIRTUALDESK, 0..65535 spans the virtual desktop, the bounding box of every
+ * monitor, which is the box base.monitors[] are relative to (0,0 at its top left). The surface
+ * is at surface->x, surface->y in that box: one monitor or all of them.
+ *
+ * Windows takes the pixel as about dx * width / 65536: the smallest dx at or past the pixel's
+ * left edge, ceil(px * 65536 / width), lands on that pixel whether that is truncated or
+ * rounded; px * 65535 / width, truncated, may fall a pixel short. */
+static void win_shadow_absolute(const winShadowSubsystem* subsystem, UINT16 x, UINT16 y, LONG* dx,
+                                LONG* dy)
+{
+	WINPR_ASSERT(subsystem);
+	WINPR_ASSERT(dx);
+	WINPR_ASSERT(dy);
+
+	const rdpShadowSurface* surface =
+	    subsystem->base.server ? subsystem->base.server->surface : nullptr;
+	const MONITOR_DEF* desktop = &subsystem->base.virtualScreen;
+	const INT64 width = MAX(1, (INT64)desktop->right + 1);
+	const INT64 height = MAX(1, (INT64)desktop->bottom + 1);
+	const INT64 px = MIN(width - 1, (INT64)x + (surface ? surface->x : 0));
+	const INT64 py = MIN(height - 1, (INT64)y + (surface ? surface->y : 0));
+
+	*dx = (LONG)MIN(65535, (px * 65536 + width - 1) / width);
+	*dy = (LONG)MIN(65535, (py * 65536 + height - 1) / height);
+}
+
 static BOOL win_shadow_input_mouse_event(rdpShadowSubsystem* subsystem, rdpShadowClient* client,
                                          UINT16 flags, UINT16 x, UINT16 y)
 {
 	(void)win_shadow_follow_input_desktop();
 	INPUT event = WINPR_C_ARRAY_INIT;
-	float width;
-	float height;
 	MOUSEINPUT* mi =
 #if defined(NONAMELESSUNION)
 	    &event.u.mi;
@@ -306,16 +332,12 @@ static BOOL win_shadow_input_mouse_event(rdpShadowSubsystem* subsystem, rdpShado
 	}
 	else
 	{
-		/* Normalize against the captured framebuffer, not GetSystemMetrics:
-		 * this process is not marked DPI aware, so the metrics are
-		 * virtualized (scaled down) on a desktop with display scaling while
-		 * the client coordinates are physical pixels of the primary screen
-		 * the subsystem geometry describes. */
-		width = (float)((winShadowSubsystem*)subsystem)->width;
-		height = (float)((winShadowSubsystem*)subsystem)->height;
-		mi->dx = (LONG)((float)x * (65535.0f / width));
-		mi->dy = (LONG)((float)y * (65535.0f / height));
-		mi->dwFlags = MOUSEEVENTF_ABSOLUTE;
+		/* Normalize against the monitors the capture describes, not
+		 * GetSystemMetrics: the client coordinates are physical pixels of
+		 * the surface, and the metrics may be virtualized (scaled down) on a
+		 * desktop with display scaling. */
+		win_shadow_absolute((winShadowSubsystem*)subsystem, x, y, &mi->dx, &mi->dy);
+		mi->dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
 
 		if (flags & PTR_FLAGS_MOVE)
 		{
@@ -323,7 +345,7 @@ static BOOL win_shadow_input_mouse_event(rdpShadowSubsystem* subsystem, rdpShado
 			win_shadow_send_input("mouse", &event);
 		}
 
-		mi->dwFlags = MOUSEEVENTF_ABSOLUTE;
+		mi->dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
 
 		if (flags & PTR_FLAGS_BUTTON1)
 		{
@@ -363,8 +385,6 @@ static BOOL win_shadow_input_extended_mouse_event(rdpShadowSubsystem* subsystem,
 {
 	(void)win_shadow_follow_input_desktop();
 	INPUT event = WINPR_C_ARRAY_INIT;
-	float width;
-	float height;
 	MOUSEINPUT* mi =
 #if defined(NONAMELESSUNION)
 	    &event.u.mi;
@@ -378,13 +398,10 @@ static BOOL win_shadow_input_extended_mouse_event(rdpShadowSubsystem* subsystem,
 
 		if (flags & PTR_FLAGS_MOVE)
 		{
-			/* same as above: the physical framebuffer, not virtualized
-			 * GetSystemMetrics values, is the coordinate domain */
-			width = (float)((winShadowSubsystem*)subsystem)->width;
-			height = (float)((winShadowSubsystem*)subsystem)->height;
-			mi->dx = (LONG)((float)x * (65535.0f / width));
-			mi->dy = (LONG)((float)y * (65535.0f / height));
-			mi->dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE;
+			/* same as above: the monitors the capture describes, not
+			 * virtualized GetSystemMetrics values, are the coordinate domain */
+			win_shadow_absolute((winShadowSubsystem*)subsystem, x, y, &mi->dx, &mi->dy);
+			mi->dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK | MOUSEEVENTF_MOVE;
 			win_shadow_send_input("extended mouse", &event);
 		}
 
