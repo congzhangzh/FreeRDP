@@ -197,19 +197,17 @@ static int round_trip(UINT32 profile)
 		    FreeRDPReadColor(&dst[1ull * y * step + 4ull * x], PIXEL_FORMAT_BGRX32);
 		BYTE c[3] = WINPR_C_ARRAY_INIT;
 		FreeRDPSplitColor(color, PIXEL_FORMAT_BGRX32, &c[0], &c[1], &c[2], nullptr, nullptr);
+		int worst = 0;
 		for (size_t k = 0; k < 3; k++)
-		{
-			const int diff = abs((int)c[k] - (int)quadrant_colours[q][k]);
-			if (diff > 24)
-			{
-				(void)fprintf(stderr,
-				              "HEVC %s: quadrant %" PRIuz " is (%u, %u, %u), want (%u, %u, %u)\n",
-				              name, q, c[0], c[1], c[2], quadrant_colours[q][0],
-				              quadrant_colours[q][1], quadrant_colours[q][2]);
-				rc = -1;
-				break;
-			}
-		}
+			worst = MAX(worst, abs((int)c[k] - (int)quadrant_colours[q][k]));
+		/* every quadrant is printed, so a passing run shows its colours too */
+		(void)fprintf(stderr,
+		              "HEVC %s: quadrant %" PRIuz
+		              " is (%u, %u, %u), want (%u, %u, %u), off by %d%s\n",
+		              name, q, c[0], c[1], c[2], quadrant_colours[q][0], quadrant_colours[q][1],
+		              quadrant_colours[q][2], worst, (worst > 24) ? ", more than 24: WRONG" : "");
+		if (worst > 24)
+			rc = -1;
 	}
 
 fail:
