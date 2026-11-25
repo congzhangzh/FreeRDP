@@ -480,6 +480,11 @@ static int shadow_encoder_init_hevc(rdpShadowEncoder* encoder, UINT32 codecs)
 	if (!encoder->hevc)
 		goto fail;
 
+	/* the stream's chroma format follows the codec the frames are sent as: HEVC420 or HEVC444 */
+	if (!freerdp_hevc_context_set_option(encoder->hevc, FREERDP_HEVC_CONTEXT_OPTION_PROFILE,
+	                                     ((codecs & FREERDP_CODEC_HEVC_I444) != 0) ? 1 : 0))
+		goto fail;
+
 	if (!freerdp_hevc_context_reset(encoder->hevc, encoder->width, encoder->height))
 		goto fail;
 
