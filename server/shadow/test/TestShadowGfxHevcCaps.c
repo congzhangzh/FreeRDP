@@ -40,8 +40,15 @@ static const hevc_case cases[] = {
 	  TRUE, HEVC | I444, TRUE },
 	{ "11.5, only 4:4:4 offered (no HEVC_ENABLE)", RDPGFX_CAPVERSION_115, AVC_OFF | I444, TRUE,
 	  TRUE, 0, FALSE },
-	/* HEVC offered with AVC444 on: confirmed as offered, but the server keeps to AVC */
+	/* FreeRDP Web's /gfx-codec-order:HEVC,AVC420: HEVC with AVC on as the fallback */
+	{ "11.5, AVC on, HEVC offered, server HEVC on", RDPGFX_CAPVERSION_115, HEVC, TRUE, FALSE, HEVC,
+	  TRUE },
 	{ "11.2, AVC on, HEVC offered, server HEVC on", RDPGFX_CAPVERSION_112, HEVC, TRUE, FALSE, HEVC,
+	  TRUE },
+	{ "11.5, AVC on, HEVC offered, server HEVC off", RDPGFX_CAPVERSION_115, HEVC, FALSE, FALSE, 0,
+	  FALSE },
+	/* HEVC is not valid before 11.2 */
+	{ "11.1, AVC on, HEVC offered, server HEVC on", RDPGFX_CAPVERSION_111, HEVC, TRUE, FALSE, HEVC,
 	  FALSE },
 };
 

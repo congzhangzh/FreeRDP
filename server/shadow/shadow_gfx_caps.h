@@ -44,9 +44,9 @@ FREERDP_LOCAL UINT32 shadow_gfx_hevc_confirm_flags(UINT32 offered, UINT32 confir
 
 /** @brief Whether the server sends HEVC to a client
  *
- *  HEVC needs capability version 11.2 or later and a confirm with RDPGFX_CAPS_FLAG_HEVC_ENABLE
- *  and RDPGFX_CAPS_FLAG_AVC_DISABLED (HEVC is only used when AVC444 is not); 4:4:4 alone needs
- *  version 11.5.
+ *  HEVC needs capability version 11.2 or later and a confirm with RDPGFX_CAPS_FLAG_HEVC_ENABLE;
+ *  AVC may be on as well (the client's fallback), the server's codec order picks between them.
+ *  4:4:4 alone needs version 11.5.
  *
  *  @param version The confirmed capability version
  *  @param confirm The confirmed flags
