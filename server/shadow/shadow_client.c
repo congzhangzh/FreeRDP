@@ -41,6 +41,7 @@
 #include "shadow_rfx_dirty.h"
 #include "shadow_autodetect.h"
 #include "shadow_stats_ipc.h"
+#include "shadow_gfx_caps.h"
 
 #define TAG CLIENT_TAG("shadow")
 
@@ -1110,21 +1111,13 @@ static BOOL shadow_client_caps_test_version(RdpgfxServerContext* context, rdpSha
 				return FALSE;
 #endif
 #if defined(WITH_GFX_AZURE)
-			const BOOL hevc = freerdp_settings_get_bool(srvSettings, FreeRDP_GfxCodecHEVC);
-			if (!freerdp_settings_set_bool(clientSettings, FreeRDP_GfxCodecHEVC, hevc))
-				return FALSE;
-			if (!hevc)
-				pdu.capsSet->flags &= ~RDPGFX_CAPS_FLAG_HEVC_ENABLE;
-			else
-				pdu.capsSet->flags |= RDPGFX_CAPS_FLAG_HEVC_ENABLE;
-
-			const BOOL hevc444 = freerdp_settings_get_bool(srvSettings, FreeRDP_GfxCodecHEVC444);
-			if (!freerdp_settings_set_bool(clientSettings, FreeRDP_GfxCodecHEVC444, hevc444))
-				return FALSE;
-			if (!hevc444)
-				pdu.capsSet->flags &= ~RDPGFX_CAPS_FLAG_HEVC_I444;
-			else
-				pdu.capsSet->flags |= RDPGFX_CAPS_FLAG_HEVC_I444;
+			/* the client's settings say whether this server takes HEVC: on, and an encoder
+			 * (shadow_client_rdpgfx_caps_advertise); the confirm keeps only what the client
+			 * offered as well */
+			const BOOL hevc = freerdp_settings_get_bool(clientSettings, FreeRDP_GfxCodecHEVC);
+			const BOOL hevc444 = freerdp_settings_get_bool(clientSettings, FreeRDP_GfxCodecHEVC444);
+			pdu.capsSet->flags = shadow_gfx_hevc_confirm_flags(currentCaps->flags,
+			                                                   pdu.capsSet->flags, hevc, hevc444);
 #endif
 
 #if defined(WITH_GFX_AV1)
@@ -1601,20 +1594,8 @@ static BOOL shadow_client_hevc_enabled(const rdpShadowClient* client)
 	const BOOL hevc = freerdp_settings_get_bool(client->context.settings, FreeRDP_GfxCodecHEVC);
 	const BOOL hevc444 =
 	    freerdp_settings_get_bool(client->context.settings, FreeRDP_GfxCodecHEVC444);
-	if (client->confirmedCaps.version < RDPGFX_CAPVERSION_112)
-		return FALSE;
-
-	// HEVC is only active when AVC444 is not
-	if ((client->confirmedCaps.flags & RDPGFX_CAPS_FLAG_AVC_DISABLED) == 0)
-		return FALSE;
-
-	// HEVC must be requested
-	if ((client->confirmedCaps.flags & RDPGFX_CAPS_FLAG_HEVC_ENABLE) == 0)
-		return FALSE;
-
-	if (client->confirmedCaps.version >= RDPGFX_CAPVERSION_115)
-		return hevc || hevc444;
-	return hevc;
+	return shadow_gfx_hevc_used(client->confirmedCaps.version, client->confirmedCaps.flags, hevc,
+	                            hevc444);
 }
 
 WINPR_ATTR_NODISCARD

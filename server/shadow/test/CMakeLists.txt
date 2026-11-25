@@ -15,6 +15,7 @@ set(${MODULE_PREFIX}_TESTS
     TestShadowFrameRate.c
     TestShadowGfxStatsPeriod.c
     TestShadowGfxDefault.c
+    TestShadowGfxHevcCaps.c
     TestShadowStatsIpc.c
     TestShadowPipeline.c
 )
@@ -23,7 +24,7 @@ create_test_sourcelist(${MODULE_PREFIX}_SRCS ${${MODULE_PREFIX}_DRIVER} ${${MODU
 
 # the 5 s line and the stats socket are private to the library: their files are built in
 add_executable(${MODULE_NAME} ${${MODULE_PREFIX}_SRCS} ../shadow_gfx_stats.c ../shadow_stats_ipc.c
-                              ../shadow_mcevent.c)
+                              ../shadow_mcevent.c ../shadow_gfx_caps.c)
 
 target_link_libraries(${MODULE_NAME} PRIVATE freerdp-shadow freerdp winpr)
 
