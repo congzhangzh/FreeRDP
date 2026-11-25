@@ -98,6 +98,16 @@ INT32 freerdp_hevc_compress(FREERDP_HEVC_CONTEXT* hevc, const BYTE* pSrcData, DW
 	if (!h264->subsystem->Compress)
 		return -1;
 
+	/* 4:2:0: the encoder takes half resolution chroma planes, the AVC420 conversion makes them */
+	if (!h264->hevc444)
+	{
+		if ((nSrcWidth > UINT16_MAX) || (nSrcHeight > UINT16_MAX))
+			return -1;
+		const RECTANGLE_16 full = { 0, 0, (UINT16)nSrcWidth, (UINT16)nSrcHeight };
+		return avc420_compress(h264, pSrcData, SrcFormat, nSrcStep, nSrcWidth, nSrcHeight,
+		                       regionRect ? regionRect : &full, ppDstData, pDstSize, meta);
+	}
+
 	if (!avc420_ensure_buffer(h264, nSrcStep, nSrcWidth, nSrcHeight))
 		return -1;
 
@@ -165,7 +175,9 @@ FREERDP_HEVC_CONTEXT* freerdp_hevc_context_new(BOOL Compressor)
 		return nullptr;
 	ctx->Compressor = Compressor;
 	ctx->log = WLog_Get(TAG);
-	ctx->context = h264_context_new_ex(Compressor, TRUE, TRUE);
+	/* 4:2:0 (FREERDP_HEVC_CONTEXT_OPTION_PROFILE 0) until the caller asks for 4:4:4: every HEVC
+	 * subsystem does 4:2:0, not every one does 4:4:4 */
+	ctx->context = h264_context_new_ex(Compressor, TRUE, FALSE);
 	if (!ctx->context)
 		goto fail;
 	return ctx;
