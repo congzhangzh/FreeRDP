@@ -566,6 +566,14 @@ extern "C"
 	WINPR_ATTR_NODISCARD
 	FREERDP_API UINT32 shadow_enum_monitors(MONITOR_DEF* monitors, UINT32 maxMonitors);
 
+	/** Puts the monitors a subsystem found in the form the server uses: moved so that the top left
+	 *  of their bounding box is 0,0 (a monitor may be left of or above the primary one), the
+	 *  primary one (MONITOR_PRIMARY, else the first) at index 0 with only it flagged, the others in
+	 *  their order. Fails on no monitors, an empty one, or a box wider or taller than UINT16_MAX.
+	 *  @since version 3.34.0 */
+	WINPR_ATTR_NODISCARD
+	FREERDP_API BOOL shadow_monitors_normalize(MONITOR_DEF* monitors, UINT32 count);
+
 	FREERDP_API void shadow_server_free(rdpShadowServer* server);
 
 	WINPR_ATTR_MALLOC(shadow_server_free, 1)
