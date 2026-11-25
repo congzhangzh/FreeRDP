@@ -714,8 +714,10 @@ static BOOL tf_peer_post_connect(freerdp_peer* client)
 	 */
 	WLog_DBG(TAG, "Client %s is activated (osMajorType %" PRIu32 " osMinorType %" PRIu32 ")",
 	         client->local ? "(local)" : client->hostname,
-	         freerdp_settings_get_uint32(settings, FreeRDP_OsMajorType),
-	         freerdp_settings_get_uint32(settings, FreeRDP_OsMinorType));
+	         freerdp_settings_get_uint32(freerdp_get_remote_settings(client->context),
+	                                     FreeRDP_OsMajorType),
+	         freerdp_settings_get_uint32(freerdp_get_remote_settings(client->context),
+	                                     FreeRDP_OsMinorType));
 
 	if (freerdp_settings_get_bool(settings, FreeRDP_AutoLogonEnabled))
 	{

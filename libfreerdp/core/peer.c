@@ -1443,11 +1443,14 @@ const char* freerdp_peer_os_major_type_string(freerdp_peer* client)
 {
 	WINPR_ASSERT(client);
 
-	rdpContext* context = client->context;
+	const rdpContext* context = client->context;
 	WINPR_ASSERT(context);
-	WINPR_ASSERT(context->settings);
 
-	const UINT32 osMajorType = freerdp_settings_get_uint32(context->settings, FreeRDP_OsMajorType);
+	/* what the client announced in its confirm active */
+	const rdpSettings* remote = freerdp_get_remote_settings(context);
+	WINPR_ASSERT(remote);
+
+	const UINT32 osMajorType = freerdp_settings_get_uint32(remote, FreeRDP_OsMajorType);
 	WINPR_ASSERT(osMajorType <= UINT16_MAX);
 	return os_major_type_to_string((UINT16)osMajorType);
 }
@@ -1487,11 +1490,14 @@ const char* freerdp_peer_os_minor_type_string(freerdp_peer* client)
 {
 	WINPR_ASSERT(client);
 
-	rdpContext* context = client->context;
+	const rdpContext* context = client->context;
 	WINPR_ASSERT(context);
-	WINPR_ASSERT(context->settings);
 
-	const UINT32 osMinorType = freerdp_settings_get_uint32(context->settings, FreeRDP_OsMinorType);
+	/* what the client announced in its confirm active */
+	const rdpSettings* remote = freerdp_get_remote_settings(context);
+	WINPR_ASSERT(remote);
+
+	const UINT32 osMinorType = freerdp_settings_get_uint32(remote, FreeRDP_OsMinorType);
 	WINPR_ASSERT(osMinorType <= UINT16_MAX);
 	return os_minor_type_to_string((UINT16)osMinorType);
 }
