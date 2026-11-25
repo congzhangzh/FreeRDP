@@ -40,8 +40,6 @@ set(SRCS
     shadow_capture.h
     shadow_gfx_stats.c
     shadow_gfx_stats.h
-    shadow_gfx_caps.c
-    shadow_gfx_caps.h
     shadow_stats_ipc.c
     shadow_stats_ipc.h
     shadow_channels.c
@@ -69,6 +67,11 @@ set(SRCS
     shadow_server.c
     shadow.h
 )
+
+# the HEVC caps decision: its constants exist only with WITH_GFX_AZURE
+if(WITH_GFX_AZURE)
+  list(APPEND SRCS shadow_gfx_caps.c shadow_gfx_caps.h)
+endif()
 
 if(WITH_RDTK)
   if(NOT FREERDP_UNIFIED_BUILD)

@@ -41,7 +41,9 @@
 #include "shadow_rfx_dirty.h"
 #include "shadow_autodetect.h"
 #include "shadow_stats_ipc.h"
+#if defined(WITH_GFX_AZURE)
 #include "shadow_gfx_caps.h"
+#endif
 
 #define TAG CLIENT_TAG("shadow")
 

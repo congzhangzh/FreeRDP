@@ -22,6 +22,9 @@
 
 #include "shadow_gfx_caps.h"
 
+/* built with WITH_GFX_AZURE only (CMakeLists.txt): the HEVC constants exist only then */
+#if defined(WITH_GFX_AZURE)
+
 UINT32 shadow_gfx_hevc_confirm_flags(UINT32 offered, UINT32 confirm, BOOL hevc, BOOL hevc444)
 {
 	/* a flag the client did not offer is never confirmed: it would get HEVC it cannot decode */
@@ -51,3 +54,5 @@ BOOL shadow_gfx_hevc_used(UINT32 version, UINT32 confirm, BOOL hevc, BOOL hevc44
 		return hevc || hevc444;
 	return hevc;
 }
+
+#endif /* WITH_GFX_AZURE */
