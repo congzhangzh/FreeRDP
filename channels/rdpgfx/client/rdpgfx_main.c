@@ -783,11 +783,15 @@ static UINT rdpgfx_send_supported_caps(GENERIC_CHANNEL_CALLBACK* callback)
 	}
 
 #if defined(WITH_GFX_AZURE)
-	if (freerdp_image_scaling_supported())
+	/* The 11.x sets need image scaling, except when HEVC is asked for and can be decoded: HEVC
+	 * comes only in them, so a client that cannot scale (FreeRDP Web) offers them for HEVC too,
+	 * with RDPGFX_CAPS_FLAG_SCALEDMAP_DISABLE as 10.7. A client that asks for no HEVC offers
+	 * what it did before. */
+	const BOOL hevc = rdpgfx_hevc_enabled(gfx);
+	if (freerdp_image_scaling_supported() || hevc)
 	{
 		const UINT32 caps[] = { RDPGFX_CAPVERSION_111, RDPGFX_CAPVERSION_112, RDPGFX_CAPVERSION_113,
 			                    RDPGFX_CAPVERSION_115 };
-		const BOOL hevc = rdpgfx_hevc_enabled(gfx);
 		const BOOL hevc444 =
 		    hevc && freerdp_settings_get_bool(gfx->rdpcontext->settings, FreeRDP_GfxCodecHEVC444) &&
 		    freerdp_codec_supported(gfx->rdpcontext, FREERDP_CODEC_HEVC_I444, FALSE);
