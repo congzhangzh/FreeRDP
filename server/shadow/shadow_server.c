@@ -1201,7 +1201,9 @@ int shadow_server_parse_command_line(rdpShadowServer* server, int argc, char** a
 		MONITOR_DEF monitors[16] = WINPR_C_ARRAY_INIT;
 		numMonitors = shadow_enum_monitors(monitors, 16);
 
-		if (arg->Flags & COMMAND_LINE_VALUE_PRESENT)
+		if ((arg->Flags & COMMAND_LINE_VALUE_PRESENT) && (_stricmp(arg->Value, "all") == 0))
+			server->monitorsChoice = SHADOW_MONITORS_CHOICE_ALL;
+		else if (arg->Flags & COMMAND_LINE_VALUE_PRESENT)
 		{
 			/* Select monitors. errno may hold anything from what ran before
 			 * (enumerating the monitors makes system calls of its own) */
@@ -1216,6 +1218,7 @@ int shadow_server_parse_command_line(rdpShadowServer* server, int argc, char** a
 			}
 
 			server->selectedMonitor = (UINT32)val;
+			server->monitorsChoice = SHADOW_MONITORS_CHOICE_ONE;
 		}
 		else
 		{

@@ -20,10 +20,80 @@
 
 #include <winpr/assert.h>
 
+#include <freerdp/log.h>
+
 #include "shadow_surface.h"
 
 #include "shadow_screen.h"
 #include "shadow_lobby.h"
+
+#define TAG SERVER_TAG("shadow")
+
+BOOL shadow_screen_all_monitors(const rdpShadowServer* server)
+{
+	WINPR_ASSERT(server);
+	const rdpShadowSubsystem* subsystem = server->subsystem;
+	WINPR_ASSERT(subsystem);
+
+	if ((subsystem->numMonitors < 2) || server->shareSubRect)
+		return FALSE;
+	switch (server->monitorsChoice)
+	{
+		case SHADOW_MONITORS_CHOICE_ONE:
+			return FALSE;
+		case SHADOW_MONITORS_CHOICE_ALL:
+			return subsystem->allMonitors != SHADOW_ALL_MONITORS_NONE;
+		case SHADOW_MONITORS_CHOICE_DEFAULT:
+		default:
+			return subsystem->allMonitors == SHADOW_ALL_MONITORS_DEFAULT;
+	}
+}
+
+/* The part of the desktop the screen shares, in the subsystem's coordinates: the selected
+ * monitor, or the bounding box of every monitor */
+WINPR_ATTR_NODISCARD
+static BOOL shadow_screen_shared_rect(const rdpShadowServer* server, UINT16* x, UINT16* y,
+                                      UINT16* width, UINT16* height)
+{
+	const rdpShadowSubsystem* subsystem = server->subsystem;
+	WINPR_ASSERT(subsystem);
+	WINPR_ASSERT(subsystem->selectedMonitor < ARRAYSIZE(subsystem->monitors));
+
+	const MONITOR_DEF* selected = &subsystem->monitors[subsystem->selectedMonitor];
+	INT64 left = selected->left;
+	INT64 top = selected->top;
+	INT64 right = selected->right;
+	INT64 bottom = selected->bottom;
+	if (shadow_screen_all_monitors(server))
+	{
+		const UINT32 count = MIN(subsystem->numMonitors, ARRAYSIZE(subsystem->monitors));
+		for (UINT32 index = 0; index < count; index++)
+		{
+			const MONITOR_DEF* monitor = &subsystem->monitors[index];
+			left = MIN(left, monitor->left);
+			top = MIN(top, monitor->top);
+			right = MAX(right, monitor->right);
+			bottom = MAX(bottom, monitor->bottom);
+		}
+	}
+
+	const INT64 w = right - left + 1;
+	const INT64 h = bottom - top + 1;
+	if ((left < 0) || (left > UINT16_MAX) || (top < 0) || (top > UINT16_MAX) || (w < 0) ||
+	    (w > UINT16_MAX) || (h < 0) || (h > UINT16_MAX))
+	{
+		WLog_ERR(TAG,
+		         "the shared part of the desktop %" PRId64 ",%" PRId64 " %" PRId64 "x%" PRId64
+		         " does not fit a surface",
+		         left, top, w, h);
+		return FALSE;
+	}
+	*x = (UINT16)left;
+	*y = (UINT16)top;
+	*width = (UINT16)w;
+	*height = (UINT16)h;
+	return TRUE;
+}
 
 rdpShadowScreen* shadow_screen_new(rdpShadowServer* server)
 {
@@ -38,44 +108,36 @@ rdpShadowScreen* shadow_screen_new(rdpShadowServer* server)
 	screen->server = server;
 
 	{
-		rdpShadowSubsystem* subsystem = server->subsystem;
+		const rdpShadowSubsystem* subsystem = server->subsystem;
 		if (!InitializeCriticalSectionAndSpinCount(&(screen->lock), 4000))
 			goto fail;
 
 		region16_init(&(screen->invalidRegion));
 
 		{
-			WINPR_ASSERT(subsystem->selectedMonitor < ARRAYSIZE(subsystem->monitors));
-			const MONITOR_DEF* primary = &(subsystem->monitors[subsystem->selectedMonitor]);
-			WINPR_ASSERT(primary);
+			UINT16 x = 0;
+			UINT16 y = 0;
+			UINT16 width = 0;
+			UINT16 height = 0;
+			if (!shadow_screen_shared_rect(server, &x, &y, &width, &height))
+				goto fail;
+			if (shadow_screen_all_monitors(server))
+				WLog_INFO(TAG,
+				          "sharing all %" PRIu32 " monitors: %" PRIu16 "x%" PRIu16 " at %" PRIu16
+				          ",%" PRIu16,
+				          subsystem->numMonitors, width, height, x, y);
 
-			const INT64 x = primary->left;
-			const INT64 y = primary->top;
-			const INT64 width = primary->right - primary->left + 1;
-			const INT64 height = primary->bottom - primary->top + 1;
+			screen->width = width;
+			screen->height = height;
 
-			WINPR_ASSERT(x >= 0);
-			WINPR_ASSERT(x <= UINT16_MAX);
-			WINPR_ASSERT(y >= 0);
-			WINPR_ASSERT(y <= UINT16_MAX);
-			WINPR_ASSERT(width >= 0);
-			WINPR_ASSERT(width <= UINT16_MAX);
-			WINPR_ASSERT(height >= 0);
-			WINPR_ASSERT(height <= UINT16_MAX);
-
-			screen->width = (UINT16)width;
-			screen->height = (UINT16)height;
-
-			screen->primary =
-			    shadow_surface_new(server, (UINT16)x, (UINT16)y, (UINT16)width, (UINT16)height);
+			screen->primary = shadow_surface_new(server, x, y, width, height);
 
 			if (!screen->primary)
 				goto fail;
 
 			server->surface = screen->primary;
 
-			screen->lobby =
-			    shadow_surface_new(server, (UINT16)x, (UINT16)y, (UINT16)width, (UINT16)height);
+			screen->lobby = shadow_surface_new(server, x, y, width, height);
 		}
 	}
 
@@ -128,31 +190,17 @@ BOOL shadow_screen_resize(rdpShadowScreen* screen)
 		return FALSE;
 
 	WINPR_ASSERT(screen->server);
+	WINPR_ASSERT(screen->server->subsystem);
 
-	rdpShadowSubsystem* subsystem = screen->server->subsystem;
-	WINPR_ASSERT(subsystem);
-	WINPR_ASSERT(subsystem->monitors);
+	UINT16 x = 0;
+	UINT16 y = 0;
+	UINT16 width = 0;
+	UINT16 height = 0;
+	if (!shadow_screen_shared_rect(screen->server, &x, &y, &width, &height))
+		return FALSE;
 
-	MONITOR_DEF* primary = &(subsystem->monitors[subsystem->selectedMonitor]);
-	WINPR_ASSERT(primary);
-
-	const INT32 x = primary->left;
-	const INT32 y = primary->top;
-	const INT32 width = primary->right - primary->left + 1;
-	const INT32 height = primary->bottom - primary->top + 1;
-
-	WINPR_ASSERT(x >= 0);
-	WINPR_ASSERT(x <= UINT16_MAX);
-	WINPR_ASSERT(y >= 0);
-	WINPR_ASSERT(y <= UINT16_MAX);
-	WINPR_ASSERT(width >= 0);
-	WINPR_ASSERT(width <= UINT16_MAX);
-	WINPR_ASSERT(height >= 0);
-	WINPR_ASSERT(height <= UINT16_MAX);
-
-	if (shadow_surface_resize(screen->primary, (UINT16)x, (UINT16)y, (UINT16)width,
-	                          (UINT16)height) &&
-	    shadow_surface_resize(screen->lobby, (UINT16)x, (UINT16)y, (UINT16)width, (UINT16)height))
+	if (shadow_surface_resize(screen->primary, x, y, width, height) &&
+	    shadow_surface_resize(screen->lobby, x, y, width, height))
 	{
 		if (((UINT32)width != screen->width) || ((UINT32)height != screen->height))
 		{

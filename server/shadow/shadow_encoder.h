@@ -34,6 +34,16 @@
  * shadow_encoder_preferred_fps() is asked for (X11, Windows) */
 #define SHADOW_ENCODER_MAX_FPS 60
 
+/* one GFX surface of a client, for one monitor when the server shares all of them */
+typedef struct
+{
+	UINT16 surfaceId;
+	RECTANGLE_16 rect;         /* its part of the server's surface */
+	rdpShadowEncoder* encoder; /* its codecs, sized to rect */
+} SHADOW_GFX_OUTPUT;
+
+#define SHADOW_GFX_OUTPUTS_MAX 16
+
 struct rdp_shadow_encoder
 {
 	rdpShadowClient* client;
@@ -116,6 +126,20 @@ struct rdp_shadow_encoder
 	UINT32 gfxSnapshotHeight;
 	UINT32 gfxSnapshotStep;
 	BOOL gfxSnapshotValid;
+
+	/* An output's encoder holds codecs only, sized outputWidth x outputHeight (0: the
+	 * screen's). The client's encoder keeps the frames (ids, flow control, counters) and, with
+	 * more than one GFX surface (one per monitor), the outputs and the frame being sent over
+	 * them: one StartFrame, a surface command per changed output, one EndFrame. */
+	UINT32 outputWidth;
+	UINT32 outputHeight;
+	UINT32 outputCount; /* > 1: the surfaces of outputs[] */
+	SHADOW_GFX_OUTPUT outputs[SHADOW_GFX_OUTPUTS_MAX];
+	BOOL roundOpen;               /* a frame over the outputs is being sent */
+	BOOL roundStarted;            /* its StartFrame went out */
+	UINT32 roundFrameId;          /* its id */
+	UINT16 roundSurfaceId;        /* the output being encoded */
+	rdpShadowEncoder* roundCodec; /* and its encoder */
 };
 
 #ifdef __cplusplus
@@ -133,6 +157,11 @@ extern "C"
 
 	WINPR_ATTR_MALLOC(shadow_encoder_free, 1)
 	rdpShadowEncoder* shadow_encoder_new(rdpShadowClient* client);
+
+	/** the codecs of one GFX surface of width x height (one monitor's), no frames of its own */
+	WINPR_ATTR_MALLOC(shadow_encoder_free, 1)
+	rdpShadowEncoder* shadow_encoder_new_output(rdpShadowClient* client, UINT32 width,
+	                                            UINT32 height);
 
 #ifdef __cplusplus
 }

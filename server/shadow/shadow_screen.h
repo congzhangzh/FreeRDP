@@ -45,6 +45,10 @@ extern "C"
 
 	void shadow_screen_free(rdpShadowScreen* screen);
 
+	/** whether the server shares every monitor: the subsystem can (allMonitors), /monitors
+	 *  chose it or it is the subsystem's default, and there is more than one */
+	WINPR_ATTR_NODISCARD BOOL shadow_screen_all_monitors(const rdpShadowServer* server);
+
 	WINPR_ATTR_MALLOC(shadow_screen_free, 1)
 	WINPR_ATTR_NODISCARD
 	rdpShadowScreen* shadow_screen_new(rdpShadowServer* server);

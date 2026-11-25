@@ -207,6 +207,25 @@ extern "C"
 		DispServerContext* disp; /** @since version 3.34.0 */
 	};
 
+	/** Whether a subsystem can share all monitors (rdpShadowSubsystem::allMonitors): its capture
+	 *  then fills the surface the server makes of the bounding box of every monitor, at that
+	 *  box's place (rdpShadowSurface::x and ::y), and monitors[] has every monitor
+	 *  @since version 3.34.0 */
+	typedef enum
+	{
+		SHADOW_ALL_MONITORS_NONE = 0, /**< one monitor only (the default) */
+		SHADOW_ALL_MONITORS_OPTIN,    /**< all monitors with /monitors:all */
+		SHADOW_ALL_MONITORS_DEFAULT   /**< all monitors unless /monitors:<index> */
+	} SHADOW_ALL_MONITORS;
+
+	/** What /monitors chose (rdpShadowServer::monitorsChoice) @since version 3.34.0 */
+	typedef enum
+	{
+		SHADOW_MONITORS_CHOICE_DEFAULT = 0, /**< the subsystem's default */
+		SHADOW_MONITORS_CHOICE_ONE,         /**< /monitors:<index>: that monitor only */
+		SHADOW_MONITORS_CHOICE_ALL          /**< /monitors:all */
+	} SHADOW_MONITORS_CHOICE;
+
 	/** The GFX codecs of /gfx-codec-order, in rdpShadowServer::GfxCodecOrder
 	 *  @since version 3.34.0 */
 	typedef enum
@@ -330,6 +349,9 @@ extern "C"
 		/** /codec-first (freerdp_av1_context_set_codec_first()): nullptr, the default, is
 		 *  hardware first on any device @since version 3.34.0 */
 		char* CodecFirst;
+		/** /monitors: one monitor, all of them, or the subsystem's default
+		 *  @since version 3.34.0 */
+		SHADOW_MONITORS_CHOICE monitorsChoice;
 	};
 
 	struct rdp_shadow_surface
@@ -418,6 +440,9 @@ extern "C"
 		 *  long it took, for the clients' counters @since version 3.34.0 */
 		UINT64 captureStartNs;
 		UINT64 captureNs; /** @since version 3.34.0 */
+		/** whether this subsystem can share all monitors, set in its Init
+		 *  @since version 3.34.0 */
+		SHADOW_ALL_MONITORS allMonitors;
 	};
 
 /* Definition of message between subsystem and clients */
