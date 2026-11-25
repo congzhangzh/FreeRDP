@@ -42,11 +42,9 @@ BOOL shadow_gfx_hevc_used(UINT32 version, UINT32 confirm, BOOL hevc, BOOL hevc44
 	if (version < RDPGFX_CAPVERSION_112)
 		return FALSE;
 
-	/* HEVC is only active when AVC444 is not */
-	if ((confirm & RDPGFX_CAPS_FLAG_AVC_DISABLED) == 0)
-		return FALSE;
-
-	/* HEVC must be requested */
+	/* HEVC must be confirmed, AVC need not be off: a FreeRDP client asks for HEVC with AVC on,
+	 * its fallback (rdpgfx_send_supported_caps()), and RDPGFX_CAPS_FLAG_AVC_DISABLED says it
+	 * cannot decode AVC at all. Which of the two a frame takes is the codec order. */
 	if ((confirm & RDPGFX_CAPS_FLAG_HEVC_ENABLE) == 0)
 		return FALSE;
 
