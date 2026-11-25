@@ -151,6 +151,26 @@ extern "C"
 	WINPR_ATTR_NODISCARD int shadow_encoder_reset(rdpShadowEncoder* encoder);
 	WINPR_ATTR_NODISCARD int shadow_encoder_prepare(rdpShadowEncoder* encoder, UINT32 codecs);
 	WINPR_ATTR_NODISCARD UINT32 shadow_encoder_create_frame_id(rdpShadowEncoder* encoder);
+
+	/** @brief Gives back the frame id a round took when it sent no frame
+	 *
+	 *  An encode may send nothing (AVC420 and HEVC 4:2:0 when no block changed, a dropped
+	 *  frame): no acknowledgement ever comes for its id, and the frames in flight
+	 *  (shadow_encoder_inflight_frames()) would count it for good, until the GFX flow control
+	 *  held every frame.
+	 *
+	 *  @param encoder The encoder
+	 *  @param before Its frameId before the round
+	 *  @param frameOut A frame went out in the round
+	 */
+	static inline void shadow_encoder_unused_frame_id(rdpShadowEncoder* encoder, UINT32 before,
+	                                                  BOOL frameOut)
+	{
+		WINPR_ASSERT(encoder);
+		/* the round's id only: one taken and not sent; unsigned, so it wraps as ++ did */
+		if (!frameOut && (encoder->frameId == before + 1))
+			encoder->frameId = before;
+	}
 	/** an acknowledgement's delay (send to acknowledgement, ns): sizes the frames in flight */
 	void shadow_encoder_ack_delay(rdpShadowEncoder* encoder, UINT64 delayNs);
 

@@ -2450,10 +2450,13 @@ static BOOL shadow_client_send_surface_gfx(rdpShadowClient* client, const BYTE* 
 
 	rdpShadowEncoder* encoder = client->encoder;
 	encoder->gfxFrameOut = FALSE;
+	const UINT32 frameIdBefore = encoder->frameId;
 	const UINT64 start = winpr_GetTickCount64NS();
 	const BOOL rc =
 	    shadow_client_encode_surface_gfx(client, pSrcData, nSrcStep, SrcFormat, nXSrc, nYSrc,
 	                                     nWidth, nHeight, srcWidth, srcHeight, damage);
+	/* an encode that sent nothing gives its frame id back: no acknowledgement comes for it */
+	shadow_encoder_unused_frame_id(encoder, frameIdBefore, encoder->gfxFrameOut);
 	if (rc && encoder->gfxFrameOut)
 	{
 		const UINT64 end = winpr_GetTickCount64NS();

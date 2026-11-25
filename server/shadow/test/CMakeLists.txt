@@ -19,6 +19,7 @@ set(${MODULE_PREFIX}_TESTS
     TestShadowPipeline.c
     TestShadowMonitors.c
     TestShadowLayout.c
+    TestShadowGfxFrameId.c
 )
 
 # HEVC (WITH_GFX_AZURE only): the caps confirm keeps HEVC to clients that offered it
