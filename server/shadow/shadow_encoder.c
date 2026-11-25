@@ -528,8 +528,9 @@ fail:
 WINPR_ATTR_NODISCARD
 static int shadow_encoder_init(rdpShadowEncoder* encoder)
 {
-	encoder->width = encoder->server->screen->width;
-	encoder->height = encoder->server->screen->height;
+	encoder->width = encoder->outputWidth ? encoder->outputWidth : encoder->server->screen->width;
+	encoder->height =
+	    encoder->outputHeight ? encoder->outputHeight : encoder->server->screen->height;
 	encoder->maxTileWidth = 64;
 	encoder->maxTileHeight = 64;
 	if (shadow_encoder_init_grid(encoder) < 0)
@@ -877,11 +878,39 @@ rdpShadowEncoder* shadow_encoder_new(rdpShadowClient* client)
 	return encoder;
 }
 
+rdpShadowEncoder* shadow_encoder_new_output(rdpShadowClient* client, UINT32 width, UINT32 height)
+{
+	WINPR_ASSERT(client);
+	if ((width == 0) || (height == 0))
+		return nullptr;
+
+	rdpShadowEncoder* encoder = (rdpShadowEncoder*)calloc(1, sizeof(rdpShadowEncoder));
+	if (!encoder)
+		return nullptr;
+
+	encoder->client = client;
+	encoder->server = client->server;
+	encoder->outputWidth = width;
+	encoder->outputHeight = height;
+	shadow_encoder_reset_fps(encoder);
+	if (shadow_encoder_init(encoder) < 0)
+	{
+		shadow_encoder_free(encoder);
+		return nullptr;
+	}
+	return encoder;
+}
+
 void shadow_encoder_free(rdpShadowEncoder* encoder)
 {
 	if (!encoder)
 		return;
 
+	for (size_t x = 0; x < ARRAYSIZE(encoder->outputs); x++)
+	{
+		shadow_encoder_free(encoder->outputs[x].encoder);
+		encoder->outputs[x].encoder = nullptr;
+	}
 	shadow_encoder_uninit(encoder);
 	free(encoder);
 }

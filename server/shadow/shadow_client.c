@@ -127,30 +127,64 @@ static BOOL BitmapUpdateProxyEx(rdpShadowClient* client, const BITMAP_UPDATE* bi
 	return TRUE;
 }
 
+/* The GFX outputs of a client: with all monitors shared (shadow_screen_all_monitors), one per
+ * monitor, its rectangle in the shared surface; else none, the one surface of the desktop.
+ * Returns how many (0, or 2 and more). */
 WINPR_ATTR_NODISCARD
-static inline BOOL shadow_client_rdpgfx_new_surface(rdpShadowClient* client)
+static UINT32 shadow_client_gfx_layout(const rdpShadowClient* client, RECTANGLE_16* rects,
+                                       UINT32 max)
+{
+	WINPR_ASSERT(client);
+	const rdpShadowServer* server = client->server;
+	WINPR_ASSERT(server);
+	if (!shadow_screen_all_monitors(server) || !server->surface)
+		return 0;
+
+	const rdpShadowSurface* surface = server->surface;
+	const rdpShadowSubsystem* subsystem = server->subsystem;
+	WINPR_ASSERT(subsystem);
+
+	UINT32 count = 0;
+	const UINT32 monitors = MIN(subsystem->numMonitors, ARRAYSIZE(subsystem->monitors));
+	for (UINT32 index = 0; (index < monitors) && (count < max); index++)
+	{
+		const MONITOR_DEF* monitor = &subsystem->monitors[index];
+		const INT64 left = MAX(0, (INT64)monitor->left - surface->x);
+		const INT64 top = MAX(0, (INT64)monitor->top - surface->y);
+		const INT64 right = MIN((INT64)surface->width, (INT64)monitor->right + 1 - surface->x);
+		const INT64 bottom = MIN((INT64)surface->height, (INT64)monitor->bottom + 1 - surface->y);
+		if ((right <= left) || (bottom <= top))
+			continue;
+		rects[count].left = (UINT16)left;
+		rects[count].top = (UINT16)top;
+		rects[count].right = (UINT16)right;
+		rects[count].bottom = (UINT16)bottom;
+		count++;
+	}
+	return (count > 1) ? count : 0;
+}
+
+WINPR_ATTR_NODISCARD
+static BOOL shadow_client_rdpgfx_create_surface(rdpShadowClient* client, UINT16 surfaceId,
+                                                const RECTANGLE_16* rect)
 {
 	UINT error = CHANNEL_RC_OK;
-	RDPGFX_CREATE_SURFACE_PDU createSurface;
-	RDPGFX_MAP_SURFACE_TO_OUTPUT_PDU surfaceToOutput;
-	RdpgfxServerContext* context = nullptr;
-	rdpSettings* settings = nullptr;
+	RDPGFX_CREATE_SURFACE_PDU createSurface = WINPR_C_ARRAY_INIT;
+	RDPGFX_MAP_SURFACE_TO_OUTPUT_PDU surfaceToOutput = WINPR_C_ARRAY_INIT;
 
 	WINPR_ASSERT(client);
-	context = client->rdpgfx;
+	RdpgfxServerContext* context = client->rdpgfx;
 	WINPR_ASSERT(context);
-	settings = ((rdpContext*)client)->settings;
-	WINPR_ASSERT(settings);
+	WINPR_ASSERT(rect);
 
-	WINPR_ASSERT(freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth) <= UINT16_MAX);
-	WINPR_ASSERT(freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight) <= UINT16_MAX);
-	createSurface.width = (UINT16)freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
-	createSurface.height = (UINT16)freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
+	createSurface.width = rect->right - rect->left;
+	createSurface.height = rect->bottom - rect->top;
 	createSurface.pixelFormat = GFX_PIXEL_FORMAT_XRGB_8888;
-	createSurface.surfaceId = client->surfaceId;
-	surfaceToOutput.outputOriginX = 0;
-	surfaceToOutput.outputOriginY = 0;
-	surfaceToOutput.surfaceId = client->surfaceId;
+	createSurface.surfaceId = surfaceId;
+	/* its place in the graphics output buffer, whose top left is 0,0 ([MS-RDPEGFX] 2.2.2.16) */
+	surfaceToOutput.outputOriginX = rect->left;
+	surfaceToOutput.outputOriginY = rect->top;
+	surfaceToOutput.surfaceId = surfaceId;
 	surfaceToOutput.reserved = 0;
 	IFCALLRET(context->CreateSurface, error, context, &createSurface);
 
@@ -172,18 +206,16 @@ static inline BOOL shadow_client_rdpgfx_new_surface(rdpShadowClient* client)
 }
 
 WINPR_ATTR_NODISCARD
-static inline BOOL shadow_client_rdpgfx_release_surface(rdpShadowClient* client)
+static BOOL shadow_client_rdpgfx_delete_surface(rdpShadowClient* client, UINT16 surfaceId)
 {
 	UINT error = CHANNEL_RC_OK;
-	RDPGFX_DELETE_SURFACE_PDU pdu;
-	RdpgfxServerContext* context = nullptr;
+	RDPGFX_DELETE_SURFACE_PDU pdu = WINPR_C_ARRAY_INIT;
 
 	WINPR_ASSERT(client);
-
-	context = client->rdpgfx;
+	RdpgfxServerContext* context = client->rdpgfx;
 	WINPR_ASSERT(context);
 
-	pdu.surfaceId = client->surfaceId++;
+	pdu.surfaceId = surfaceId;
 	IFCALLRET(context->DeleteSurface, error, context, &pdu);
 
 	if (error)
@@ -195,6 +227,126 @@ static inline BOOL shadow_client_rdpgfx_release_surface(rdpShadowClient* client)
 	return TRUE;
 }
 
+/* The client's GFX surfaces: one of the desktop, or one per monitor (shadow_client_gfx_layout),
+ * each with an encoder of its size */
+WINPR_ATTR_NODISCARD
+static inline BOOL shadow_client_rdpgfx_new_surface(rdpShadowClient* client)
+{
+	WINPR_ASSERT(client);
+	rdpSettings* settings = ((rdpContext*)client)->settings;
+	WINPR_ASSERT(settings);
+	rdpShadowEncoder* encoder = client->encoder;
+	WINPR_ASSERT(encoder);
+
+	RECTANGLE_16 rects[SHADOW_GFX_OUTPUTS_MAX] = WINPR_C_ARRAY_INIT;
+	const UINT32 count = shadow_client_gfx_layout(client, rects, ARRAYSIZE(rects));
+	if (count == 0)
+	{
+		WINPR_ASSERT(freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth) <= UINT16_MAX);
+		WINPR_ASSERT(freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight) <= UINT16_MAX);
+		const RECTANGLE_16 desktop = {
+			.left = 0,
+			.top = 0,
+			.right = (UINT16)freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth),
+			.bottom = (UINT16)freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight)
+		};
+		encoder->outputCount = 0;
+		return shadow_client_rdpgfx_create_surface(client, client->surfaceId, &desktop);
+	}
+
+	for (UINT32 index = 0; index < count; index++)
+	{
+		SHADOW_GFX_OUTPUT* output = &encoder->outputs[index];
+		output->surfaceId = (UINT16)(client->surfaceId + index);
+		output->rect = rects[index];
+		shadow_encoder_free(output->encoder);
+		output->encoder = shadow_encoder_new_output(client, rects[index].right - rects[index].left,
+		                                            rects[index].bottom - rects[index].top);
+		encoder->outputCount = index + 1;
+		if (!output->encoder ||
+		    !shadow_client_rdpgfx_create_surface(client, output->surfaceId, &output->rect))
+			return FALSE;
+		WLog_DBG(TAG,
+		         "GFX surface %" PRIu16 ": monitor %" PRIu32 ", %" PRIu16 ",%" PRIu16 " %" PRIu16
+		         "x%" PRIu16,
+		         output->surfaceId, index, output->rect.left, output->rect.top,
+		         output->rect.right - output->rect.left, output->rect.bottom - output->rect.top);
+	}
+	return TRUE;
+}
+
+WINPR_ATTR_NODISCARD
+static inline BOOL shadow_client_rdpgfx_release_surface(rdpShadowClient* client)
+{
+	WINPR_ASSERT(client);
+	rdpShadowEncoder* encoder = client->encoder;
+
+	if (!encoder || (encoder->outputCount == 0))
+		return shadow_client_rdpgfx_delete_surface(client, client->surfaceId++);
+
+	BOOL rc = TRUE;
+	for (UINT32 index = 0; index < encoder->outputCount; index++)
+	{
+		SHADOW_GFX_OUTPUT* output = &encoder->outputs[index];
+		if (!shadow_client_rdpgfx_delete_surface(client, output->surfaceId))
+			rc = FALSE;
+		shadow_encoder_free(output->encoder);
+		output->encoder = nullptr;
+	}
+	client->surfaceId = (UINT16)(client->surfaceId + encoder->outputCount);
+	encoder->outputCount = 0;
+	return rc;
+}
+
+/* The monitors of the Reset Graphics PDU ([MS-RDPEGFX] 2.2.2.14, TS_MONITOR_DEF): with all
+ * monitors shared, every monitor, the primary's top left at 0,0 as in [MS-RDPBCGR]
+ * 2.2.1.3.6.1 (others may be left of or above it); else the one shared, the whole desktop */
+WINPR_ATTR_NODISCARD
+static UINT32 shadow_client_gfx_monitors(const rdpShadowClient* client, MONITOR_DEF* monitors,
+                                         UINT32 max, UINT32 width, UINT32 height)
+{
+	WINPR_ASSERT(client);
+	WINPR_ASSERT(monitors);
+	WINPR_ASSERT(max > 0);
+	const rdpShadowServer* server = client->server;
+	const rdpShadowSubsystem* subsystem = client->subsystem;
+	WINPR_ASSERT(server);
+	WINPR_ASSERT(subsystem);
+
+	if (!shadow_screen_all_monitors(server))
+	{
+		monitors[0] = (MONITOR_DEF){ .left = 0,
+			                         .top = 0,
+			                         .right = WINPR_ASSERTING_INT_CAST(INT32, width) - 1,
+			                         .bottom = WINPR_ASSERTING_INT_CAST(INT32, height) - 1,
+			                         .flags = MONITOR_PRIMARY };
+		return 1;
+	}
+
+	const UINT32 count = MIN(MIN(subsystem->numMonitors, ARRAYSIZE(subsystem->monitors)), max);
+	UINT32 primary = (subsystem->selectedMonitor < count) ? subsystem->selectedMonitor : 0;
+	for (UINT32 index = 0; index < count; index++)
+	{
+		if ((subsystem->monitors[index].flags & MONITOR_PRIMARY) != 0)
+		{
+			primary = index;
+			break;
+		}
+	}
+	const INT32 x = subsystem->monitors[primary].left;
+	const INT32 y = subsystem->monitors[primary].top;
+	for (UINT32 index = 0; index < count; index++)
+	{
+		const MONITOR_DEF* monitor = &subsystem->monitors[index];
+		monitors[index] = (MONITOR_DEF){ .left = monitor->left - x,
+			                             .top = monitor->top - y,
+			                             .right = monitor->right - x,
+			                             .bottom = monitor->bottom - y,
+			                             .flags = (index == primary) ? MONITOR_PRIMARY : 0 };
+	}
+	return count;
+}
+
 WINPR_ATTR_NODISCARD
 static inline BOOL shadow_client_rdpgfx_reset_graphic(rdpShadowClient* client)
 {
@@ -202,6 +354,8 @@ static inline BOOL shadow_client_rdpgfx_reset_graphic(rdpShadowClient* client)
 	RDPGFX_RESET_GRAPHICS_PDU pdu = WINPR_C_ARRAY_INIT;
 	RdpgfxServerContext* context = nullptr;
 	rdpSettings* settings = nullptr;
+	/* the PDU holds at most 16 (rdpgfx_send_reset_graphics_pdu refuses 16 and more) */
+	MONITOR_DEF monitors[15] = WINPR_C_ARRAY_INIT;
 
 	WINPR_ASSERT(client);
 	WINPR_ASSERT(client->rdpgfx);
@@ -214,8 +368,9 @@ static inline BOOL shadow_client_rdpgfx_reset_graphic(rdpShadowClient* client)
 
 	pdu.width = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
 	pdu.height = freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
-	pdu.monitorCount = client->subsystem->numMonitors;
-	pdu.monitorDefArray = client->subsystem->monitors;
+	pdu.monitorCount =
+	    shadow_client_gfx_monitors(client, monitors, ARRAYSIZE(monitors), pdu.width, pdu.height);
+	pdu.monitorDefArray = monitors;
 	IFCALLRET(context->ResetGraphics, error, context, &pdu);
 
 	if (error)
@@ -1430,6 +1585,18 @@ static UINT shadow_client_rdpgfx_caps_advertise(RdpgfxServerContext* context,
 }
 
 /* every GFX frame goes out here, so the 5 s line knows which encodes sent one */
+/* The encoder whose codecs encode the GFX surface being sent: an output's own while a frame over
+ * the outputs (one surface per monitor) is sent, else the client's */
+WINPR_ATTR_NODISCARD
+static rdpShadowEncoder* shadow_client_codec(rdpShadowClient* client)
+{
+	WINPR_ASSERT(client);
+	rdpShadowEncoder* encoder = client->encoder;
+	if (encoder && encoder->roundOpen && encoder->roundCodec)
+		return encoder->roundCodec;
+	return encoder;
+}
+
 WINPR_ATTR_NODISCARD
 static UINT shadow_client_gfx_frame_command(rdpShadowClient* client,
                                             const RDPGFX_SURFACE_COMMAND* cmd,
@@ -1441,9 +1608,25 @@ static UINT shadow_client_gfx_frame_command(rdpShadowClient* client,
 	WINPR_ASSERT(client->encoder);
 
 	UINT error = CHANNEL_RC_OK;
+	rdpShadowEncoder* encoder = client->encoder;
+	if (encoder->roundOpen)
+	{
+		/* a frame over the outputs: its StartFrame before the first surface command, its
+		 * EndFrame after the last (shadow_client_send_outputs_gfx) */
+		if (!encoder->roundStarted)
+		{
+			IFCALLRET(client->rdpgfx->StartFrame, error, client->rdpgfx, cmdstart);
+			if (error != CHANNEL_RC_OK)
+				return error;
+			encoder->roundStarted = TRUE;
+		}
+		IFCALLRET(client->rdpgfx->SurfaceCommand, error, client->rdpgfx, cmd);
+		return error;
+	}
+
 	IFCALLRET(client->rdpgfx->SurfaceFrameCommand, error, client->rdpgfx, cmd, cmdstart, cmdend);
 	if ((error == CHANNEL_RC_OK) && client->rdpgfx->SurfaceFrameCommand)
-		client->encoder->gfxFrameOut = TRUE;
+		encoder->gfxFrameOut = TRUE;
 	return error;
 }
 
@@ -1476,7 +1659,7 @@ static BOOL shadow_client_send_av1(rdpShadowClient* client, const BYTE* pSrcData
 {
 	WINPR_ASSERT(client);
 
-	rdpShadowEncoder* encoder = client->encoder;
+	rdpShadowEncoder* encoder = shadow_client_codec(client);
 	WINPR_ASSERT(encoder);
 
 	UINT error = CHANNEL_RC_OK;
@@ -1533,7 +1716,7 @@ static BOOL shadow_client_send_av2(rdpShadowClient* client, const BYTE* pSrcData
 {
 	WINPR_ASSERT(client);
 
-	rdpShadowEncoder* encoder = client->encoder;
+	rdpShadowEncoder* encoder = shadow_client_codec(client);
 	WINPR_ASSERT(encoder);
 
 	UINT error = CHANNEL_RC_OK;
@@ -1609,7 +1792,7 @@ static BOOL shadow_client_send_hevc(rdpShadowClient* client, const BYTE* pSrcDat
 {
 	WINPR_ASSERT(client);
 
-	rdpShadowEncoder* encoder = client->encoder;
+	rdpShadowEncoder* encoder = shadow_client_codec(client);
 	WINPR_ASSERT(encoder);
 
 	UINT error = CHANNEL_RC_OK;
@@ -1672,7 +1855,7 @@ static BOOL shadow_client_send_avc444(rdpShadowClient* client, const BYTE* pSrcD
 {
 	WINPR_ASSERT(client);
 
-	rdpShadowEncoder* encoder = client->encoder;
+	rdpShadowEncoder* encoder = shadow_client_codec(client);
 	WINPR_ASSERT(encoder);
 
 	UINT error = CHANNEL_RC_OK;
@@ -1735,7 +1918,7 @@ static BOOL shadow_client_send_avc420(rdpShadowClient* client, const BYTE* pSrcD
 {
 	WINPR_ASSERT(client);
 
-	rdpShadowEncoder* encoder = client->encoder;
+	rdpShadowEncoder* encoder = shadow_client_codec(client);
 	WINPR_ASSERT(encoder);
 
 	UINT error = CHANNEL_RC_OK;
@@ -1792,7 +1975,7 @@ static BOOL shadow_client_send_rfx(rdpShadowClient* client, const BYTE* pSrcData
 {
 	WINPR_ASSERT(client);
 
-	rdpShadowEncoder* encoder = client->encoder;
+	rdpShadowEncoder* encoder = shadow_client_codec(client);
 	WINPR_ASSERT(encoder);
 
 	UINT error = CHANNEL_RC_OK;
@@ -1906,7 +2089,7 @@ static BOOL shadow_client_send_progressive(rdpShadowClient* client, const BYTE* 
 {
 	WINPR_ASSERT(client);
 
-	rdpShadowEncoder* encoder = client->encoder;
+	rdpShadowEncoder* encoder = shadow_client_codec(client);
 	WINPR_ASSERT(encoder);
 
 	UINT error = CHANNEL_RC_OK;
@@ -1969,7 +2152,7 @@ static BOOL shadow_client_send_planar(rdpShadowClient* client, const BYTE* pSrcD
 {
 	WINPR_ASSERT(client);
 
-	rdpShadowEncoder* encoder = client->encoder;
+	rdpShadowEncoder* encoder = shadow_client_codec(client);
 	WINPR_ASSERT(encoder);
 
 	UINT error = CHANNEL_RC_OK;
@@ -2146,12 +2329,14 @@ static BOOL shadow_client_encode_surface_gfx(rdpShadowClient* client, const BYTE
 		client->first_frame = FALSE;
 	}
 
-	cmdstart.frameId = shadow_encoder_create_frame_id(encoder);
+	/* a frame over the outputs has one id for all of them */
+	cmdstart.frameId =
+	    encoder->roundOpen ? encoder->roundFrameId : shadow_encoder_create_frame_id(encoder);
 	GetSystemTime(&sTime);
 	cmdstart.timestamp = (UINT32)(sTime.wHour << 22U | sTime.wMinute << 16U | sTime.wSecond << 10U |
 	                              sTime.wMilliseconds);
 	cmdend.frameId = cmdstart.frameId;
-	cmd.surfaceId = client->surfaceId;
+	cmd.surfaceId = encoder->roundOpen ? encoder->roundSurfaceId : client->surfaceId;
 	cmd.format = PIXEL_FORMAT_BGRX32;
 	cmd.left = nXSrc;
 	cmd.top = nYSrc;
@@ -2256,6 +2441,104 @@ static BOOL shadow_client_send_surface_gfx(rdpShadowClient* client, const BYTE* 
 	const BOOL rc =
 	    shadow_client_encode_surface_gfx(client, pSrcData, nSrcStep, SrcFormat, nXSrc, nYSrc,
 	                                     nWidth, nHeight, srcWidth, srcHeight, damage);
+	if (rc && encoder->gfxFrameOut)
+	{
+		const UINT64 end = winpr_GetTickCount64NS();
+		shadow_gfx_stats_frame_sent(&encoder->gfxStats, encoder->frameId, start, end);
+		shadow_gfx_stats_round(&encoder->gfxStats, encoder->roundStartNs, end);
+	}
+	return rc;
+}
+
+/* One frame over the outputs (one GFX surface per monitor): a surface command for each output the
+ * damage touches, encoded by the output's own codecs from its part of the shared surface, all
+ * under one frame id between one StartFrame and one EndFrame */
+WINPR_ATTR_NODISCARD
+static BOOL shadow_client_send_outputs_gfx(rdpShadowClient* client, const rdpShadowSurface* surface,
+                                           const REGION16* invalidRegion, BOOL fullframegfx)
+{
+	WINPR_ASSERT(client);
+	WINPR_ASSERT(surface);
+	WINPR_ASSERT(invalidRegion);
+	rdpShadowEncoder* encoder = client->encoder;
+	WINPR_ASSERT(encoder);
+
+	if (client->first_frame)
+	{
+		/* after Reset Graphics every output starts again, from a whole picture */
+		for (UINT32 index = 0; index < encoder->outputCount; index++)
+		{
+			rdpShadowEncoder* codec = encoder->outputs[index].encoder;
+			WINPR_ASSERT(codec);
+			if (codec->rfx && !rfx_context_reset(codec->rfx, codec->width, codec->height))
+				return FALSE;
+			shadow_rfx_invalidate_snapshot(codec);
+		}
+		client->first_frame = FALSE;
+	}
+
+	encoder->gfxFrameOut = FALSE;
+	const UINT64 start = winpr_GetTickCount64NS();
+	encoder->roundFrameId = shadow_encoder_create_frame_id(encoder);
+	encoder->roundOpen = TRUE;
+	encoder->roundStarted = FALSE;
+
+	BOOL rc = TRUE;
+	REGION16 part;
+	region16_init(&part);
+	for (UINT32 index = 0; rc && (index < encoder->outputCount); index++)
+	{
+		const SHADOW_GFX_OUTPUT* output = &encoder->outputs[index];
+		if (!region16_intersect_rect(&part, invalidRegion, &output->rect))
+		{
+			rc = FALSE;
+			break;
+		}
+		if (region16_is_empty(&part))
+			continue; /* a still monitor costs nothing */
+
+		const RECTANGLE_16* extents = region16_extents(&part);
+		const UINT16 x = output->rect.left;
+		const UINT16 y = output->rect.top;
+		const UINT16 width = output->rect.right - x;
+		const UINT16 height = output->rect.bottom - y;
+		const RECTANGLE_16 damage = { .left = extents->left - x,
+			                          .top = extents->top - y,
+			                          .right = extents->right - x,
+			                          .bottom = extents->bottom - y };
+		const BYTE* data = &surface->data[1ull * y * surface->scanline + 4ull * x];
+
+		encoder->roundSurfaceId = output->surfaceId;
+		encoder->roundCodec = output->encoder;
+		rc = shadow_client_encode_surface_gfx(
+		    client, data, surface->scanline, surface->format, fullframegfx ? 0 : damage.left,
+		    fullframegfx ? 0 : damage.top, fullframegfx ? width : (damage.right - damage.left),
+		    fullframegfx ? height : (damage.bottom - damage.top), width, height, &damage);
+	}
+	region16_uninit(&part);
+
+	if (rc && encoder->roundStarted)
+	{
+		UINT error = CHANNEL_RC_OK;
+		const RDPGFX_END_FRAME_PDU end = { .frameId = encoder->roundFrameId };
+		IFCALLRET(client->rdpgfx->EndFrame, error, client->rdpgfx, &end);
+		if (error != CHANNEL_RC_OK)
+		{
+			WLog_ERR(TAG, "EndFrame failed with error %" PRIu32 "", error);
+			rc = FALSE;
+		}
+		else
+			encoder->gfxFrameOut = TRUE;
+	}
+	else if (rc)
+	{
+		/* nothing went out: the id back, a frame that was never sent is never acknowledged
+		 * (as shadow_client_send_rfx does) */
+		encoder->frameId--;
+	}
+	encoder->roundOpen = FALSE;
+	encoder->roundCodec = nullptr;
+
 	if (rc && encoder->gfxFrameOut)
 	{
 		const UINT64 end = winpr_GetTickCount64NS();
@@ -2847,6 +3130,12 @@ static BOOL shadow_client_send_surface_update(rdpShadowClient* client, SHADOW_GF
 					goto out;
 
 				pStatus->gfxSurfaceCreated = TRUE;
+			}
+
+			if (client->encoder && (client->encoder->outputCount > 1))
+			{
+				ret = shadow_client_send_outputs_gfx(client, surface, &invalidRegion, fullframegfx);
+				goto out;
 			}
 
 			WINPR_ASSERT(nWidth >= 0);

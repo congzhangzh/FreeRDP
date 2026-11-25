@@ -1761,6 +1761,10 @@ static int x11_shadow_subsystem_init(rdpShadowSubsystem* sub)
 	                                 OSMINORTYPE_NATIVE_XSERVER))
 		return -1;
 
+	/* the root window holds every monitor and the capture reads the surface's part of it, so a
+	 * surface of all of them works as it is; one monitor stays the default here */
+	sub->allMonitors = SHADOW_ALL_MONITORS_OPTIN;
+
 #if defined(WITH_SHADOW_PIPEWIRE)
 	subsystem->audio = shadow_pipewire_audio_new(sub);
 #endif
