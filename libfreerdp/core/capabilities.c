@@ -168,12 +168,9 @@ static BOOL rdp_apply_general_capability_set(rdpSettings* settings, const rdpSet
 	WINPR_ASSERT(settings);
 	WINPR_ASSERT(src);
 
-	if (settings->ServerMode)
-	{
-		settings->OsMajorType = src->OsMajorType;
-		settings->OsMinorType = src->OsMinorType;
-	}
-
+	/* osMajorType and osMinorType stay the sender's own: they are what this side writes in its
+	 * next general capability set (a server sends one again at every reactivation), the peer's
+	 * system is in the received settings (freerdp_get_remote_settings) */
 	settings->CapsProtocolVersion = src->CapsProtocolVersion;
 	settings->NoBitmapCompressionHeader = src->NoBitmapCompressionHeader;
 	settings->LongCredentialsSupported = src->LongCredentialsSupported;
