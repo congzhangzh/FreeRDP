@@ -380,7 +380,20 @@ static inline BOOL shadow_client_rdpgfx_reset_graphic(rdpShadowClient* client)
 	}
 
 	client->first_frame = TRUE;
+	if (client->encoder && client->server->screen)
+		client->encoder->layoutVersion = client->server->screen->layoutVersion;
 	return TRUE;
+}
+
+/* The layout changed since this client's last Reset Graphics while the size did not: a monitor
+ * moved, another primary, one more or less in the same box. Its monitors and per-monitor
+ * surfaces are then out of date. */
+WINPR_ATTR_NODISCARD
+static BOOL shadow_client_gfx_layout_changed(const rdpShadowClient* client)
+{
+	WINPR_ASSERT(client);
+	const rdpShadowScreen* screen = client->server ? client->server->screen : nullptr;
+	return screen && client->encoder && (client->encoder->layoutVersion != screen->layoutVersion);
 }
 
 static inline void shadow_client_free_queued_message(void* obj)
@@ -3921,6 +3934,24 @@ static DWORD WINAPI shadow_client_thread(LPVOID arg)
 					else if (!shadow_client_send_resize(client, &gfxstatus))
 					{
 						WLog_ERR(TAG, "Failed to send resize message");
+						break;
+					}
+				}
+				/* the same size, another layout: only a GFX client's monitors and surfaces
+				 * depend on it (the one picture of a client without GFX does not) */
+				else if (shadow_client_gfx_can_reset(client, &gfxstatus) &&
+				         shadow_client_gfx_layout_changed(client))
+				{
+					WLog_INFO(TAG, "Client %s: the monitor layout changed, the size did not",
+					          client->context.peer->hostname);
+					if (!shadow_client_gfx_resize(client, &gfxstatus))
+					{
+						WLog_ERR(TAG, "Failed to reset the graphics pipeline for the new layout");
+						break;
+					}
+					if (!shadow_client_send_frame(client, &gfxstatus))
+					{
+						WLog_ERR(TAG, "Failed to send surface update");
 						break;
 					}
 				}

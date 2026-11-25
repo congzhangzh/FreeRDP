@@ -18,6 +18,7 @@ set(${MODULE_PREFIX}_TESTS
     TestShadowStatsIpc.c
     TestShadowPipeline.c
     TestShadowMonitors.c
+    TestShadowLayout.c
 )
 
 # HEVC (WITH_GFX_AZURE only): the caps confirm keeps HEVC to clients that offered it
@@ -29,9 +30,10 @@ endif()
 
 create_test_sourcelist(${MODULE_PREFIX}_SRCS ${${MODULE_PREFIX}_DRIVER} ${${MODULE_PREFIX}_TESTS})
 
-# the 5 s line and the stats socket are private to the library: their files are built in
+# the 5 s line, the stats socket and the layout compare are private to the library: their files
+# are built in
 add_executable(${MODULE_NAME} ${${MODULE_PREFIX}_SRCS} ../shadow_gfx_stats.c ../shadow_stats_ipc.c
-                              ../shadow_mcevent.c ${TEST_SHADOW_HEVC_SRCS})
+                              ../shadow_mcevent.c ../shadow_layout.c ${TEST_SHADOW_HEVC_SRCS})
 
 target_link_libraries(${MODULE_NAME} PRIVATE freerdp-shadow freerdp winpr)
 
