@@ -406,82 +406,65 @@ static BOOL win_shadow_input_extended_mouse_event(rdpShadowSubsystem* subsystem,
 	return TRUE;
 }
 
-static int win_shadow_invalidate_region(winShadowSubsystem* subsystem, int x, int y, int width,
-                                        int height)
-{
-	rdpShadowServer* server = subsystem->base.server;
-	rdpShadowSurface* surface = server->surface;
-	RECTANGLE_16 invalidRect = { .left = x, .top = y, .right = x + width, .bottom = y + height };
-	EnterCriticalSection(&(surface->lock));
-	region16_union_rect(&(surface->invalidRegion), &(surface->invalidRegion), &invalidRect);
-	LeaveCriticalSection(&(surface->lock));
-	return 1;
-}
-
 static int win_shadow_surface_copy(winShadowSubsystem* subsystem)
 {
-	int x, y;
-	int width;
-	int height;
-	int status = 1;
-	int nDstStep = 0;
-	DWORD DstFormat;
-	BYTE* pDstData = nullptr;
 	rdpShadowServer* server;
 	rdpShadowSurface* surface;
 	RECTANGLE_16 surfaceRect;
-	RECTANGLE_16 invalidRect;
-	const RECTANGLE_16* extents;
 	server = subsystem->base.server;
 	surface = server->surface;
 
 	if (ArrayList_Count(server->clients) < 1)
 		return 1;
 
-	surfaceRect.left = surface->x;
-	surfaceRect.top = surface->y;
-	surfaceRect.right = surface->x + surface->width;
-	surfaceRect.bottom = surface->y + surface->height;
+	/* the damage is in the surface's own coordinates: its top left is 0,0 here, wherever the
+	 * surface is on the desktop (surface->x, surface->y) */
+	surfaceRect.left = 0;
+	surfaceRect.top = 0;
+	surfaceRect.right = (UINT16)surface->width;
+	surfaceRect.bottom = (UINT16)surface->height;
 	region16_intersect_rect(&(surface->invalidRegion), &(surface->invalidRegion), &surfaceRect);
 
 	if (region16_is_empty(&(surface->invalidRegion)))
 		return 1;
 
-	extents = region16_extents(&(surface->invalidRegion));
-	CopyMemory(&invalidRect, extents, sizeof(RECTANGLE_16));
-	shadow_capture_align_clip_rect(&invalidRect, &surfaceRect);
-	x = invalidRect.left;
-	y = invalidRect.top;
-	width = invalidRect.right - invalidRect.left;
-	height = invalidRect.bottom - invalidRect.top;
-
-	/* The alignment to 16 pixels may reach past the captured screen when its
-	 * size is not a multiple of 16 (1600x900): copy what was captured only */
-	if (x + width > subsystem->width)
-		width = subsystem->width - x;
-	if (y + height > subsystem->height)
-		height = subsystem->height - y;
-	if ((width <= 0) || (height <= 0))
+#if defined(WITH_DXGI_1_2)
 	{
-		region16_clear(&(surface->invalidRegion));
-		return 1;
+		/* every output at its place in the surface; the clients encode the damage copied, the
+		 * damage of an output without a frame now waits for its next one */
+		REGION16 pending = WINPR_C_ARRAY_INIT;
+		region16_init(&pending);
+		const int status = win_shadow_dxgi_copy_outputs(subsystem, &pending);
+
+		/* see below: no lock held across the wait */
+		if (status > 0)
+			shadow_subsystem_frame_update(&subsystem->base);
+
+		(void)region16_copy(&(surface->invalidRegion), &pending);
+		region16_uninit(&pending);
+		return (status > 0) ? 1 : status;
 	}
-
-	if (0)
+#elif defined(WITH_WDS_API)
 	{
-		x = 0;
-		y = 0;
-		width = surface->width;
-		height = surface->height;
-	}
-
-	WLog_INFO(TAG, "SurfaceCopy x: %d y: %d width: %d height: %d right: %d bottom: %d", x, y, width,
-	          height, x + width, y + height);
-#if defined(WITH_WDS_API)
-	{
+		int x, y;
+		int width;
+		int height;
+		RECTANGLE_16 invalidRect;
+		const RECTANGLE_16* extents;
 		rdpGdi* gdi;
 		shwContext* shw;
 		rdpContext* context;
+
+		extents = region16_extents(&(surface->invalidRegion));
+		CopyMemory(&invalidRect, extents, sizeof(RECTANGLE_16));
+		shadow_capture_align_clip_rect(&invalidRect, &surfaceRect);
+		x = invalidRect.left;
+		y = invalidRect.top;
+		width = invalidRect.right - invalidRect.left;
+		height = invalidRect.bottom - invalidRect.top;
+
+		WLog_INFO(TAG, "SurfaceCopy x: %d y: %d width: %d height: %d right: %d bottom: %d", x, y,
+		          width, height, x + width, y + height);
 
 		WINPR_ASSERT(subsystem);
 		shw = subsystem->shw;
@@ -493,6 +476,11 @@ static int win_shadow_surface_copy(winShadowSubsystem* subsystem)
 		gdi = context->gdi;
 		WINPR_ASSERT(gdi);
 
+		/* The GDI primary buffer spans the whole desktop, the surface is its part at
+		 * surface->x, surface->y */
+		const int srcX = surface->x + x;
+		const int srcY = surface->y + y;
+
 		/* The inner framebuffer is owned by the WDS attendee client. It can be
 		 * absent before its first frame, or smaller than the surface while a
 		 * desktop resize is in flight: copying past its bounds crashes the
@@ -503,46 +491,28 @@ static int win_shadow_surface_copy(winShadowSubsystem* subsystem)
 			region16_clear(&(surface->invalidRegion));
 			return 0;
 		}
-		if (x + width > gdi->width)
-			width = gdi->width - x;
-		if (y + height > gdi->height)
-			height = gdi->height - y;
+		if (srcX + width > gdi->width)
+			width = gdi->width - srcX;
+		if (srcY + height > gdi->height)
+			height = gdi->height - srcY;
 		if ((width <= 0) || (height <= 0))
 		{
 			region16_clear(&(surface->invalidRegion));
 			return 1;
 		}
 
-		pDstData = gdi->primary_buffer;
-		nDstStep = gdi->width * 4;
-		DstFormat = gdi->dstFormat;
+		if (!freerdp_image_copy_no_overlap(surface->data, surface->format, surface->scanline, x, y,
+		                                   width, height, gdi->primary_buffer, gdi->dstFormat,
+		                                   gdi->width * 4, srcX, srcY, nullptr, FREERDP_FLIP_NONE))
+			return ERROR_INTERNAL_ERROR;
+
+		region16_clear(&(surface->invalidRegion));
 	}
-#elif defined(WITH_DXGI_1_2)
-	DstFormat = PIXEL_FORMAT_BGRX32;
-	status = win_shadow_dxgi_fetch_frame_data(subsystem, &pDstData, &nDstStep, x, y, width, height);
-#endif
-
-	if (status <= 0)
-		return status;
-
-#if defined(WITH_WDS_API)
-	/* WDS: the GDI primary buffer spans the whole desktop */
-	const int srcX = x;
-	const int srcY = y;
-#elif defined(WITH_DXGI_1_2)
-	/* DXGI: fetch_frame_data() copies the region to the staging texture
-	 * origin, so the source offset is always the origin */
-	const int srcX = 0;
-	const int srcY = 0;
 #else
-	/* no capture backend compiled in: keep the previous behavior */
-	const int srcX = x;
-	const int srcY = y;
+	/* no capture backend compiled in */
+	region16_clear(&(surface->invalidRegion));
+	return 1;
 #endif
-	if (!freerdp_image_copy_no_overlap(surface->data, surface->format, surface->scanline, x, y,
-	                                   width, height, pDstData, DstFormat, nDstStep, srcX, srcY,
-	                                   nullptr, FREERDP_FLIP_NONE))
-		return ERROR_INTERNAL_ERROR;
 
 	/* shadow_subsystem_frame_update() publishes the frame to all subscriber
 	 * clients and waits until every one of them consumed it. That wait must
@@ -554,7 +524,6 @@ static int win_shadow_surface_copy(winShadowSubsystem* subsystem)
 	 * event's own subscriber list, not the server clients list, so the lock
 	 * is not needed here at all. */
 	shadow_subsystem_frame_update(&subsystem->base);
-	region16_clear(&(surface->invalidRegion));
 	return 1;
 }
 
@@ -652,63 +621,89 @@ static DWORD WINAPI win_shadow_subsystem_thread(LPVOID arg)
 
 		if ((status == WAIT_TIMEOUT) || (GetTickCount64() > frameTime))
 		{
-			int dxgi_status = win_shadow_check_resize(subsystem);
+			const int resize_status = win_shadow_check_resize(subsystem);
+			BOOL copy = FALSE;
 
-			/* apply a pending desktop display mode change before the
+			/* apply a pending desktop display change before the
 			 * restart/acquire below; on fatal resize error (<0) skip this
 			 * round, the next tick retries */
-			if (dxgi_status >= 0)
+			if (resize_status >= 0)
 			{
+				rdpShadowSurface* surface = subsystem->base.server->surface;
+				WINPR_ASSERT(surface);
+
 				/* a desktop switch (logon, lock screen, UAC), a refresh request,
-				 * or no duplication yet: duplicate the output again on the input
-				 * desktop, and send all of it. DXGI reports changes only: on a
+				 * or no duplication yet: duplicate the outputs again on the input
+				 * desktop, and send all of them. DXGI reports changes only: on a
 				 * desktop that does not change, a new client would otherwise wait
 				 * for its first picture until something moves; a new duplication
 				 * starts with the whole desktop image. A missing duplication is
-				 * retried from dxgiRetryTime on, not on every pass: every
+				 * retried from its dxgiRetryTime on, not on every pass: every
 				 * WIN_SHADOW_DXGI_DENIED_RETRY_MS while a desktop this process
 				 * may not capture is active, every WIN_SHADOW_DXGI_INIT_RETRY_MS
 				 * after a failure which does not recover by itself (no D3D11
-				 * device, no duplicatable output) */
+				 * device, an output which refuses the duplication) */
 				const BOOL followed = win_shadow_follow_input_desktop();
-				const BOOL retry = !subsystem->dxgiOutputDuplication &&
-				                   (GetTickCount64() >= subsystem->dxgiRetryTime);
-				/* a desktop resize leaves the duplication behind on the old
+				/* a desktop change leaves the duplications behind on the old
 				 * geometry: win_shadow_check_resize has just resized the shadow
 				 * screen, so the next frame would be copied from objects of the
-				 * previous size. Duplicate the output again on the new one and
+				 * previous layout. Set the outputs up again for the new one and
 				 * send all of it, as for a desktop switch. */
-				const BOOL resized = (dxgi_status > 0);
-				if (followed || refresh || retry || resized)
+				const BOOL resized = (resize_status > 0);
+				const BOOL moved = (subsystem->outputsSurfaceX != surface->x) ||
+				                   (subsystem->outputsSurfaceY != surface->y) ||
+				                   (subsystem->outputsSurfaceWidth != surface->width) ||
+				                   (subsystem->outputsSurfaceHeight != surface->height);
+				BOOL restart = followed || refresh || resized;
+				refresh = FALSE;
+
+				if ((resized || moved || !subsystem->outputsMapped) &&
+				    (GetTickCount64() >= subsystem->outputsRetryTime))
 				{
-					refresh = FALSE;
-					if (win_shadow_dxgi_restart_duplication(subsystem) > 0)
-						(void)win_shadow_invalidate_region(subsystem, 0, 0, subsystem->width,
-						                                   subsystem->height);
+					if (win_shadow_dxgi_map_outputs(subsystem) < 0)
+					{
+						subsystem->outputsMapped = FALSE;
+						subsystem->outputsRetryTime =
+						    GetTickCount64() + WIN_SHADOW_OUTPUTS_RETRY_MS;
+					}
+					restart = TRUE;
 				}
 
-				/* the resize status only gates this block; without a duplication
-				 * (capture paused, or a failed restart) there is no frame */
-				dxgi_status = subsystem->dxgiOutputDuplication
-				                  ? win_shadow_dxgi_get_next_frame(subsystem)
-				                  : 0;
-
-				/* a frame without dirty rectangles of its own (the first of a
-				 * new duplication) still holds the whole desktop image: copy
-				 * what is marked invalid already */
-				if (dxgi_status > 0)
+				for (UINT32 index = 0; index < subsystem->outputCount; index++)
 				{
-					const int changed = win_shadow_dxgi_get_invalid_region(subsystem);
-					rdpShadowSurface* surface = subsystem->base.server->surface;
-					WINPR_ASSERT(surface);
+					win_shadow_dxgi_select(subsystem, index);
+
+					const BOOL retry = !subsystem->dxgi->dxgiOutputDuplication &&
+					                   (GetTickCount64() >= subsystem->dxgi->dxgiRetryTime);
+					if (restart || retry)
+					{
+						if (win_shadow_dxgi_restart_duplication(subsystem) > 0)
+							win_shadow_dxgi_invalidate_output(subsystem);
+					}
+
+					/* without a duplication (capture paused, or a failed restart)
+					 * this output has no frame */
+					const int frame = subsystem->dxgi->dxgiOutputDuplication
+					                      ? win_shadow_dxgi_get_next_frame(subsystem)
+					                      : 0;
+
+					/* a frame without dirty rectangles of its own (the first of a
+					 * new duplication) still holds the whole image: what is marked
+					 * invalid already is copied. A frame whose rectangles cannot
+					 * be read is copied whole: its damage is not lost. */
+					if ((frame > 0) && (win_shadow_dxgi_get_invalid_region(subsystem) < 0))
+						win_shadow_dxgi_invalidate_output(subsystem);
+				}
+
+				if (win_shadow_dxgi_frame_acquired(subsystem))
+				{
 					EnterCriticalSection(&(surface->lock));
-					const BOOL pending = !region16_is_empty(&(surface->invalidRegion));
+					copy = !region16_is_empty(&(surface->invalidRegion));
 					LeaveCriticalSection(&(surface->lock));
-					dxgi_status = ((changed > 0) || ((changed == 0) && pending)) ? 1 : changed;
 				}
 			}
 
-			if (dxgi_status > 0)
+			if (copy)
 				win_shadow_surface_copy(subsystem);
 
 			/* Follow the encoder capture rate suggestion, like the X11 and Mac
@@ -751,132 +746,186 @@ static DWORD WINAPI win_shadow_subsystem_thread(LPVOID arg)
 
 #endif
 
-static UINT32 win_shadow_enum_monitors(MONITOR_DEF* monitors, UINT32 maxMonitors)
+typedef struct
 {
-	HDC hdc;
-	int index;
-	int desktopWidth;
-	int desktopHeight;
-	DWORD iDevNum = 0;
-	int numMonitors = 0;
-	MONITOR_DEF* monitor;
-	DISPLAY_DEVICE displayDevice = WINPR_C_ARRAY_INIT;
+	MONITOR_DEF* monitors;
+	UINT32 max;
+	UINT32 count;
+} winMonitorEnum;
 
-	displayDevice.cb = sizeof(DISPLAY_DEVICE);
+static BOOL CALLBACK win_shadow_monitor_proc(HMONITOR hMonitor, WINPR_ATTR_UNUSED HDC hdc,
+                                             WINPR_ATTR_UNUSED LPRECT rect, LPARAM param)
+{
+	winMonitorEnum* list = (winMonitorEnum*)param;
+	MONITORINFO info = WINPR_C_ARRAY_INIT;
 
-	/* Skip adapters which are not attached to the desktop: on machines with
-	 * a BMC/management GPU (e.g. ASPEED) listed as device 0 while the real GPU
-	 * is attached later in the list, CreateDC for the unattached device fails
-	 * and the monitor rectangle stays zeroed, which results in a 1x1 surface. */
+	WINPR_ASSERT(list);
+
+	if (list->count >= list->max)
+		return FALSE;
+
+	info.cbSize = sizeof(info);
+	if (!GetMonitorInfoW(hMonitor, &info) || (info.rcMonitor.right <= info.rcMonitor.left) ||
+	    (info.rcMonitor.bottom <= info.rcMonitor.top))
+		return TRUE;
+
+	/* right and bottom are inclusive, as the shadow server reads them */
+	MONITOR_DEF* monitor = &list->monitors[list->count++];
+	monitor->left = info.rcMonitor.left;
+	monitor->top = info.rcMonitor.top;
+	monitor->right = info.rcMonitor.right - 1;
+	monitor->bottom = info.rcMonitor.bottom - 1;
+	monitor->flags = (info.dwFlags & MONITORINFOF_PRIMARY) ? MONITOR_PRIMARY : 0;
+	return TRUE;
+}
+
+/* The monitors of the desktop in the server's form (shadow_monitors_normalize: the primary
+ * first, the top left of their bounding box at 0,0), and where that top left is on the
+ * virtual desktop */
+static UINT32 win_shadow_enum_monitors_at(MONITOR_DEF* monitors, UINT32 maxMonitors, INT32* pLeft,
+                                          INT32* pTop)
+{
+	winMonitorEnum list = { monitors, maxMonitors, 0 };
+	INT32 left = 0;
+	INT32 top = 0;
+
+	if (!monitors || (maxMonitors < 1))
+		return 0;
+
+	/* FALSE also when the callback stopped at maxMonitors: keep what it found */
+	(void)EnumDisplayMonitors(nullptr, nullptr, win_shadow_monitor_proc, (LPARAM)&list);
+
+	for (UINT32 index = 0; index < list.count; index++)
 	{
-		DWORD devNum = 0;
-		BOOL attached = FALSE;
-		DISPLAY_DEVICE probe = WINPR_C_ARRAY_INIT;
-		probe.cb = sizeof(DISPLAY_DEVICE);
-		while (EnumDisplayDevices(nullptr, devNum, &probe, 0))
-		{
-			if (probe.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP)
-			{
-				attached = TRUE;
-				break;
-			}
-			devNum++;
-			probe.cb = sizeof(DISPLAY_DEVICE);
-		}
-		if (attached && (devNum != 0))
-		{
-			displayDevice.cb = sizeof(DISPLAY_DEVICE);
-			if (EnumDisplayDevices(nullptr, devNum, &displayDevice, 0))
-				iDevNum = devNum;
-		}
-	}
-
-	if (EnumDisplayDevices(nullptr, iDevNum, &displayDevice, 0))
-	{
-		hdc = CreateDC(displayDevice.DeviceName, nullptr, nullptr, nullptr);
-		desktopWidth = GetDeviceCaps(hdc, HORZRES);
-		desktopHeight = GetDeviceCaps(hdc, VERTRES);
-		index = 0;
-		numMonitors = 1;
-		monitor = &monitors[index];
-		monitor->left = 0;
-		monitor->top = 0;
-		/* right and bottom are inclusive, as the shadow server reads them */
-		monitor->right = desktopWidth - 1;
-		monitor->bottom = desktopHeight - 1;
-		monitor->flags = 1;
-		DeleteDC(hdc);
+		if ((index == 0) || (monitors[index].left < left))
+			left = monitors[index].left;
+		if ((index == 0) || (monitors[index].top < top))
+			top = monitors[index].top;
 	}
 
 	/* Fallback to the primary screen metrics if enumeration did not
 	 * yield a usable rectangle, otherwise shadow_screen_new computes a
-	 * 1x1 surface and clients are resized to 1x1. */
-	if ((numMonitors == 0) || (monitors[0].right <= 0) || (monitors[0].bottom <= 0))
+	 * 1x1 surface and clients are resized to 1x1. The primary's top left
+	 * is the virtual desktop's 0,0. */
+	if ((list.count == 0) || !shadow_monitors_normalize(monitors, list.count))
 	{
-		monitor = &monitors[0];
+		WLog_WARN(TAG, "no usable monitor list (%" PRIu32 " found): sharing the primary screen",
+		          list.count);
+		MONITOR_DEF* monitor = &monitors[0];
 		monitor->left = 0;
 		monitor->top = 0;
 		monitor->right = GetSystemMetrics(SM_CXSCREEN) - 1;
 		monitor->bottom = GetSystemMetrics(SM_CYSCREEN) - 1;
-		monitor->flags = 1;
-		numMonitors = 1;
+		monitor->flags = MONITOR_PRIMARY;
+		list.count = 1;
+		left = 0;
+		top = 0;
 	}
 
-	return numMonitors;
+	if (pLeft)
+		*pLeft = left;
+	if (pTop)
+		*pTop = top;
+	return list.count;
 }
 
-/* Win counterpart of x11_shadow_check_resize: track desktop display mode
- * changes while the server is running. Returns 1 when the geometry
+static UINT32 win_shadow_enum_monitors(MONITOR_DEF* monitors, UINT32 maxMonitors)
+{
+	return win_shadow_enum_monitors_at(monitors, maxMonitors, nullptr, nullptr);
+}
+
+/* The subsystem's size is that of the part of the desktop the server shares: its surface, or
+ * the selected monitor while there is none yet (the screen is made after the subsystem) */
+static void win_shadow_update_size(winShadowSubsystem* subsystem)
+{
+	WINPR_ASSERT(subsystem);
+
+	const rdpShadowSurface* surface =
+	    subsystem->base.server ? subsystem->base.server->surface : nullptr;
+	if (surface)
+	{
+		subsystem->width = (int)surface->width;
+		subsystem->height = (int)surface->height;
+	}
+	else if (subsystem->base.selectedMonitor < subsystem->base.numMonitors)
+	{
+		const MONITOR_DEF* monitor = &subsystem->base.monitors[subsystem->base.selectedMonitor];
+		subsystem->width = monitor->right - monitor->left + 1;
+		subsystem->height = monitor->bottom - monitor->top + 1;
+	}
+
+	MONITOR_DEF* virtualScreen = &(subsystem->base.virtualScreen);
+	virtualScreen->left = 0;
+	virtualScreen->top = 0;
+	virtualScreen->right = 0;
+	virtualScreen->bottom = 0;
+	for (UINT32 index = 0; index < subsystem->base.numMonitors; index++)
+	{
+		const MONITOR_DEF* monitor = &subsystem->base.monitors[index];
+		virtualScreen->right = MAX(virtualScreen->right, monitor->right);
+		virtualScreen->bottom = MAX(virtualScreen->bottom, monitor->bottom);
+	}
+	virtualScreen->flags = 1;
+}
+
+/* Win counterpart of x11_shadow_check_resize: track desktop display
+ * changes while the server is running (a display mode change, a monitor
+ * added, removed or moved, another primary). Returns 1 when the geometry
  * changed, 0 when it did not and <0 on fatal error. */
 int win_shadow_check_resize(winShadowSubsystem* subsystem)
 {
 	WINPR_ASSERT(subsystem);
 
-	DEVMODEW dm = WINPR_C_ARRAY_INIT;
-	dm.dmSize = (WORD)sizeof(dm);
+	MONITOR_DEF monitors[ARRAYSIZE(subsystem->base.monitors)] = WINPR_C_ARRAY_INIT;
+	INT32 left = 0;
+	INT32 top = 0;
+	const UINT32 count = win_shadow_enum_monitors_at(monitors, ARRAYSIZE(monitors), &left, &top);
 
-	if (!EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &dm))
+	if (count < 1)
 		return 0;
 
-	/* compare unsigned: an int cast would wrap resolutions above INT_MAX */
-	if (((UINT32)dm.dmPelsWidth == (UINT32)subsystem->width) &&
-	    ((UINT32)dm.dmPelsHeight == (UINT32)subsystem->height))
-		return 0;
-
-	MONITOR_DEF* virtualScreen = &(subsystem->base.virtualScreen);
-
-	/* refresh the monitor definition; a false alarm from a non-primary
-	 * device bails out below to avoid per-tick flapping */
-	subsystem->base.numMonitors = win_shadow_enum_monitors(subsystem->base.monitors, 16);
-
-	if (subsystem->base.numMonitors < 1)
-		return 0;
-
+	BOOL same = (count == subsystem->base.numMonitors) && (left == subsystem->desktopLeft) &&
+	            (top == subsystem->desktopTop);
+	for (UINT32 index = 0; same && (index < count); index++)
 	{
-		const MONITOR_DEF* primary = &subsystem->base.monitors[0];
-		const int newWidth = primary->right - primary->left + 1;
-		const int newHeight = primary->bottom - primary->top + 1;
+		const MONITOR_DEF* a = &monitors[index];
+		const MONITOR_DEF* b = &subsystem->base.monitors[index];
+		same = (a->left == b->left) && (a->top == b->top) && (a->right == b->right) &&
+		       (a->bottom == b->bottom) && (a->flags == b->flags);
+	}
+	if (same)
+		return 0;
 
-		if ((newWidth == subsystem->width) && (newHeight == subsystem->height))
-			return 0;
+	CopyMemory(subsystem->base.monitors, monitors, sizeof(MONITOR_DEF) * count);
+	subsystem->base.numMonitors = count;
+	subsystem->desktopLeft = left;
+	subsystem->desktopTop = top;
 
-		/* The screen does not exist yet while the subsystem is initialized;
-		 * in that case updating the geometry below is all that is needed. */
-		if (subsystem->base.server && subsystem->base.server->screen &&
-		    !shadow_screen_resize(subsystem->base.server->screen))
-			return -1;
-
-		subsystem->width = newWidth;
-		subsystem->height = newHeight;
+	if (subsystem->base.selectedMonitor >= count)
+	{
+		WLog_WARN(TAG, "monitor %" PRIu32 " is gone: sharing the primary one",
+		          subsystem->base.selectedMonitor);
+		subsystem->base.selectedMonitor = 0;
 	}
 
-	virtualScreen->left = 0;
-	virtualScreen->top = 0;
-	virtualScreen->right = subsystem->width - 1;
-	virtualScreen->bottom = subsystem->height - 1;
-	virtualScreen->flags = 1;
+	/* The screen does not exist yet while the subsystem is initialized;
+	 * in that case updating the geometry below is all that is needed. */
+	if (subsystem->base.server && subsystem->base.server->screen &&
+	    !shadow_screen_resize(subsystem->base.server->screen))
+		return -1;
 
-	WLog_INFO(TAG, "desktop resized to %dx%d", subsystem->width, subsystem->height);
+	win_shadow_update_size(subsystem);
+
+	WLog_INFO(TAG, "desktop changed: %" PRIu32 " monitor(s), sharing %dx%d", count,
+	          subsystem->width, subsystem->height);
+	for (UINT32 index = 0; index < count; index++)
+	{
+		const MONITOR_DEF* monitor = &monitors[index];
+		WLog_INFO(
+		    TAG, "  monitor %" PRIu32 ": %" PRId32 "x%" PRId32 " at %" PRId32 ",%" PRId32 "%s",
+		    index, monitor->right - monitor->left + 1, monitor->bottom - monitor->top + 1,
+		    monitor->left, monitor->top, (monitor->flags & MONITOR_PRIMARY) ? " (primary)" : "");
+	}
 	return 1;
 }
 
@@ -910,8 +959,7 @@ static void win_shadow_client_disconnect(rdpShadowSubsystem* subsystem, rdpShado
 static int win_shadow_subsystem_init(rdpShadowSubsystem* arg)
 {
 	winShadowSubsystem* subsystem = (winShadowSubsystem*)arg;
-	int status;
-	MONITOR_DEF* virtualScreen;
+	int status = 0;
 
 	/* This binary carries no dpiAware manifest, so on a desktop with
 	 * display scaling the process is virtualized: geometry APIs
@@ -937,13 +985,12 @@ static int win_shadow_subsystem_init(rdpShadowSubsystem* arg)
 		return -1;
 
 	win_shadow_check_input_integrity();
-	subsystem->base.numMonitors = win_shadow_enum_monitors(subsystem->base.monitors, 16);
-	if (subsystem->base.numMonitors > 0)
-	{
-		const MONITOR_DEF* primary = &subsystem->base.monitors[0];
-		subsystem->width = primary->right - primary->left + 1;
-		subsystem->height = primary->bottom - primary->top + 1;
-	}
+	subsystem->base.numMonitors =
+	    win_shadow_enum_monitors_at(subsystem->base.monitors, ARRAYSIZE(subsystem->base.monitors),
+	                                &subsystem->desktopLeft, &subsystem->desktopTop);
+	if (subsystem->base.selectedMonitor >= subsystem->base.numMonitors)
+		subsystem->base.selectedMonitor = 0;
+	win_shadow_update_size(subsystem);
 
 	if ((subsystem->width <= 0) || (subsystem->height <= 0))
 	{
@@ -963,17 +1010,16 @@ static int win_shadow_subsystem_init(rdpShadowSubsystem* arg)
 	          "WITH_SHADOW_WIN_DXGI=ON for DXGI desktop duplication");
 	status = win_shadow_wds_init(subsystem);
 #elif defined(WITH_DXGI_1_2)
-	status = win_shadow_dxgi_init(subsystem);
-	if (status < 0)
-		WLog_WARN(TAG, "DXGI init failed, the capture thread retries at a low rate");
+	/* a duplication per output, each at its place in the surface: every monitor unless
+	 * /monitors:<index>. The outputs follow the surface, which the server makes after this:
+	 * the capture thread duplicates them on its first pass. */
+	subsystem->base.allMonitors = SHADOW_ALL_MONITORS_DEFAULT;
+	status = 1;
 #endif
-	virtualScreen = &(subsystem->base.virtualScreen);
-	virtualScreen->left = 0;
-	virtualScreen->top = 0;
-	virtualScreen->right = subsystem->width - 1;
-	virtualScreen->bottom = subsystem->height - 1;
-	virtualScreen->flags = 1;
-	WLog_INFO(TAG, "width: %d height: %d", subsystem->width, subsystem->height);
+	/* the capture retries on its own: a failed start is not fatal here */
+	(void)status;
+	WLog_INFO(TAG, "%" PRIu32 " monitor(s), width: %d height: %d", subsystem->base.numMonitors,
+	          subsystem->width, subsystem->height);
 
 	if (!win_shadow_audio_init(subsystem))
 		WLog_WARN(TAG, "audio: no formats to offer: no sound");
@@ -1003,6 +1049,10 @@ static int win_shadow_subsystem_start(rdpShadowSubsystem* arg)
 
 	if (!subsystem)
 		return -1;
+
+	/* the server made its screen after the subsystem's initialization: from now on the size
+	 * is the surface's (all the monitors it shares) */
+	win_shadow_update_size(subsystem);
 
 	if (!(thread =
 	          CreateThread(nullptr, 0, win_shadow_subsystem_thread, (void*)subsystem, 0, nullptr)))
@@ -1054,6 +1104,9 @@ static rdpShadowSubsystem* win_shadow_subsystem_new(void)
 	subsystem->base.ExtendedMouseEvent = win_shadow_input_extended_mouse_event;
 	subsystem->base.ClientConnect = win_shadow_client_connect;
 	subsystem->base.ClientDisconnect = win_shadow_client_disconnect;
+#if defined(WITH_DXGI_1_2)
+	subsystem->dxgi = &subsystem->outputs[0];
+#endif
 	return &subsystem->base;
 }
 

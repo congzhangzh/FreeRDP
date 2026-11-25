@@ -32,6 +32,8 @@
 
 #endif
 
+#include <freerdp/codec/region.h>
+
 #include "win_shadow.h"
 
 #ifdef __cplusplus
@@ -44,6 +46,27 @@ extern "C"
 	WINPR_ATTR_NODISCARD int win_shadow_dxgi_init(winShadowSubsystem* subsystem);
 	WINPR_ATTR_NODISCARD int win_shadow_dxgi_uninit(winShadowSubsystem* subsystem);
 	WINPR_ATTR_NODISCARD int win_shadow_dxgi_restart_duplication(winShadowSubsystem* subsystem);
+
+	/* Sets up the outputs to duplicate: every output whose picture shows in the server's
+	 * surface, with its place there; drops the earlier ones. Returns their count, <0 on
+	 * failure. */
+	WINPR_ATTR_NODISCARD int win_shadow_dxgi_map_outputs(winShadowSubsystem* subsystem);
+
+	/* Makes outputs[index] the one the other functions work on */
+	void win_shadow_dxgi_select(winShadowSubsystem* subsystem, UINT32 index);
+
+	/* Marks the current output's whole picture for the next copy */
+	void win_shadow_dxgi_invalidate_output(winShadowSubsystem* subsystem);
+
+	/* Whether an output holds a frame acquired in this pass */
+	WINPR_ATTR_NODISCARD BOOL win_shadow_dxgi_frame_acquired(winShadowSubsystem* subsystem);
+
+	/* Copies the damaged part of every output holding a frame into the server's surface, each
+	 * at its place there. The surface's invalid region is then the damage copied (what the
+	 * clients encode), pending the damage of the outputs without a frame now, for their next
+	 * one. Returns 1 when something was copied, 0 when nothing was, <0 on failure. */
+	WINPR_ATTR_NODISCARD int win_shadow_dxgi_copy_outputs(winShadowSubsystem* subsystem,
+	                                                      REGION16* pending);
 
 	WINPR_ATTR_NODISCARD int win_shadow_dxgi_fetch_frame_data(winShadowSubsystem* subsystem,
 	                                                          BYTE** ppDstData, int* pnDstStep,

@@ -35,6 +35,44 @@ typedef struct win_shadow_subsystem winShadowSubsystem;
 #include "win_wds.h"
 #include "win_dxgi.h"
 
+#ifdef WITH_DXGI_1_2
+/* the state of one output's duplication */
+typedef struct
+{
+	UINT pendingFrames;
+	BYTE* MetadataBuffer;
+	UINT MetadataBufferSize;
+	BOOL dxgiSurfaceMapped;
+	BOOL dxgiFrameAcquired;
+	ID3D11Device* dxgiDevice;
+	IDXGISurface* dxgiSurface;
+	ID3D11Texture2D* dxgiStage;
+	IDXGIResource* dxgiResource;
+	D3D_FEATURE_LEVEL featureLevel;
+	ID3D11Texture2D* dxgiDesktopImage;
+	DXGI_OUTDUPL_FRAME_INFO dxgiFrameInfo;
+	ID3D11DeviceContext* dxgiDeviceContext;
+	IDXGIOutputDuplication* dxgiOutputDuplication;
+	/* the input desktop is one this process may not capture (the secure desktop for a process
+	 * in the user's session): capture is paused */
+	BOOL dxgiDenied;
+	/* the earliest time the capture loop may create a missing duplication again: soon after a
+	 * refused desktop, at a low rate after a failure which does not recover by itself */
+	UINT64 dxgiRetryTime;
+	/* the output this state duplicates: its DXGI_OUTPUT_DESC::DesktopCoordinates, on the virtual
+	 * desktop (right and bottom exclusive) */
+	RECT desktop;
+	/* where its picture goes in the server's surface */
+	INT32 surfaceX;
+	INT32 surfaceY;
+} winDxgiState;
+
+#define WIN_SHADOW_DXGI_MAX_OUTPUTS 16
+
+/* How often the capture lists the outputs again when it could not */
+#define WIN_SHADOW_OUTPUTS_RETRY_MS 500
+#endif
+
 struct win_shadow_subsystem
 {
 	rdpShadowSubsystem base;
@@ -69,27 +107,25 @@ struct win_shadow_subsystem
 #endif
 
 #ifdef WITH_DXGI_1_2
-	UINT pendingFrames;
-	BYTE* MetadataBuffer;
-	UINT MetadataBufferSize;
-	BOOL dxgiSurfaceMapped;
-	BOOL dxgiFrameAcquired;
-	ID3D11Device* dxgiDevice;
-	IDXGISurface* dxgiSurface;
-	ID3D11Texture2D* dxgiStage;
-	IDXGIResource* dxgiResource;
-	D3D_FEATURE_LEVEL featureLevel;
-	ID3D11Texture2D* dxgiDesktopImage;
-	DXGI_OUTDUPL_FRAME_INFO dxgiFrameInfo;
-	ID3D11DeviceContext* dxgiDeviceContext;
-	IDXGIOutputDuplication* dxgiOutputDuplication;
-	/* the input desktop is one this process may not capture (the secure desktop for a process
-	 * in the user's session): capture is paused */
-	BOOL dxgiDenied;
-	/* the earliest time the capture loop may create a missing duplication again: soon after a
-	 * refused desktop, at a low rate after a failure which does not recover by itself */
-	UINT64 dxgiRetryTime;
+	/* the output the DXGI functions work on now: one of outputs[] */
+	winDxgiState* dxgi;
+	/* the outputs duplicated: every output the server's surface shows */
+	winDxgiState outputs[WIN_SHADOW_DXGI_MAX_OUTPUTS];
+	UINT32 outputCount;
+	/* outputs[] follows the surface: set up again when the surface moved or resized, and at
+	 * a low rate while the outputs cannot be listed */
+	BOOL outputsMapped;
+	INT64 outputsSurfaceX;
+	INT64 outputsSurfaceY;
+	INT64 outputsSurfaceWidth;
+	INT64 outputsSurfaceHeight;
+	UINT64 outputsRetryTime;
 #endif
+
+	/* where the top left of the monitors' bounding box (0,0 of base.monitors[]) is on the
+	 * virtual desktop */
+	INT32 desktopLeft;
+	INT32 desktopTop;
 };
 
 #ifdef __cplusplus
