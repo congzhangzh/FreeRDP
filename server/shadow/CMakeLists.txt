@@ -40,6 +40,8 @@ set(SRCS
     shadow_capture.h
     shadow_gfx_stats.c
     shadow_gfx_stats.h
+    shadow_gfx_caps.c
+    shadow_gfx_caps.h
     shadow_stats_ipc.c
     shadow_stats_ipc.h
     shadow_channels.c
