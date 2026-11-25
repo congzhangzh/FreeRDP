@@ -359,6 +359,56 @@ int shadow_subsystem_stop(rdpShadowSubsystem* subsystem)
 	return status;
 }
 
+BOOL shadow_monitors_normalize(MONITOR_DEF* monitors, UINT32 count)
+{
+	if (!monitors || (count == 0))
+		return FALSE;
+
+	UINT32 primary = 0;
+	for (UINT32 index = 0; index < count; index++)
+	{
+		if ((monitors[index].flags & MONITOR_PRIMARY) != 0)
+		{
+			primary = index;
+			break;
+		}
+	}
+
+	INT64 left = monitors[0].left;
+	INT64 top = monitors[0].top;
+	INT64 right = monitors[0].right;
+	INT64 bottom = monitors[0].bottom;
+	for (UINT32 index = 0; index < count; index++)
+	{
+		const MONITOR_DEF* monitor = &monitors[index];
+		if ((monitor->right < monitor->left) || (monitor->bottom < monitor->top))
+			return FALSE;
+		left = MIN(left, monitor->left);
+		top = MIN(top, monitor->top);
+		right = MAX(right, monitor->right);
+		bottom = MAX(bottom, monitor->bottom);
+	}
+	if ((right - left + 1 > UINT16_MAX) || (bottom - top + 1 > UINT16_MAX))
+		return FALSE;
+
+	/* the primary first, the others in their order */
+	const MONITOR_DEF first = monitors[primary];
+	for (UINT32 index = primary; index > 0; index--)
+		monitors[index] = monitors[index - 1];
+	monitors[0] = first;
+
+	for (UINT32 index = 0; index < count; index++)
+	{
+		MONITOR_DEF* monitor = &monitors[index];
+		monitor->left = (INT32)(monitor->left - left);
+		monitor->top = (INT32)(monitor->top - top);
+		monitor->right = (INT32)(monitor->right - left);
+		monitor->bottom = (INT32)(monitor->bottom - top);
+		monitor->flags = (index == 0) ? MONITOR_PRIMARY : 0;
+	}
+	return TRUE;
+}
+
 UINT32 shadow_enum_monitors(MONITOR_DEF* monitors, UINT32 maxMonitors)
 {
 	UINT32 numMonitors = 0;
