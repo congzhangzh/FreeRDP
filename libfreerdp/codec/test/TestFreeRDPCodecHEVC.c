@@ -7,8 +7,9 @@
 #include <freerdp/codec/h264.h>
 #include <freerdp/codec/hevc.h>
 
-#define TEST_WIDTH 128
-#define TEST_HEIGHT 128
+/* hardware HEVC encoders may refuse very small pictures */
+#define TEST_WIDTH 256
+#define TEST_HEIGHT 256
 
 /* The four quadrants of the test picture, each a flat colour (R, G, B). */
 static const BYTE quadrant_colours[4][3] = {
@@ -116,8 +117,9 @@ static int sps_chroma_format(const BYTE* data, size_t size)
 	return -1;
 }
 
-/* Encode the test picture at a profile (0: 4:2:0, 1: 4:4:4), decode it and compare each
- * quadrant's centre. Returns 1 on success, 0 when this build cannot do it, -1 on failure. */
+/* Encode the test picture at a profile (0: 4:2:0, 1: 4:4:4), check the stream's chroma format,
+ * and, when this build has an HEVC decoder too, decode it and compare each quadrant's centre.
+ * Returns 1 on success, 0 when this build cannot do it, -1 on failure. */
 static int round_trip(UINT32 profile)
 {
 	const char* name = profile ? "4:4:4" : "4:2:0";
@@ -134,21 +136,27 @@ static int round_trip(UINT32 profile)
 	FREERDP_HEVC_CONTEXT* dec = freerdp_hevc_context_new(FALSE);
 	if (!src || !dst)
 		goto fail;
-	if (!enc || !dec)
+	if (!enc)
 	{
-		(void)fprintf(stderr, "HEVC %s: no encoder or decoder in this build\n", name);
+		(void)fprintf(stderr, "HEVC %s: no encoder in this build\n", name);
 		rc = 0;
 		goto fail;
 	}
-	if (!freerdp_hevc_context_set_option(enc, FREERDP_HEVC_CONTEXT_OPTION_PROFILE, profile) ||
-	    !freerdp_hevc_context_set_option(dec, FREERDP_HEVC_CONTEXT_OPTION_PROFILE, profile))
+	if (!freerdp_hevc_context_set_option(enc, FREERDP_HEVC_CONTEXT_OPTION_PROFILE, profile))
 	{
-		(void)fprintf(stderr, "HEVC %s: no subsystem takes this profile\n", name);
+		(void)fprintf(stderr, "HEVC %s: no encoder takes this profile\n", name);
 		rc = 0;
 		goto fail;
 	}
+	if (dec && !freerdp_hevc_context_set_option(dec, FREERDP_HEVC_CONTEXT_OPTION_PROFILE, profile))
+	{
+		freerdp_hevc_context_free(dec);
+		dec = nullptr;
+	}
+	if (!dec)
+		(void)fprintf(stderr, "HEVC %s: no decoder in this build, encode only\n", name);
 	if (!freerdp_hevc_context_reset(enc, TEST_WIDTH, TEST_HEIGHT) ||
-	    !freerdp_hevc_context_reset(dec, TEST_WIDTH, TEST_HEIGHT) ||
+	    (dec && !freerdp_hevc_context_reset(dec, TEST_WIDTH, TEST_HEIGHT)) ||
 	    !freerdp_hevc_context_set_option(enc, FREERDP_HEVC_CONTEXT_OPTION_BITRATE, 8000000))
 		goto fail;
 
@@ -169,14 +177,18 @@ static int round_trip(UINT32 profile)
 		goto fail;
 	}
 
+	rc = 1;
+	if (!dec)
+		goto fail;
+
 	if (freerdp_hevc_decompress(dec, coded, codedSize, dst, PIXEL_FORMAT_BGRX32, step, TEST_WIDTH,
 	                            TEST_HEIGHT, &rect, 1) < 0)
 	{
 		(void)fprintf(stderr, "HEVC %s: decompress failed\n", name);
+		rc = -1;
 		goto fail;
 	}
 
-	rc = 1;
 	for (size_t q = 0; q < 4; q++)
 	{
 		const UINT32 x = ((q & 1) ? 3 : 1) * TEST_WIDTH / 4;
