@@ -134,6 +134,7 @@ struct rdp_shadow_encoder
 	UINT32 outputWidth;
 	UINT32 outputHeight;
 	UINT32 outputCount; /* > 1: the surfaces of outputs[] */
+	UINT32 layoutVersion; /* the screen's layout the client's last Reset Graphics described */
 	SHADOW_GFX_OUTPUT outputs[SHADOW_GFX_OUTPUTS_MAX];
 	BOOL roundOpen;               /* a frame over the outputs is being sent */
 	BOOL roundStarted;            /* its StartFrame went out */

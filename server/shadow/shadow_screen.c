@@ -95,6 +95,30 @@ static BOOL shadow_screen_shared_rect(const rdpShadowServer* server, UINT16* x, 
 	return TRUE;
 }
 
+/* Takes the layout the surface is now made for; a change counts a new version */
+static void shadow_screen_take_layout(rdpShadowScreen* screen, UINT16 x, UINT16 y, UINT16 width,
+                                      UINT16 height)
+{
+	WINPR_ASSERT(screen);
+	WINPR_ASSERT(screen->server);
+	const rdpShadowSubsystem* subsystem = screen->server->subsystem;
+	WINPR_ASSERT(subsystem);
+
+	/* with one monitor shared, a client sees that monitor alone (its Reset Graphics lists one):
+	 * the others moving changes nothing for it, so only the surface counts */
+	const BOOL all = shadow_screen_all_monitors(screen->server);
+	const UINT32 count =
+	    all ? MIN(subsystem->numMonitors, (UINT32)ARRAYSIZE(subsystem->monitors)) : 0;
+	SHADOW_LAYOUT now = WINPR_C_ARRAY_INIT;
+	shadow_layout_set(&now, subsystem->monitors, count, x, y, width, height, all);
+	if (shadow_layout_update(&screen->layout, &screen->layoutVersion, &now))
+		WLog_DBG(TAG,
+		         "layout %" PRIu32 ": %" PRIu32 " monitor(s), %" PRIu16 "x%" PRIu16 " at %" PRIu16
+		         ",%" PRIu16 "%s",
+		         screen->layoutVersion, now.count, width, height, x, y,
+		         now.allMonitors ? ", all shared" : "");
+}
+
 rdpShadowScreen* shadow_screen_new(rdpShadowServer* server)
 {
 	WINPR_ASSERT(server);
@@ -129,6 +153,7 @@ rdpShadowScreen* shadow_screen_new(rdpShadowServer* server)
 
 			screen->width = width;
 			screen->height = height;
+			shadow_screen_take_layout(screen, x, y, width, height);
 
 			screen->primary = shadow_surface_new(server, x, y, width, height);
 
@@ -202,6 +227,10 @@ BOOL shadow_screen_resize(rdpShadowScreen* screen)
 	if (shadow_surface_resize(screen->primary, x, y, width, height) &&
 	    shadow_surface_resize(screen->lobby, x, y, width, height))
 	{
+		/* a GFX client sends Reset Graphics again for a new layout of the same size too
+		 * (shadow_client.c) */
+		shadow_screen_take_layout(screen, x, y, width, height);
+
 		if (((UINT32)width != screen->width) || ((UINT32)height != screen->height))
 		{
 			/* screen size is changed. Store new size and reinit lobby */

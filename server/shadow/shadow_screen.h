@@ -24,6 +24,8 @@
 #include <winpr/crt.h>
 #include <winpr/synch.h>
 
+#include "shadow_layout.h"
+
 struct rdp_shadow_screen
 {
 	rdpShadowServer* server;
@@ -36,6 +38,12 @@ struct rdp_shadow_screen
 
 	rdpShadowSurface* primary;
 	rdpShadowSurface* lobby;
+
+	/* the layout the surface was last made for, and its version: it counts every change, also
+	 * one that keeps the size (a monitor moved, another primary), for the GFX clients'
+	 * monitors (shadow_layout.h) */
+	SHADOW_LAYOUT layout;
+	UINT32 layoutVersion;
 };
 
 #ifdef __cplusplus
