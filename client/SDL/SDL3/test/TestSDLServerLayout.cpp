@@ -19,6 +19,7 @@
 #include <atomic>
 #include <cstdio>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include "../sdl_server_layout.hpp"
@@ -182,6 +183,8 @@ static bool checkEchoIsSame()
 		    sdl_server_layout::plan(true, layoutOf(3840, 1080, echo), sentTwo, twoScreens);
 		CHECK(!p.follow);
 		CHECK(!p.warn);
+		/* the kit's screens tests grep the decision line for this */
+		CHECK(p.reason == "same as sent");
 	}
 
 	/* the client sent a layout with a monitor left of its primary; the server moves the top
@@ -321,11 +324,74 @@ static bool checkKeepToday()
 	return true;
 }
 
+/* damage as the CI shadow's primary window draws it: source 800,0 1024x768, letterboxed at
+ * 240,0 1440x1080 (scale 1.40625) */
+static bool checkDrawInWindow()
+{
+	const Rect source{ 800, 0, 1024, 768 };
+	const Rect target{ 240, 0, 1440, 1080 };
+	const float scale = 1.40625f;
+
+	auto all = sdl_server_layout::toWindow(source, source, target, scale);
+	CHECK(all);
+	CHECK(same(all->source, 800, 0, 1024, 768));
+	CHECK(same(all->target, 240, 0, 1440, 1080));
+
+	/* the other monitor's damage never reaches this window */
+	CHECK(!sdl_server_layout::toWindow({ 0, 0, 800, 600 }, source, target, scale));
+	CHECK(!sdl_server_layout::toWindow({ 0, 0, 800, 768 }, source, target, scale));
+
+	/* damage across both monitors: only this one's part */
+	auto part = sdl_server_layout::toWindow({ 0, 0, 900, 10 }, source, target, scale);
+	CHECK(part);
+	CHECK(same(part->source, 800, 0, 100, 10));
+	CHECK(same(part->target, 240, 0, 141, 14));
+
+	/* neighbouring damage meets without a gap or an overlap */
+	auto left = sdl_server_layout::toWindow({ 800, 100, 200, 50 }, source, target, scale);
+	auto right = sdl_server_layout::toWindow({ 1000, 100, 824, 50 }, source, target, scale);
+	CHECK(left && right);
+	CHECK(left->target.x + left->target.w == right->target.x);
+	CHECK(right->target.x + right->target.w == target.x + target.w);
+	return true;
+}
+
+/* window pixels back to the session, the bars to the nearest edge of the monitor */
+static bool checkInputFromWindow()
+{
+	const Rect source{ 800, 0, 1024, 768 };
+	const Rect target{ 240, 0, 1440, 1080 };
+	const float scale = 1.40625f;
+
+	auto [x, y] = sdl_server_layout::toSession(960.0f, 540.0f, source, target, scale);
+	CHECK((x == 1312.0f) && (y == 384.0f));
+	std::tie(x, y) = sdl_server_layout::toSession(0.0f, 0.0f, source, target, scale);
+	CHECK((x == 800.0f) && (y == 0.0f));
+	std::tie(x, y) = sdl_server_layout::toSession(1919.0f, 1079.0f, source, target, scale);
+	CHECK((x == 1823.0f) && (y == 767.0f));
+
+	/* the inverse of the draw: every session pixel comes back within one window pixel */
+	for (int32_t sx = source.x; sx < source.x + source.w; sx += 37)
+	{
+		for (int32_t sy = source.y; sy < source.y + source.h; sy += 29)
+		{
+			const auto d = sdl_server_layout::toWindow({ sx, sy, 1, 1 }, source, target, scale);
+			CHECK(d);
+			const auto [bx, by] = sdl_server_layout::toSession(
+			    static_cast<float>(d->target.x) + 0.5f, static_cast<float>(d->target.y) + 0.5f,
+			    source, target, scale);
+			CHECK((static_cast<int32_t>(bx) == sx) && (static_cast<int32_t>(by) == sy));
+		}
+	}
+	return true;
+}
+
 int main()
 {
-	for (auto* check : { checkCopy, checkNewestWins, checkEndReplaces, checkThreads,
-	                     checkEchoIsSame, checkOtherIsNotSame, checkShadowTwoMonitors,
-	                     checkOrderByPlace, checkOneToOne, checkKeepToday })
+	for (auto* check :
+	     { checkCopy, checkNewestWins, checkEndReplaces, checkThreads, checkEchoIsSame,
+	       checkOtherIsNotSame, checkShadowTwoMonitors, checkOrderByPlace, checkOneToOne,
+	       checkKeepToday, checkDrawInWindow, checkInputFromWindow })
 	{
 		if (!check())
 			return -1;
