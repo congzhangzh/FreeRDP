@@ -22,6 +22,7 @@
 #include <freerdp/api.h>
 #include <freerdp/types.h>
 #include <freerdp/channels/rdpgfx.h>
+#include <freerdp/codec/decode_result.h>
 
 #ifdef __cplusplus
 extern "C"
@@ -119,6 +120,18 @@ extern "C"
 	                                          UINT32 nDstStep, UINT32 nDstWidth, UINT32 nDstHeight,
 	                                          const RECTANGLE_16* regionRects,
 	                                          UINT32 numRegionRect);
+
+	/** @brief Get the result of the last freerdp_hevc_decompress()
+	 *
+	 *  @param hevc The decoder context
+	 *  @param result Where to store the result
+	 *
+	 *  @return \b TRUE if the result was stored, \b FALSE for invalid arguments
+	 *  @since version 3.34.0
+	 */
+	WINPR_ATTR_NODISCARD
+	FREERDP_API BOOL freerdp_hevc_context_get_last_decode(const FREERDP_HEVC_CONTEXT* hevc,
+	                                                      FREERDP_DECODE_RESULT* result);
 
 	/** @brief Reset a HEVC codec context
 	 *

@@ -16,6 +16,7 @@ set(${MODULE_PREFIX}_TESTS
     TestGdiClip.c
     TestGdiGfx.c
     TestGdiGfxPipeline.c
+    TestGdiGfxDecodeResult.c
 )
 
 create_test_sourcelist(${MODULE_PREFIX}_SRCS ${${MODULE_PREFIX}_DRIVER} ${${MODULE_PREFIX}_TESTS})
