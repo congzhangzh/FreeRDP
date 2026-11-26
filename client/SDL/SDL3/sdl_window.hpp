@@ -22,6 +22,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,7 @@
 #include <freerdp/settings_types.h>
 
 #include "sdl_hidpi.hpp"
+#include "sdl_server_layout.hpp"
 
 class SdlOverlay;
 class SdlOverlayPainter;
@@ -68,6 +70,20 @@ class SdlWindow
 	/** Draw rects of the session: each at (rect + offset) x scale in the window (scale:N) */
 	[[nodiscard]] bool drawMappedRects(SDL_Surface* surface, const sdl::hidpi::Mapping& mapping,
 	                                   const std::vector<SDL_Rect>& rects);
+
+	/** /multimon following the server's monitors: the part of the session the window shows
+	 * (session pixels), letterboxed in it; none shows as before. A new source clears the
+	 * window's bars once. */
+	void setServerSource(const std::optional<sdl_server_layout::Rect>& source);
+	[[nodiscard]] const std::optional<sdl_server_layout::Rect>& serverSource() const;
+	/** @return where the source is drawn now (window pixels) and its scale: from the window's
+	 * size at the time, which may change after it was placed */
+	[[nodiscard]] std::pair<sdl_server_layout::Rect, float> serverTarget() const;
+	/** Draw rects of the session that fall in the window's source */
+	[[nodiscard]] bool drawServerSource(SDL_Surface* surface, const std::vector<SDL_Rect>& rects);
+	/** A window with no server monitor: hidden while the client follows the server */
+	void park(bool parked);
+	[[nodiscard]] bool parked() const;
 
 	SdlWindow(SdlWindow&& other) noexcept;
 	SdlWindow(const SdlWindow& other) = delete;
@@ -192,4 +208,7 @@ class SdlWindow
 	Sint32 _offset_x = 0;
 	Sint32 _offset_y = 0;
 	rdpMonitor _monitor{};
+	std::optional<sdl_server_layout::Rect> _serverSource;
+	bool _serverClear = false;
+	bool _parked = false;
 };

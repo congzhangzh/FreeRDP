@@ -248,7 +248,7 @@ namespace sdl_server_layout
 		const auto& monitors = server->monitors;
 		if (sameLayout(monitors, sent))
 		{
-			p.reason = "the server's list is the client's layout";
+			p.reason = "same as sent";
 			return p;
 		}
 		if (monitors.size() > displays.size())
@@ -316,5 +316,52 @@ namespace sdl_server_layout
 		p.follow = true;
 		p.reason = "the server's " + std::to_string(monitors.size()) + " monitors";
 		return p;
+	}
+
+	/** A damaged part of the session, as one window following the server draws it */
+	struct Draw
+	{
+		Rect source; /* the damage inside the window's source, session pixels */
+		Rect target; /* where it goes, window pixels: may pass the letterbox by the rounding,
+		              * so the caller clips to the window's target */
+	};
+
+	/** @return @a damage clipped to @a source and placed in the window, none if it is not in
+	 * the source (the damage of another monitor never reaches this window or its bars) */
+	[[nodiscard]] inline std::optional<Draw> toWindow(const Rect& damage, const Rect& source,
+	                                                  const Rect& target, float scale)
+	{
+		const int32_t x0 = std::max(damage.x, source.x);
+		const int32_t y0 = std::max(damage.y, source.y);
+		const int32_t x1 = std::min(damage.x + damage.w, source.x + source.w);
+		const int32_t y1 = std::min(damage.y + damage.h, source.y + source.h);
+		if ((x1 <= x0) || (y1 <= y0))
+			return std::nullopt;
+		Draw d;
+		d.source = { x0, y0, x1 - x0, y1 - y0 };
+		/* edges by rounding each one, so neighbouring damage meets without a gap */
+		const auto edge = [&](int32_t at, int32_t from, int32_t base)
+		{ return base + static_cast<int32_t>(static_cast<float>(at - from) * scale + 0.5f); };
+		const int32_t l = edge(x0, source.x, target.x);
+		const int32_t t = edge(y0, source.y, target.y);
+		const int32_t r = edge(x1, source.x, target.x);
+		const int32_t b = edge(y1, source.y, target.y);
+		d.target = { l, t, std::max(r - l, 1), std::max(b - t, 1) };
+		return d;
+	}
+
+	/** @return the session pixel of a window pixel (the inverse of toWindow), kept inside the
+	 * source: a point on a bar goes to the source's nearest edge */
+	[[nodiscard]] inline std::pair<float, float> toSession(float x, float y, const Rect& source,
+	                                                       const Rect& target, float scale)
+	{
+		const float s = (scale > 0.0f) ? scale : 1.0f;
+		float sx = static_cast<float>(source.x) + (x - static_cast<float>(target.x)) / s;
+		float sy = static_cast<float>(source.y) + (y - static_cast<float>(target.y)) / s;
+		const float maxX = static_cast<float>(source.x + source.w - 1);
+		const float maxY = static_cast<float>(source.y + source.h - 1);
+		sx = std::clamp(sx, static_cast<float>(source.x), maxX);
+		sy = std::clamp(sy, static_cast<float>(source.y), maxY);
+		return { sx, sy };
 	}
 } // namespace sdl_server_layout

@@ -601,6 +601,23 @@ bool SdlContext::createWindows()
 	    !_displayWatch)
 		_displayWatch = SDL_AddEventWatch(keepFullscreenDisplay, this);
 
+	/* the core data asked for these monitors; a Display Control layout replaces them */
+	if (_sentLayout.empty())
+	{
+		std::vector<sdl_server_layout::Rect> sent;
+		for (UINT32 x = 0; x < windowCount; x++)
+		{
+			auto cur = static_cast<const rdpMonitor*>(
+			    freerdp_settings_get_pointer_array(settings, FreeRDP_MonitorDefArray, x));
+			if (cur)
+				sent.push_back({ cur->x, cur->y, cur->width, cur->height });
+		}
+		noteSentLayout(std::move(sent));
+	}
+	/* a Reset Graphics may have come before the windows */
+	if (_serverLayout)
+		applyServerLayout();
+
 	updateWindowInfo();
 	return true;
 }
@@ -664,6 +681,7 @@ void SdlContext::takeServerLayout()
 		/* the session ended, or a Reset Graphics without monitors: no server list */
 		_serverLayout.reset();
 		WLog_Print(getWLog(), WLOG_DEBUG, "server layout: none");
+		applyServerLayout();
 		return;
 	}
 	for (size_t x = 0; x < layout->monitors.size(); x++)
@@ -676,6 +694,81 @@ void SdlContext::takeServerLayout()
 		           ((m.flags & MONITOR_PRIMARY) != 0) ? " primary" : "");
 	}
 	_serverLayout = std::move(layout);
+	applyServerLayout();
+}
+
+void SdlContext::noteSentLayout(std::vector<sdl_server_layout::Rect> sent)
+{
+	_sentLayout = std::move(sent);
+}
+
+bool SdlContext::followsServer() const
+{
+	return _followsServer;
+}
+
+void SdlContext::applyServerLayout()
+{
+	/* RemoteApp windows are the server's own */
+	if (_rail.enabled())
+		return;
+
+	std::vector<sdl_server_layout::Display> displays;
+	displays.reserve(_windows.size());
+	for (const auto& entry : _windows)
+	{
+		const auto& m = entry.second.assignedMonitor();
+		displays.push_back(
+		    { entry.second.displayId(), { m.x, m.y, m.width, m.height }, m.is_primary != 0 });
+	}
+	const bool multimon = freerdp_settings_get_bool(context()->settings, FreeRDP_UseMultimon);
+	const auto plan = sdl_server_layout::plan(multimon, _serverLayout, _sentLayout, displays);
+
+	/* one line per decision while a server list is there (tools and tests grep it) */
+	if (multimon && _serverLayout)
+		WLog_Print(getWLog(), plan.warn ? WLOG_WARN : WLOG_INFO, "server layout: %s (%s)",
+		           plan.follow ? "follow" : "no follow", plan.reason.c_str());
+
+	const bool was = _followsServer;
+	_followsServer = plan.follow;
+	size_t index = 0;
+	for (auto& entry : _windows)
+	{
+		auto& window = entry.second;
+		const auto found = std::find_if(
+		    plan.windows.begin(), plan.windows.end(), [&](const sdl_server_layout::Window& w)
+		    { return plan.follow && (w.display == window.displayId()); });
+		if (found == plan.windows.end())
+		{
+			window.setServerSource(std::nullopt);
+			window.park(plan.follow);
+			continue;
+		}
+		window.setServerSource(found->source);
+		window.park(false);
+		const auto& src = found->source;
+		const auto& dst = found->target;
+		WLog_Print(getWLog(), WLOG_INFO,
+		           "server layout: window %" PRIuz " <- monitor %" PRIuz " %" PRId32 ",%" PRId32
+		           " %" PRId32 "x%" PRId32 " on display %" PRIu32 " at %" PRId32 ",%" PRId32
+		           " %" PRId32 "x%" PRId32 " scale %.4f",
+		           index++, found->monitor, src.x, src.y, src.w, src.h, found->display, dst.x,
+		           dst.y, dst.w, dst.h, static_cast<double>(found->scale));
+	}
+
+	/* back to the client's own windows: each shows its part again, all of it */
+	if (was && !plan.follow && context()->gdi)
+	{
+		for (auto& entry : _windows)
+		{
+			if (!entry.second.fill())
+				WLog_Print(getWLog(), WLOG_WARN, "server layout: window not cleared");
+		}
+		push({ { 0, 0, static_cast<int>(context()->gdi->width),
+		         static_cast<int>(context()->gdi->height) } });
+	}
+	else if (plan.follow)
+		push({});
 }
 
 const std::optional<sdl_server_layout::Layout>& SdlContext::serverLayout() const
@@ -1185,6 +1278,17 @@ void SdlContext::applyMonitorOffset(SDL_WindowID window, float& x, float& y) con
 		return;
 
 	auto w = getWindowForId(window);
+	if (!w)
+		return;
+	/* following the server: removeScaling divided by the window's scale, the letterbox and
+	 * the monitor's place in the session follow here */
+	if (w->serverSource())
+	{
+		const auto [target, scale] = w->serverTarget();
+		std::tie(x, y) =
+		    sdl_server_layout::toSession(x * scale, y * scale, *w->serverSource(), target, scale);
+		return;
+	}
 	x -= static_cast<float>(w->offsetX());
 	y -= static_cast<float>(w->offsetY());
 }
@@ -1208,10 +1312,24 @@ bool SdlContext::drawToWindow(SdlWindow& window, const std::vector<SDL_Rect>& re
 	auto gdi = context()->gdi;
 	WINPR_ASSERT(gdi);
 
+	/* following the server: a screen without a server monitor shows nothing */
+	if (window.parked())
+		return true;
+
 	auto size = window.rect();
 
 	std::unique_lock lock(_critical);
 	auto surface = _primary.get();
+
+	if (window.serverSource())
+	{
+		if (!surface)
+			return true;
+		if (!window.drawServerSource(surface, rects))
+			return false;
+		window.updateSurface((&window == overlayWindow()) ? &_overlay : nullptr);
+		return true;
+	}
 
 	if (useLocalScale())
 	{
@@ -1252,6 +1370,12 @@ SdlWindow* SdlContext::overlayWindow()
 	/* RemoteApp windows are the server's, so v1 has no overlay there */
 	if (_rail.enabled() || _windows.empty())
 		return nullptr;
+	/* following the server, a screen without a server monitor is hidden */
+	for (auto& entry : _windows)
+	{
+		if (!entry.second.parked())
+			return &entry.second;
+	}
 	return &_windows.begin()->second;
 }
 
@@ -1445,6 +1569,33 @@ wLog* SdlContext::getWLog()
 
 bool SdlContext::moveMouseTo(const SDL_FPoint& pos)
 {
+	/* following the server: the window whose monitor holds the point */
+	if (_followsServer)
+	{
+		for (auto& entry : _windows)
+		{
+			auto& w = entry.second;
+			const auto& src = w.serverSource();
+			if (!src || (pos.x < static_cast<float>(src->x)) ||
+			    (pos.y < static_cast<float>(src->y)) ||
+			    (pos.x >= static_cast<float>(src->x + src->w)) ||
+			    (pos.y >= static_cast<float>(src->y + src->h)))
+				continue;
+			const auto [target, scale] = w.serverTarget();
+			const float rx =
+			    static_cast<float>(target.x) + (pos.x - static_cast<float>(src->x)) * scale;
+			const float ry =
+			    static_cast<float>(target.y) + (pos.y - static_cast<float>(src->y)) * scale;
+			SDL_FPoint spos{ rx, ry };
+			if (w.renderer() &&
+			    !SDL_RenderCoordinatesToWindow(w.renderer(), rx, ry, &spos.x, &spos.y))
+				return true;
+			SDL_WarpMouseInWindow(w.window(), spos.x, spos.y);
+			return true;
+		}
+		return true;
+	}
+
 	auto window = SDL_GetMouseFocus();
 	if (!window)
 		return true;
@@ -1921,6 +2072,14 @@ SDL_FPoint SdlContext::screenToPixel(SDL_WindowID id, const SDL_FPoint& pos)
 		removeLocalScaling(rpos.x, rpos.y);
 		return rpos;
 	}
+	/* following the server: the session pixel itself (its one caller adds no offset) */
+	if (w->serverSource())
+	{
+		const auto [target, scale] = w->serverTarget();
+		const auto [x, y] =
+		    sdl_server_layout::toSession(rpos.x, rpos.y, *w->serverSource(), target, scale);
+		return SDL_FPoint{ x, y };
+	}
 	/* scale:N; the monitor offset follows in applyMonitorOffset() */
 	auto m = mapping(*w);
 	m.offsetX = 0;
@@ -2157,6 +2316,14 @@ sdl::hidpi::Mapping SdlContext::mapping(const SdlWindow& window) const
 		/* smart-sizing and a fixed window: the whole session scaled, no offset */
 		m.scaleX = _localScale.x;
 		m.scaleY = _localScale.y;
+		return m;
+	}
+	/* following the server: the letterbox's scale, its place in applyMonitorOffset() */
+	if (window.serverSource())
+	{
+		const auto target = window.serverTarget();
+		m.scaleX = target.second;
+		m.scaleY = target.second;
 		return m;
 	}
 	const auto settings = context()->settings;

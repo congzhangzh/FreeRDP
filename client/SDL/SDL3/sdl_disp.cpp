@@ -225,6 +225,14 @@ bool sdlDispContext::sendLayout(const rdpMonitor* monitors, size_t nmonitors)
 	WINPR_ASSERT(monitors);
 	WINPR_ASSERT(nmonitors > 0);
 
+	/* the windows show the server's own monitors: it did not take the client's layout, and
+	 * another would only reset the session */
+	if (_sdl->followsServer())
+	{
+		WLog_Print(_sdl->getWLog(), WLOG_DEBUG, "layout not sent: following the server's monitors");
+		return true;
+	}
+
 	auto settings = _sdl->context()->settings;
 	WINPR_ASSERT(settings);
 
@@ -325,6 +333,12 @@ bool sdlDispContext::sendLayout(const rdpMonitor* monitors, size_t nmonitors)
 		    static_cast<int32_t>(l.Height), l.DesktopScaleFactor, l.DeviceScaleFactor);
 		WLog_Print(_sdl->getWLog(), WLOG_INFO, "%s", line.c_str());
 	}
+	std::vector<sdl_server_layout::Rect> sent;
+	sent.reserve(layouts.size());
+	for (const auto& l : layouts)
+		sent.push_back(
+		    { l.Left, l.Top, static_cast<int32_t>(l.Width), static_cast<int32_t>(l.Height) });
+	_sdl->noteSentLayout(std::move(sent));
 	_last_sent_layout = std::move(layouts);
 	return true;
 }

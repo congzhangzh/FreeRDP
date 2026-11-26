@@ -130,6 +130,11 @@ class SdlContext
 	void unwrapGfx();
 	void takeServerLayout();
 	[[nodiscard]] const std::optional<sdl_server_layout::Layout>& serverLayout() const;
+	/** SDL's thread: the layout the server was last asked for (core data, then each Display
+	 * Control layout), to tell a server's echo from its own monitors */
+	void noteSentLayout(std::vector<sdl_server_layout::Rect> sent);
+	/** @return true while the windows show the server's monitors (SDL's thread) */
+	[[nodiscard]] bool followsServer() const;
 
 	/** main thread: recomputes what rdpContext::windowInfoService tells about the session
 	 *  window after it was created, resized or rescaled, and tells the subscriber */
@@ -273,6 +278,10 @@ class SdlContext
 	sdl_server_layout::Inbox _serverLayoutInbox;
 	/* SDL's thread only: the newest layout taken, none before the first or after the session */
 	std::optional<sdl_server_layout::Layout> _serverLayout;
+	std::vector<sdl_server_layout::Rect> _sentLayout;
+	bool _followsServer = false;
+	/* SDL's thread: give each window its server monitor, or none (sdl_server_layout::plan) */
+	void applyServerLayout();
 
 	rdpContext* _context = nullptr;
 	wLog* _log = nullptr;

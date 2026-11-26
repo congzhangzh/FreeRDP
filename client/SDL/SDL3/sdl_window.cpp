@@ -144,7 +144,8 @@ SdlWindow::SdlWindow(SdlWindow&& other) noexcept
       _gdiTexture(other._gdiTexture), _overlayPainter(std::move(other._overlayPainter)),
       _gdiTextureW(other._gdiTextureW), _gdiTextureH(other._gdiTextureH),
       _initialW(other._initialW), _initialH(other._initialH), _displayID(other._displayID),
-      _offset_x(other._offset_x), _offset_y(other._offset_y), _monitor(other._monitor)
+      _offset_x(other._offset_x), _offset_y(other._offset_y), _monitor(other._monitor),
+      _serverSource(other._serverSource), _serverClear(other._serverClear), _parked(other._parked)
 {
 	other._videoOverlays.clear();
 	other._window = nullptr;
@@ -451,6 +452,93 @@ bool SdlWindow::drawMappedRects(SDL_Surface* surface, const sdl::hidpi::Mapping&
 			return false;
 	}
 	return true;
+}
+
+void SdlWindow::setServerSource(const std::optional<sdl_server_layout::Rect>& source)
+{
+	if (source == _serverSource)
+		return;
+	_serverSource = source;
+	_serverClear = source.has_value();
+}
+
+const std::optional<sdl_server_layout::Rect>& SdlWindow::serverSource() const
+{
+	return _serverSource;
+}
+
+std::pair<sdl_server_layout::Rect, float> SdlWindow::serverTarget() const
+{
+	if (!_serverSource)
+		return { {}, 1.0f };
+	const auto size = rect();
+	return sdl_server_layout::letterbox(*_serverSource, { 0, 0, size.w, size.h });
+}
+
+bool SdlWindow::drawServerSource(SDL_Surface* surface, const std::vector<SDL_Rect>& rects)
+{
+	WINPR_ASSERT(surface);
+	if (!_serverSource || !_renderer)
+		return true;
+	const auto& source = *_serverSource;
+	const auto [target, scale] = serverTarget();
+	if ((target.w <= 0) || (target.h <= 0))
+		return true;
+
+	std::vector<sdl_server_layout::Rect> damage;
+	if (_serverClear || rects.empty())
+	{
+		/* a new source: the bars black, then all of it */
+		if (_serverClear && !fill())
+			return false;
+		_serverClear = false;
+		damage.push_back(source);
+	}
+	else
+	{
+		for (const auto& r : rects)
+			damage.push_back({ r.x, r.y, r.w, r.h });
+	}
+
+	/* a rounded edge never reaches the bars */
+	const SDL_Rect clip{ target.x, target.y, target.w, target.h };
+	if (!SDL_SetRenderTarget(_renderer, _renderTarget) || !SDL_SetRenderClipRect(_renderer, &clip))
+		return false;
+	bool rc = true;
+	for (const auto& d : damage)
+	{
+		const auto draw = sdl_server_layout::toWindow(d, source, target, scale);
+		if (!draw)
+			continue;
+		const SDL_Rect src{ draw->source.x, draw->source.y, draw->source.w, draw->source.h };
+		SDL_Rect dst{ draw->target.x, draw->target.y, draw->target.w, draw->target.h };
+		if (!blit(surface, src, dst))
+		{
+			rc = false;
+			break;
+		}
+	}
+	std::ignore = SDL_SetRenderTarget(_renderer, _renderTarget);
+	std::ignore = SDL_SetRenderClipRect(_renderer, nullptr);
+	return rc;
+}
+
+void SdlWindow::park(bool parked)
+{
+	if (parked == _parked)
+		return;
+	_parked = parked;
+	if (!_window)
+		return;
+	if (parked)
+		std::ignore = SDL_HideWindow(_window);
+	else
+		std::ignore = SDL_ShowWindow(_window);
+}
+
+bool SdlWindow::parked() const
+{
+	return _parked;
 }
 
 bool SdlWindow::drawScaledRect(SDL_Surface* surface, const SDL_FPoint& scale,
