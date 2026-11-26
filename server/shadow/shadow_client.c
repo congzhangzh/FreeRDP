@@ -2495,6 +2495,7 @@ static BOOL shadow_client_send_outputs_gfx(rdpShadowClient* client, const rdpSha
 
 	encoder->gfxFrameOut = FALSE;
 	const UINT64 start = winpr_GetTickCount64NS();
+	const UINT32 frameIdBefore = encoder->frameId;
 	encoder->roundFrameId = shadow_encoder_create_frame_id(encoder);
 	encoder->roundOpen = TRUE;
 	encoder->roundStarted = FALSE;
@@ -2546,12 +2547,9 @@ static BOOL shadow_client_send_outputs_gfx(rdpShadowClient* client, const rdpSha
 		else
 			encoder->gfxFrameOut = TRUE;
 	}
-	else if (rc)
-	{
-		/* nothing went out: the id back, a frame that was never sent is never acknowledged
-		 * (as shadow_client_send_rfx does) */
-		encoder->frameId--;
-	}
+	/* the same rule as one surface (shadow_client_send_surface_gfx): a round that sent no frame
+	 * gives its id back, whichever codecs found nothing to send */
+	shadow_encoder_unused_frame_id(encoder, frameIdBefore, encoder->gfxFrameOut);
 	encoder->roundOpen = FALSE;
 	encoder->roundCodec = nullptr;
 
