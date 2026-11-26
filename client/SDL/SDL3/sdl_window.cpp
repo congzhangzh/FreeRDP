@@ -469,10 +469,15 @@ const std::optional<sdl_server_layout::Rect>& SdlWindow::serverSource() const
 
 std::pair<sdl_server_layout::Rect, float> SdlWindow::serverTarget() const
 {
-	if (!_serverSource)
+	if (!_serverSource || !_window)
 		return { {}, 1.0f };
-	const auto size = rect();
-	return sdl_server_layout::letterbox(*_serverSource, { 0, 0, size.w, size.h });
+	/* the window's real pixels, which its render target has: rect() is in the session's pixels
+	 * under /sdl-hidpi:scale:N */
+	int w = 0;
+	int h = 0;
+	if (!SDL_GetWindowSizeInPixels(_window, &w, &h))
+		return { {}, 1.0f };
+	return sdl_server_layout::letterbox(*_serverSource, { 0, 0, w, h });
 }
 
 bool SdlWindow::drawServerSource(SDL_Surface* surface, const std::vector<SDL_Rect>& rects)
