@@ -747,13 +747,18 @@ void SdlContext::applyServerLayout()
 		window.setServerSource(found->source);
 		window.park(false);
 		const auto& src = found->source;
-		const auto& dst = found->target;
+		/* where it is drawn: in the window's pixels once it has them (a high density display has
+		 * more than the monitor's size), else as planned */
+		const auto [drawn, drawnScale] = window.serverTarget();
+		const bool sized = (drawn.w > 0) && (drawn.h > 0);
+		const auto& dst = sized ? drawn : found->target;
+		const float scale = sized ? drawnScale : found->scale;
 		WLog_Print(getWLog(), WLOG_INFO,
 		           "server layout: window %" PRIuz " <- monitor %" PRIuz " %" PRId32 ",%" PRId32
 		           " %" PRId32 "x%" PRId32 " on display %" PRIu32 " at %" PRId32 ",%" PRId32
 		           " %" PRId32 "x%" PRId32 " scale %.4f",
 		           index++, found->monitor, src.x, src.y, src.w, src.h, found->display, dst.x,
-		           dst.y, dst.w, dst.h, static_cast<double>(found->scale));
+		           dst.y, dst.w, dst.h, static_cast<double>(scale));
 	}
 
 	/* back to the client's own windows: each shows its part again, all of it */
@@ -1783,6 +1788,9 @@ bool SdlContext::handleEvent(const SDL_WindowEvent& ev)
 			if (!restoreCursor())
 				return false;
 			updateWindowInfo();
+			/* following the server: the letterbox follows the new size, say where it is now */
+			if (window->serverSource())
+				applyServerLayout();
 			break;
 		case SDL_EVENT_WINDOW_MOVED:
 		{
