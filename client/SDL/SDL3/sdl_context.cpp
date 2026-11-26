@@ -605,6 +605,84 @@ bool SdlContext::createWindows()
 	return true;
 }
 
+void SdlContext::wrapGfx(RdpgfxClientContext* gfx)
+{
+	WINPR_ASSERT(gfx);
+	/* The channel can connect again for the same context (a reactivation): a slot that already
+	 * holds ours keeps the handler saved before, so it never calls itself. */
+	if (gfx->ResetGraphics == resetGraphics)
+		return;
+	_gdiResetGraphics = gfx->ResetGraphics;
+	gfx->ResetGraphics = resetGraphics;
+}
+
+void SdlContext::unwrapGfx()
+{
+	/* The channel closed: no server list until the next Reset Graphics. An empty layout takes the
+	 * place of any not yet taken (that one is freed), and tells SDL's thread to drop its own. */
+	(void)_serverLayoutInbox.post(sdl_server_layout::Layout{});
+	if (!sdl_push_user_event(SDL_EVENT_USER_SERVER_LAYOUT))
+		WLog_Print(getWLog(), WLOG_WARN, "server layout: the end of the session not posted");
+}
+
+UINT SdlContext::resetGraphics(RdpgfxClientContext* gfx,
+                               const RDPGFX_RESET_GRAPHICS_PDU* resetGraphics)
+{
+	WINPR_ASSERT(gfx);
+	WINPR_ASSERT(resetGraphics);
+	auto gdi = static_cast<rdpGdi*>(gfx->custom);
+	auto sdl = (gdi && gdi->context) ? get_context(gdi->context) : nullptr;
+	if (!sdl || !sdl->_gdiResetGraphics)
+		return ERROR_INTERNAL_ERROR;
+
+	const UINT rc = sdl->_gdiResetGraphics(gfx, resetGraphics);
+	if (rc != CHANNEL_RC_OK)
+		return rc;
+
+	/* copied here, on the channel's thread: the PDU is gone when SDL's thread runs */
+	const bool replaced = sdl->_serverLayoutInbox.post(
+	    sdl_server_layout::copyOf(resetGraphics->width, resetGraphics->height,
+	                              resetGraphics->monitorCount, resetGraphics->monitorDefArray));
+	WLog_Print(sdl->getWLog(), WLOG_DEBUG,
+	           "server layout: Reset Graphics %" PRIu32 "x%" PRIu32 ", %" PRIu32 " monitor(s)%s",
+	           resetGraphics->width, resetGraphics->height, resetGraphics->monitorCount,
+	           replaced ? ", replaces one not yet taken" : "");
+	/* a layout not woken for stays in the inbox for the next event: never fatal */
+	if (!sdl_push_user_event(SDL_EVENT_USER_SERVER_LAYOUT))
+		WLog_Print(sdl->getWLog(), WLOG_WARN, "server layout: event not posted");
+	return CHANNEL_RC_OK;
+}
+
+void SdlContext::takeServerLayout()
+{
+	auto layout = _serverLayoutInbox.take();
+	/* an extra event (the newest replaced older ones) finds nothing */
+	if (!layout)
+		return;
+	if (layout->monitors.empty())
+	{
+		/* the session ended, or a Reset Graphics without monitors: no server list */
+		_serverLayout.reset();
+		WLog_Print(getWLog(), WLOG_DEBUG, "server layout: none");
+		return;
+	}
+	for (size_t x = 0; x < layout->monitors.size(); x++)
+	{
+		const auto& m = layout->monitors[x];
+		WLog_Print(getWLog(), WLOG_DEBUG,
+		           "server layout: monitor %" PRIuz " %" PRId32 ",%" PRId32 " to %" PRId32
+		           ",%" PRId32 "%s",
+		           x, m.left, m.top, m.right, m.bottom,
+		           ((m.flags & MONITOR_PRIMARY) != 0) ? " primary" : "");
+	}
+	_serverLayout = std::move(layout);
+}
+
+const std::optional<sdl_server_layout::Layout>& SdlContext::serverLayout() const
+{
+	return _serverLayout;
+}
+
 /* SDL 3.4 on Wayland: a compositor may report a fullscreen window's surface on another output for
  * a moment (wl_surface.enter, then back, weston does). SDL takes that for a move: its MOVED event
  * clears the window's pending display, its DISPLAY_CHANGED makes the window fullscreen on the other
