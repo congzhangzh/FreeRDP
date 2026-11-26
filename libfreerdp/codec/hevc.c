@@ -153,6 +153,14 @@ INT32 freerdp_hevc_decompress(FREERDP_HEVC_CONTEXT* hevc, const BYTE* pSrcData, 
 	                       nDstWidth, nDstHeight, regionRects, numRegionRect);
 }
 
+BOOL freerdp_hevc_context_get_last_decode(const FREERDP_HEVC_CONTEXT* hevc,
+                                          FREERDP_DECODE_RESULT* result)
+{
+	if (!hevc)
+		return FALSE;
+	return h264_context_get_last_decode(hevc->context, result);
+}
+
 BOOL freerdp_hevc_context_reset(FREERDP_HEVC_CONTEXT* hevc, UINT32 width, UINT32 height)
 {
 	WINPR_ASSERT(hevc);
