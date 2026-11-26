@@ -18,9 +18,13 @@
  */
 #pragma once
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <optional>
+#include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -97,4 +101,220 @@ namespace sdl_server_layout
 		std::optional<Layout> _pending;
 		uint64_t _posted = 0;
 	};
+
+	/** A rectangle in pixels, width and height exclusive */
+	struct Rect
+	{
+		int32_t x = 0;
+		int32_t y = 0;
+		int32_t w = 0;
+		int32_t h = 0;
+
+		bool operator==(const Rect& o) const
+		{
+			return (x == o.x) && (y == o.y) && (w == o.w) && (h == o.h);
+		}
+		bool operator<(const Rect& o) const
+		{
+			return std::tie(x, y, w, h) < std::tie(o.x, o.y, o.w, o.h);
+		}
+	};
+
+	/** @return a server monitor as a rectangle (its right and bottom are inclusive) */
+	[[nodiscard]] inline Rect rectOf(const MONITOR_DEF& m)
+	{
+		return { m.left, m.top, m.right - m.left + 1, m.bottom - m.top + 1 };
+	}
+
+	/** @return the rectangles moved so that their common top left is 0,0, in one order: the
+	 * same set of monitors gives the same list whatever origin and order it came in */
+	[[nodiscard]] inline std::vector<Rect> normalized(std::vector<Rect> rects)
+	{
+		if (rects.empty())
+			return rects;
+		int32_t minX = rects.front().x;
+		int32_t minY = rects.front().y;
+		for (const auto& r : rects)
+		{
+			minX = std::min(minX, r.x);
+			minY = std::min(minY, r.y);
+		}
+		for (auto& r : rects)
+		{
+			r.x -= minX;
+			r.y -= minY;
+		}
+		std::sort(rects.begin(), rects.end());
+		return rects;
+	}
+
+	/** @return true if the server's monitors are the layout the client sent: the same
+	 * rectangles, in any order, with any origin (a server may put its primary first, or move
+	 * the top left to 0,0). The primary flag is not compared: it places no window. */
+	[[nodiscard]] inline bool sameLayout(const std::vector<MONITOR_DEF>& server,
+	                                     const std::vector<Rect>& sent)
+	{
+		std::vector<Rect> rects;
+		rects.reserve(server.size());
+		for (const auto& m : server)
+			rects.push_back(rectOf(m));
+		return normalized(std::move(rects)) == normalized(sent);
+	}
+
+	/** A client screen a window can go to */
+	struct Display
+	{
+		uint32_t id = 0; /* SDL_DisplayID */
+		Rect bounds;     /* in the client's desktop, pixels */
+		bool primary = false;
+	};
+
+	/** One window of a plan that follows the server */
+	struct Window
+	{
+		size_t monitor = 0;   /* its index in the server's list */
+		uint32_t display = 0; /* SDL_DisplayID */
+		Rect source;          /* the part of the session it shows, session pixels */
+		Rect target;          /* where that part is drawn, window pixels (letterboxed) */
+		float scale = 1.0f;   /* window pixels per session pixel, the same both ways */
+	};
+
+	struct Plan
+	{
+		/** false: the windows stay as the client's own screens make them (as before) */
+		bool follow = false;
+		/** why, for the log */
+		std::string reason;
+		/** the server sent a list the client can't follow: log the reason as a warning */
+		bool warn = false;
+		std::vector<Window> windows;
+	};
+
+	/** @return the order windows take: the primary first, then left to right, top to bottom */
+	template <typename T, typename Primary, typename Place>
+	[[nodiscard]] std::vector<size_t> placeOrder(const std::vector<T>& items, Primary primary,
+	                                             Place place)
+	{
+		std::vector<size_t> order(items.size());
+		for (size_t x = 0; x < order.size(); x++)
+			order[x] = x;
+		std::stable_sort(order.begin(), order.end(),
+		                 [&](size_t a, size_t b)
+		                 {
+			                 const bool pa = primary(items[a]);
+			                 const bool pb = primary(items[b]);
+			                 if (pa != pb)
+				                 return pa;
+			                 const Rect ra = place(items[a]);
+			                 const Rect rb = place(items[b]);
+			                 return std::tie(ra.x, ra.y) < std::tie(rb.x, rb.y);
+		                 });
+		return order;
+	}
+
+	/** @return @a source scaled to fit @a display's size, the aspect kept, centred (window
+	 * pixels, the window covering the display) */
+	[[nodiscard]] inline std::pair<Rect, float> letterbox(const Rect& source, const Rect& display)
+	{
+		const float sx = static_cast<float>(display.w) / static_cast<float>(source.w);
+		const float sy = static_cast<float>(display.h) / static_cast<float>(source.h);
+		const float scale = std::min(sx, sy);
+		auto w = static_cast<int32_t>(static_cast<float>(source.w) * scale + 0.5f);
+		auto h = static_cast<int32_t>(static_cast<float>(source.h) * scale + 0.5f);
+		w = std::min(w, display.w);
+		h = std::min(h, display.h);
+		return { Rect{ (display.w - w) / 2, (display.h - h) / 2, w, h }, scale };
+	}
+
+	/** @return the windows for a server layout. The plan follows the server only with
+	 * /multimon, a server list, and a list that is not the layout the client sent; each server
+	 * monitor then gets a client screen, primary to primary, the others left to right, and is
+	 * letterboxed there. More server monitors than client screens keep today's windows. */
+	[[nodiscard]] inline Plan plan(bool multimon, const std::optional<Layout>& server,
+	                               const std::vector<Rect>& sent,
+	                               const std::vector<Display>& displays)
+	{
+		Plan p;
+		if (!multimon)
+		{
+			p.reason = "no /multimon";
+			return p;
+		}
+		if (!server || server->monitors.empty())
+		{
+			p.reason = "no server list";
+			return p;
+		}
+		const auto& monitors = server->monitors;
+		if (sameLayout(monitors, sent))
+		{
+			p.reason = "the server's list is the client's layout";
+			return p;
+		}
+		if (monitors.size() > displays.size())
+		{
+			p.reason = "the server has " + std::to_string(monitors.size()) +
+			           " monitors, the client " + std::to_string(displays.size()) + " screens";
+			p.warn = true;
+			return p;
+		}
+
+		/* session pixels: the desktop's top left is the monitors' common top left */
+		int32_t minX = monitors.front().left;
+		int32_t minY = monitors.front().top;
+		for (const auto& m : monitors)
+		{
+			minX = std::min(minX, m.left);
+			minY = std::min(minY, m.top);
+		}
+		for (size_t x = 0; x < monitors.size(); x++)
+		{
+			auto r = rectOf(monitors[x]);
+			r.x -= minX;
+			r.y -= minY;
+			const bool inside = (r.w > 0) && (r.h > 0) &&
+			                    (static_cast<int64_t>(r.x) + r.w <= server->width) &&
+			                    (static_cast<int64_t>(r.y) + r.h <= server->height);
+			if (!inside)
+			{
+				p.reason = "server monitor " + std::to_string(x) + " is not inside its " +
+				           std::to_string(server->width) + "x" + std::to_string(server->height) +
+				           " desktop";
+				p.warn = true;
+				return p;
+			}
+		}
+		for (const auto& d : displays)
+		{
+			if ((d.bounds.w <= 0) || (d.bounds.h <= 0))
+			{
+				p.reason = "a client screen has no size";
+				p.warn = true;
+				return p;
+			}
+		}
+
+		const auto serverOrder = placeOrder(
+		    monitors, [](const MONITOR_DEF& m) { return (m.flags & MONITOR_PRIMARY) != 0; },
+		    [](const MONITOR_DEF& m) { return rectOf(m); });
+		const auto displayOrder = placeOrder(
+		    displays, [](const Display& d) { return d.primary; },
+		    [](const Display& d) { return d.bounds; });
+		for (size_t x = 0; x < serverOrder.size(); x++)
+		{
+			const size_t index = serverOrder[x];
+			const auto& display = displays[displayOrder[x]];
+			Window w;
+			w.monitor = index;
+			w.display = display.id;
+			w.source = rectOf(monitors[index]);
+			w.source.x -= minX;
+			w.source.y -= minY;
+			std::tie(w.target, w.scale) = letterbox(w.source, display.bounds);
+			p.windows.push_back(w);
+		}
+		p.follow = true;
+		p.reason = "the server's " + std::to_string(monitors.size()) + " monitors";
+		return p;
+	}
 } // namespace sdl_server_layout
