@@ -50,6 +50,9 @@ enum
 	/* the display channel: check the layout and send it, on the thread that owns the monitor
 	 * array (code: sdlDispContext::LayoutRequest) */
 	SDL_EVENT_USER_DISPLAY_LAYOUT,
+	/* the server sent its monitors (GFX Reset Graphics): the event carries nothing, SDL's thread
+	 * takes the newest layout from the context (code: SdlContext::takeServerLayout) */
+	SDL_EVENT_USER_SERVER_LAYOUT,
 	SDL_EVENT_USER_QUIT,
 	/* a mapped renderer (rdpContext::bitmapRenderService) got a frame. Before the dialogs:
 	 * sdl_run() only takes the events up to SDL_EVENT_USER_RETRY_DIALOG, the *_RESULT ones are

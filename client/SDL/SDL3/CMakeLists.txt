@@ -52,6 +52,7 @@ set(SRCS
     sdl_stats_json.cpp
     sdl_hidpi.hpp
     sdl_monitor_refresh.hpp
+    sdl_server_layout.hpp
     sdl_hidpi.cpp
     sdl_clip.hpp
     sdl_clip.cpp
@@ -225,6 +226,12 @@ if(BUILD_TESTING_INTERNAL OR BUILD_TESTING)
   set_target_properties(TestSDLMonitorRefresh PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TESTING_OUTPUT_DIRECTORY}")
   add_test(NAME TestSDLMonitorRefresh COMMAND ${TESTING_OUTPUT_DIRECTORY}/TestSDLMonitorRefresh)
   set_property(TARGET TestSDLMonitorRefresh PROPERTY FOLDER "FreeRDP/Client/Test")
+
+  add_executable(TestSDLServerLayout test/TestSDLServerLayout.cpp)
+  target_link_libraries(TestSDLServerLayout PRIVATE freerdp)
+  set_target_properties(TestSDLServerLayout PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TESTING_OUTPUT_DIRECTORY}")
+  add_test(NAME TestSDLServerLayout COMMAND ${TESTING_OUTPUT_DIRECTORY}/TestSDLServerLayout)
+  set_property(TARGET TestSDLServerLayout PROPERTY FOLDER "FreeRDP/Client/Test")
 endif()
 
 add_subdirectory(man)

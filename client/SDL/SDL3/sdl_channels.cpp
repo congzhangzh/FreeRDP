@@ -183,6 +183,9 @@ void sdl_OnChannelConnectedEventHandler(void* context, const ChannelConnectedEve
 		auto ctx = static_cast<rdpContext*>(context);
 		if (gfx && freerdp_settings_get_bool(ctx->settings, FreeRDP_RemoteApplicationMode))
 			gfx->UpdateWindowFromSurface = SdlRail::UpdateWindowFromSurface;
+		/* the server's monitors, from each Reset Graphics */
+		if (gfx)
+			sdl->wrapGfx(gfx);
 #if defined(__EMSCRIPTEN__)
 		web_stats_wrap(gfx);
 #endif
@@ -214,6 +217,8 @@ void sdl_OnChannelDisconnectedEventHandler(void* context, const ChannelDisconnec
 			WLog_Print(sdl->getWLog(), WLOG_WARN, "Failed to uninitialize clipboard channel");
 		clip->custom = nullptr;
 	}
+	else if (strcmp(e->name, RDPGFX_DVC_CHANNEL_NAME) == 0)
+		sdl->unwrapGfx();
 	else if (strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0)
 	{
 		auto disp = reinterpret_cast<DispClientContext*>(e->pInterface);

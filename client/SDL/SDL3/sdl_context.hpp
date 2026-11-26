@@ -31,6 +31,7 @@
 
 #include <freerdp/freerdp.h>
 #include <freerdp/client/window_info_service.h>
+#include <freerdp/client/rdpgfx.h>
 
 #include <SDL3/SDL.h>
 
@@ -43,6 +44,7 @@
 #include "sdl_rail.hpp"
 #include "sdl_overlay.hpp"
 #include "sdl_wheel.hpp"
+#include "sdl_server_layout.hpp"
 
 #include "dialogs/sdl_connection_dialog_wrapper.hpp"
 
@@ -120,6 +122,14 @@ class SdlContext
 	[[nodiscard]] bool shallAbort(bool ignoreDialogs = false);
 
 	[[nodiscard]] bool createWindows();
+
+	/** The server's monitor layout (GFX Reset Graphics): wrapGfx() on the channel's thread when
+	 * the GFX channel connects, after the common handler set up gdi; unwrapGfx() when it closes.
+	 * takeServerLayout() on SDL's thread, on SDL_EVENT_USER_SERVER_LAYOUT. */
+	void wrapGfx(RdpgfxClientContext* gfx);
+	void unwrapGfx();
+	void takeServerLayout();
+	[[nodiscard]] const std::optional<sdl_server_layout::Layout>& serverLayout() const;
 
 	/** main thread: recomputes what rdpContext::windowInfoService tells about the session
 	 *  window after it was created, resized or rescaled, and tells the subscriber */
@@ -255,6 +265,14 @@ class SdlContext
 	/** /multimon on Wayland: keeps each window fullscreen on its own display (sdl_context.cpp) */
 	static bool SDLCALL keepFullscreenDisplay(void* userdata, SDL_Event* event);
 	bool _displayWatch = false;
+
+	WINPR_ATTR_NODISCARD static UINT resetGraphics(RdpgfxClientContext* gfx,
+	                                               const RDPGFX_RESET_GRAPHICS_PDU* resetGraphics);
+	/* gdi's handler, called first; set on the channel's thread before the channel runs */
+	pcRdpgfxResetGraphics _gdiResetGraphics = nullptr;
+	sdl_server_layout::Inbox _serverLayoutInbox;
+	/* SDL's thread only: the newest layout taken, none before the first or after the session */
+	std::optional<sdl_server_layout::Layout> _serverLayout;
 
 	rdpContext* _context = nullptr;
 	wLog* _log = nullptr;

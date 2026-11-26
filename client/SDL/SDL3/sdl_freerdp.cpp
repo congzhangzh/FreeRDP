@@ -271,6 +271,9 @@ static void sdl_term_handler([[maybe_unused]] int signum, [[maybe_unused]] const
 						        windowEvent.user.code))
 							WLog_Print(sdl->getWLog(), WLOG_TRACE, "display layout not sent");
 						break;
+					case SDL_EVENT_USER_SERVER_LAYOUT:
+						sdl->takeServerLayout();
+						break;
 					case SDL_EVENT_USER_CREATE_WINDOWS:
 					{
 						auto ctx = static_cast<SdlContext*>(windowEvent.user.data1);
