@@ -196,14 +196,20 @@ static INT16 cam_v4l_get_media_type_descriptions(ICamHal* ihal, const char* devi
 
 	if (!stream)
 	{
+		/* the result is a format index: -1 is the only error, a CAM_ERROR_CODE would be taken
+		 * for one (CAM_ERROR_CODE_OutOfMemory = 7: the 8th supported format) */
 		stream = cam_v4l_stream_create(deviceId, streamIndex);
 		if (!stream)
-			return CAM_ERROR_CODE_OutOfMemory;
+		{
+			*nMediaTypes = 0;
+			return -1;
+		}
 
 		if (!HashTable_Insert(hal->streams, deviceId, stream))
 		{
 			cam_v4l_stream_free(stream);
-			return CAM_ERROR_CODE_UnexpectedError;
+			*nMediaTypes = 0;
+			return -1;
 		}
 	}
 
@@ -211,6 +217,7 @@ static INT16 cam_v4l_get_media_type_descriptions(ICamHal* ihal, const char* devi
 	if (fd == -1)
 	{
 		WLog_ERR(TAG, "Unable to open device %s", deviceId);
+		*nMediaTypes = 0;
 		return -1;
 	}
 
