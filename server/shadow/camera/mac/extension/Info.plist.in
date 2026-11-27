@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The camera extension (CMakeLists.txt configures it): a system extension (SYSX) in the
+     host app's Contents/Library/SystemExtensions/@CAMERA_MAC_ID@.systemextension. Its
+     CMIOExtensionMachServiceName must start with an app group of its entitlements and a dot:
+     the group is <team id>.<app id>, the service <team id>.<app id>.camera. -->
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>    <string>en</string>
+    <key>CFBundleExecutable</key>           <string>@CAMERA_MAC_ID@</string>
+    <key>CFBundleIdentifier</key>           <string>@CAMERA_MAC_ID@</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleName</key>                 <string>FreeRDP Camera</string>
+    <key>CFBundleDisplayName</key>          <string>FreeRDP Camera</string>
+    <key>CFBundlePackageType</key>          <string>SYSX</string>
+    <key>CFBundleShortVersionString</key>   <string>@CAMERA_MAC_VERSION@</string>
+    <key>CFBundleVersion</key>              <string>@CAMERA_MAC_VERSION@</string>
+    <key>LSMinimumSystemVersion</key>       <string>@CMAKE_OSX_DEPLOYMENT_TARGET@</string>
+    <key>CMIOExtension</key>
+    <dict>
+        <key>CMIOExtensionMachServiceName</key> <string>@CAMERA_MAC_MACH_SERVICE@</string>
+    </dict>
+</dict>
+</plist>
