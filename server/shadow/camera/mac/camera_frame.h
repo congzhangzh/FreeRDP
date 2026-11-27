@@ -46,6 +46,12 @@ extern "C"
 	                       uint8_t* dstUV, size_t dstUVStride, uint32_t dstWidth,
 	                       uint32_t dstHeight);
 
+	/* the frame size a JPEG declares: it must start with SOI, and its first SOF marker
+	 * (baseline, extended, progressive or lossless) gives height and width; every segment
+	 * before it must lie inside the data. false when there is no such frame header, so a
+	 * remote MJPG sample that is not a JPEG is refused before any decoder sees it */
+	bool cam_jpeg_frame_size(const uint8_t* data, size_t size, uint32_t* width, uint32_t* height);
+
 #ifdef __cplusplus
 }
 #endif
