@@ -457,6 +457,12 @@ static UINT cam_avfoundation_enumerate(ICamHal *hal, ICamHalEnumCallback callbac
 		UINT count = 0;
 		for (AVCaptureDevice *camera in discovery.devices)
 		{
+			if (ecam_is_freerdp_camera(camera.localizedName.UTF8String))
+			{
+				WLog_DBG(TAG, "\"%s\" is a FreeRDP server's own camera: not offered",
+				         camera.localizedName.UTF8String);
+				continue;
+			}
 			NSString *deviceId = nil;
 			@synchronized(context)
 			{
