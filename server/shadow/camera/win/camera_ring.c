@@ -29,60 +29,75 @@
 
 C_ASSERT((offsetof(ShadowCameraRingHeader, frames) % 8) == 0);
 C_ASSERT((offsetof(ShadowCameraRingHeader, slotSequence) % 8) == 0);
+C_ASSERT((offsetof(ShadowCameraRingReaders, readerTick) % 8) == 0);
 
 /* the slots start at a cache line, each one a multiple of 64 bytes */
 #define RING_ALIGN 64u
 /* the largest frame the ring holds: 4096x4096 NV12 */
 #define RING_MAX_FRAME (4096u * 4096u * 3u / 2u)
 
-/* section: SYSTEM and Administrators everything, Local Service read and write (the readers
- * count); event: Local Service may wait on it */
-#define RING_SECTION_SDDL L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;LS)"
+/* SYSTEM and Administrators everything; Local Service: the frames read, the readers' section
+ * read and write, the event waited on */
+#define RING_FRAMES_SDDL L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GR;;;LS)"
+#define RING_READERS_SDDL L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;LS)"
 #define RING_EVENT_SDDL L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GR;;;LS)"
 
 struct s_shadow_camera_ring
 {
 	HANDLE section;
+	HANDLE readersSection;
 	HANDLE event;
 	BYTE* base;
 	ShadowCameraRingHeader* header;
+	ShadowCameraRingReaders* readers; /* nullptr for a reader that may not write it */
 	size_t size;
 	BOOL writer;
 	BOOL counted; /* reader: this one is in readers */
+	DWORD readersError;
 };
 
+typedef struct
+{
+	WCHAR frames[160];
+	WCHAR readers[160];
+	WCHAR event[160];
+	BOOL local;
+} RingNames;
+
 /* the names, with the test prefix when SHADOW_CAMERA_RING_NAME_ENV is set */
-static BOOL ring_names(WCHAR* section, WCHAR* event, size_t count, BOOL* local)
+static BOOL ring_names(RingNames* names)
 {
 	char prefix[128] = { 0 };
 	const DWORD length =
 	    GetEnvironmentVariableA(SHADOW_CAMERA_RING_NAME_ENV, prefix, (DWORD)sizeof(prefix));
-	*local = FALSE;
+	memset(names, 0, sizeof(*names));
 	if ((length == 0) || (length >= sizeof(prefix)))
 	{
-		if ((wcslen(SHADOW_CAMERA_RING_NAME) >= count) ||
-		    (wcslen(SHADOW_CAMERA_RING_EVENT_NAME) >= count))
-			return FALSE;
-		wcscpy_s(section, count, SHADOW_CAMERA_RING_NAME);
-		wcscpy_s(event, count, SHADOW_CAMERA_RING_EVENT_NAME);
-		return TRUE;
+		return (wcscpy_s(names->frames, ARRAYSIZE(names->frames), SHADOW_CAMERA_RING_NAME) == 0) &&
+		       (wcscpy_s(names->readers, ARRAYSIZE(names->readers),
+		                 SHADOW_CAMERA_RING_READERS_NAME) == 0) &&
+		       (wcscpy_s(names->event, ARRAYSIZE(names->event), SHADOW_CAMERA_RING_EVENT_NAME) ==
+		        0);
 	}
-	*local = (_strnicmp(prefix, "Local\\", 6) == 0);
-	if ((_snwprintf_s(section, count, _TRUNCATE, L"%hs-Ring", prefix) < 0) ||
-	    (_snwprintf_s(event, count, _TRUNCATE, L"%hs-Frame", prefix) < 0))
-		return FALSE;
-	return TRUE;
+	names->local = (_strnicmp(prefix, "Local\\", 6) == 0);
+	return (_snwprintf_s(names->frames, ARRAYSIZE(names->frames), _TRUNCATE, L"%hs-Ring", prefix) >=
+	        0) &&
+	       (_snwprintf_s(names->readers, ARRAYSIZE(names->readers), _TRUNCATE, L"%hs-Readers",
+	                     prefix) >= 0) &&
+	       (_snwprintf_s(names->event, ARRAYSIZE(names->event), _TRUNCATE, L"%hs-Frame", prefix) >=
+	        0);
 }
 
-static BOOL ring_security(const WCHAR* sddl, SECURITY_ATTRIBUTES* sa)
+/* a test's Local\ ring takes the default security (sa->lpSecurityDescriptor stays NULL) */
+static BOOL ring_security(BOOL local, const WCHAR* sddl, SECURITY_ATTRIBUTES* sa)
 {
-	PSECURITY_DESCRIPTOR sd = NULL;
-	if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, &sd, NULL))
-		return FALSE;
 	sa->nLength = sizeof(*sa);
-	sa->lpSecurityDescriptor = sd;
+	sa->lpSecurityDescriptor = NULL;
 	sa->bInheritHandle = FALSE;
-	return TRUE;
+	if (local)
+		return TRUE;
+	return ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1,
+	                                                            &sa->lpSecurityDescriptor, NULL);
 }
 
 static void ring_free(ShadowCameraRing* ring)
@@ -91,11 +106,40 @@ static void ring_free(ShadowCameraRing* ring)
 		return;
 	if (ring->base)
 		(void)UnmapViewOfFile(ring->base);
+	if (ring->readers)
+		(void)UnmapViewOfFile(ring->readers);
 	if (ring->event)
 		(void)CloseHandle(ring->event);
+	if (ring->readersSection)
+		(void)CloseHandle(ring->readersSection);
 	if (ring->section)
 		(void)CloseHandle(ring->section);
 	free(ring);
+}
+
+/* a new named section of size bytes; ERROR_ALREADY_EXISTS fails */
+static HANDLE ring_new_section(const WCHAR* name, BOOL local, const WCHAR* sddl, size_t size,
+                               DWORD* error)
+{
+	SECURITY_ATTRIBUTES sa = { 0 };
+	if (!ring_security(local, sddl, &sa))
+	{
+		*error = GetLastError();
+		return NULL;
+	}
+	HANDLE section = CreateFileMappingW(INVALID_HANDLE_VALUE, sa.lpSecurityDescriptor ? &sa : NULL,
+	                                    PAGE_READWRITE, (DWORD)((UINT64)size >> 32),
+	                                    (DWORD)(size & 0xFFFFFFFFu), name);
+	*error = GetLastError();
+	LocalFree(sa.lpSecurityDescriptor);
+	if (section && (*error == ERROR_ALREADY_EXISTS))
+	{
+		(void)CloseHandle(section);
+		return NULL;
+	}
+	if (section)
+		*error = ERROR_SUCCESS;
+	return section;
 }
 
 ShadowCameraRing* shadow_camera_ring_create(UINT32 width, UINT32 height, UINT32 fps, DWORD* error)
@@ -116,10 +160,8 @@ ShadowCameraRing* shadow_camera_ring_create(UINT32 width, UINT32 height, UINT32 
 	const UINT32 slotStride = (frameSize + RING_ALIGN - 1u) & ~(RING_ALIGN - 1u);
 	const size_t size = (size_t)slotOffset + (size_t)slotStride * SHADOW_CAMERA_RING_SLOTS;
 
-	WCHAR sectionName[160] = { 0 };
-	WCHAR eventName[160] = { 0 };
-	BOOL local = FALSE;
-	if (!ring_names(sectionName, eventName, ARRAYSIZE(sectionName), &local))
+	RingNames names;
+	if (!ring_names(&names))
 		return NULL;
 
 	ShadowCameraRing* ring = calloc(1, sizeof(ShadowCameraRing));
@@ -131,35 +173,31 @@ ShadowCameraRing* shadow_camera_ring_create(UINT32 width, UINT32 height, UINT32 
 	ring->writer = TRUE;
 	ring->size = size;
 
-	/* a test's Local\ ring takes the default security, ours the descriptors above */
-	SECURITY_ATTRIBUTES sectionSa = { 0 };
+	ring->section = ring_new_section(names.frames, names.local, RING_FRAMES_SDDL, size, error);
+	if (!ring->section)
+		goto fail;
+	ring->readersSection = ring_new_section(names.readers, names.local, RING_READERS_SDDL,
+	                                        sizeof(ShadowCameraRingReaders), error);
+	if (!ring->readersSection)
+		goto fail;
+
 	SECURITY_ATTRIBUTES eventSa = { 0 };
-	BOOL secured = local || (ring_security(RING_SECTION_SDDL, &sectionSa) &&
-	                         ring_security(RING_EVENT_SDDL, &eventSa));
-	if (!secured)
+	if (!ring_security(names.local, RING_EVENT_SDDL, &eventSa))
 	{
 		*error = GetLastError();
 		goto fail;
 	}
-
-	ring->section =
-	    CreateFileMappingW(INVALID_HANDLE_VALUE, local ? NULL : &sectionSa, PAGE_READWRITE,
-	                       (DWORD)((UINT64)size >> 32), (DWORD)(size & 0xFFFFFFFFu), sectionName);
+	ring->event =
+	    CreateEventW(eventSa.lpSecurityDescriptor ? &eventSa : NULL, FALSE, FALSE, names.event);
 	*error = GetLastError();
-	if (!ring->section)
-		goto fail;
-	if (*error == ERROR_ALREADY_EXISTS)
-		goto fail;
-
-	ring->event = CreateEventW(local ? NULL : &eventSa, FALSE, FALSE, eventName);
-	*error = GetLastError();
-	if (!ring->event)
-		goto fail;
-	if (*error == ERROR_ALREADY_EXISTS)
+	LocalFree(eventSa.lpSecurityDescriptor);
+	if (!ring->event || (*error == ERROR_ALREADY_EXISTS))
 		goto fail;
 
 	ring->base = MapViewOfFile(ring->section, FILE_MAP_ALL_ACCESS, 0, 0, size);
-	if (!ring->base)
+	ring->readers = MapViewOfFile(ring->readersSection, FILE_MAP_ALL_ACCESS, 0, 0,
+	                              sizeof(ShadowCameraRingReaders));
+	if (!ring->base || !ring->readers)
 	{
 		*error = GetLastError();
 		goto fail;
@@ -179,17 +217,15 @@ ShadowCameraRing* shadow_camera_ring_create(UINT32 width, UINT32 height, UINT32 
 	h->writerPid = GetCurrentProcessId();
 	h->latest = -1;
 	h->version = SHADOW_CAMERA_RING_VERSION;
+	ring->readers->version = SHADOW_CAMERA_RING_VERSION;
 	MemoryBarrier();
+	ring->readers->magic = SHADOW_CAMERA_RING_MAGIC;
 	h->magic = SHADOW_CAMERA_RING_MAGIC; /* last: a reader sees all of it or nothing */
 
-	LocalFree(sectionSa.lpSecurityDescriptor);
-	LocalFree(eventSa.lpSecurityDescriptor);
 	*error = ERROR_SUCCESS;
 	return ring;
 
 fail:
-	LocalFree(sectionSa.lpSecurityDescriptor);
-	LocalFree(eventSa.lpSecurityDescriptor);
 	ring_free(ring);
 	return NULL;
 }
@@ -200,10 +236,8 @@ ShadowCameraRing* shadow_camera_ring_open(DWORD* error)
 	if (!error)
 		error = &dummy;
 
-	WCHAR sectionName[160] = { 0 };
-	WCHAR eventName[160] = { 0 };
-	BOOL local = FALSE;
-	if (!ring_names(sectionName, eventName, ARRAYSIZE(sectionName), &local))
+	RingNames names;
+	if (!ring_names(&names))
 	{
 		*error = ERROR_INVALID_NAME;
 		return NULL;
@@ -216,12 +250,12 @@ ShadowCameraRing* shadow_camera_ring_open(DWORD* error)
 		return NULL;
 	}
 
-	ring->section = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, sectionName);
+	/* the frames: read-only */
+	ring->section = OpenFileMappingW(FILE_MAP_READ, FALSE, names.frames);
 	if (!ring->section)
 		goto fail;
-	ring->event = OpenEventW(SYNCHRONIZE, FALSE, eventName);
-	if (!ring->event)
-		goto fail;
+	/* the event: the media source paces itself, so a reader that may not wait on it goes on */
+	ring->event = OpenEventW(SYNCHRONIZE, FALSE, names.event);
 
 	/* the header first, then the whole ring at the size it says */
 	ShadowCameraRingHeader* probe =
@@ -246,12 +280,26 @@ ShadowCameraRing* shadow_camera_ring_open(DWORD* error)
 		SetLastError(ERROR_REVISION_MISMATCH);
 		goto fail;
 	}
-
-	ring->base = MapViewOfFile(ring->section, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, size);
+	ring->base = MapViewOfFile(ring->section, FILE_MAP_READ, 0, 0, size);
 	if (!ring->base)
 		goto fail;
 	ring->header = (ShadowCameraRingHeader*)ring->base;
 	ring->size = size;
+
+	/* the readers' section: read-write when this reader may, else it just does not count */
+	ring->readersSection = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, names.readers);
+	if (ring->readersSection)
+		ring->readers = MapViewOfFile(ring->readersSection, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
+		                              sizeof(ShadowCameraRingReaders));
+	if (!ring->readers)
+		ring->readersError = GetLastError();
+	else if ((ring->readers->magic != SHADOW_CAMERA_RING_MAGIC) ||
+	         (ring->readers->version != SHADOW_CAMERA_RING_VERSION))
+	{
+		(void)UnmapViewOfFile(ring->readers);
+		ring->readers = NULL;
+		ring->readersError = ERROR_REVISION_MISMATCH;
+	}
 	*error = ERROR_SUCCESS;
 	return ring;
 
@@ -280,6 +328,11 @@ HANDLE shadow_camera_ring_event(const ShadowCameraRing* ring)
 	return ring ? ring->event : NULL;
 }
 
+DWORD shadow_camera_ring_readers_error(const ShadowCameraRing* ring)
+{
+	return ring ? ring->readersError : ERROR_INVALID_HANDLE;
+}
+
 static LONG64 ring_load64(volatile LONG64* value)
 {
 	return InterlockedCompareExchange64(value, 0, 0);
@@ -305,13 +358,13 @@ void shadow_camera_ring_write(ShadowCameraRing* ring, const BYTE* nv12)
 
 LONG shadow_camera_ring_readers(const ShadowCameraRing* ring)
 {
-	if (!ring)
+	if (!ring || !ring->readers)
 		return 0;
-	ShadowCameraRingHeader* h = ring->header;
-	const LONG readers = InterlockedCompareExchange(&h->readers, 0, 0);
+	ShadowCameraRingReaders* r = ring->readers;
+	const LONG readers = InterlockedCompareExchange(&r->readers, 0, 0);
 	if (readers <= 0)
 		return 0;
-	const UINT64 tick = (UINT64)ring_load64(&h->readerTick);
+	const UINT64 tick = (UINT64)ring_load64(&r->readerTick);
 	if ((tick == 0) || (GetTickCount64() - tick > SHADOW_CAMERA_RING_READER_TIMEOUT_MS))
 		return 0;
 	return readers;
@@ -321,16 +374,20 @@ BOOL shadow_camera_ring_read(ShadowCameraRing* ring, BYTE* dst, LONG pitch, UINT
 {
 	if (!ring || !dst)
 		return FALSE;
-	ShadowCameraRingHeader* h = ring->header;
+	const ShadowCameraRingHeader* h = ring->header;
 	if ((pitch < 0) || ((UINT32)pitch < h->width))
 		return FALSE;
 
 	for (int attempt = 0; attempt < 8; attempt++)
 	{
-		const LONG latest = InterlockedCompareExchange(&h->latest, 0, 0);
+		/* the frames are mapped read-only here: plain aligned reads (atomic on the 64-bit
+		 * targets), never an interlocked operation, which writes even when it changes nothing */
+		const LONG latest = h->latest;
+		MemoryBarrier();
 		if ((latest < 0) || ((UINT32)latest >= SHADOW_CAMERA_RING_SLOTS))
 			return FALSE;
-		const LONG64 before = ring_load64(&h->slotSequence[latest]);
+		const LONG64 before = h->slotSequence[latest];
+		MemoryBarrier();
 		if (before & 1)
 			continue; /* being written: the writer moves on to the next slot */
 
@@ -344,10 +401,11 @@ BOOL shadow_camera_ring_read(ShadowCameraRing* ring, BYTE* dst, LONG pitch, UINT
 				memcpy(dst + (size_t)y * (size_t)pitch, src + (size_t)y * h->width, h->width);
 		}
 		MemoryBarrier();
-		if (ring_load64(&h->slotSequence[latest]) != before)
+		if (h->slotSequence[latest] != before)
 			continue; /* overwritten while copying */
 
-		(void)InterlockedExchange64(&h->readerTick, (LONG64)GetTickCount64());
+		if (ring->readers)
+			(void)InterlockedExchange64(&ring->readers->readerTick, (LONG64)GetTickCount64());
 		if (frame)
 			*frame = (UINT64)(before / 2);
 		return TRUE;
@@ -357,14 +415,14 @@ BOOL shadow_camera_ring_read(ShadowCameraRing* ring, BYTE* dst, LONG pitch, UINT
 
 void shadow_camera_ring_reader(ShadowCameraRing* ring, BOOL started)
 {
-	if (!ring || ring->writer || (ring->counted == started))
+	if (!ring || ring->writer || !ring->readers || (ring->counted == started))
 		return;
 	ring->counted = started;
 	if (started)
 	{
-		(void)InterlockedExchange64(&ring->header->readerTick, (LONG64)GetTickCount64());
-		(void)InterlockedIncrement(&ring->header->readers);
+		(void)InterlockedExchange64(&ring->readers->readerTick, (LONG64)GetTickCount64());
+		(void)InterlockedIncrement(&ring->readers->readers);
 	}
 	else
-		(void)InterlockedDecrement(&ring->header->readers);
+		(void)InterlockedDecrement(&ring->readers->readers);
 }

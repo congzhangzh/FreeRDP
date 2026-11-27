@@ -59,8 +59,10 @@
 #include <mfobjects.h>
 #include <ks.h>
 #include <ksproxy.h>
+#include <sddl.h>
 
 #include <cstdarg>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <new>
@@ -146,6 +148,101 @@ namespace
 		Log("%s {%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}", what, (unsigned long)g.Data1,
 		    g.Data2, g.Data3, g.Data4[0], g.Data4[1], g.Data4[2], g.Data4[3], g.Data4[4],
 		    g.Data4[5], g.Data4[6], g.Data4[7]);
+	}
+
+	/* a SID as "DOMAIN\name (S-1-...)" */
+	void SidText(PSID sid, char* text, size_t size)
+	{
+		LPWSTR string = nullptr;
+		WCHAR name[128] = {};
+		WCHAR domain[128] = {};
+		DWORD nameLength = ARRAYSIZE(name);
+		DWORD domainLength = ARRAYSIZE(domain);
+		SID_NAME_USE use = SidTypeUnknown;
+		(void)ConvertSidToStringSidW(sid, &string);
+		const BOOL named =
+		    LookupAccountSidW(nullptr, sid, name, &nameLength, domain, &domainLength, &use);
+		(void)_snprintf_s(text, size, _TRUNCATE, "%ls%ls%ls (%ls)", named ? domain : L"",
+		                  (named && domain[0]) ? L"\\" : L"", named ? name : L"?",
+		                  string ? string : L"?");
+		if (string)
+			LocalFree(string);
+	}
+
+	void* TokenInfo(HANDLE token, TOKEN_INFORMATION_CLASS what)
+	{
+		DWORD length = 0;
+		(void)GetTokenInformation(token, what, nullptr, 0, &length);
+		if (length == 0)
+			return nullptr;
+		void* info = calloc(1, length);
+		if (info && !GetTokenInformation(token, what, info, length, &length))
+		{
+			free(info);
+			return nullptr;
+		}
+		return info;
+	}
+
+	void LogGroups(const char* what, const TOKEN_GROUPS* groups)
+	{
+		if (!groups)
+		{
+			Log("token %s: none", what);
+			return;
+		}
+		Log("token %s: %lu", what, groups->GroupCount);
+		for (DWORD i = 0; i < groups->GroupCount; i++)
+		{
+			char sid[512] = {};
+			SidText(groups->Groups[i].Sid, sid, sizeof(sid));
+			Log("  %s attributes 0x%08lx", sid, groups->Groups[i].Attributes);
+		}
+	}
+
+	/* the token that was refused: what the ring's security must allow (once per process) */
+	void LogToken(const char* why)
+	{
+		static volatile LONG logged = 0;
+		if (InterlockedExchange(&logged, 1) != 0)
+			return;
+		HANDLE token = nullptr;
+		if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+		{
+			Log("token (%s): OpenProcessToken failed: %lu", why, GetLastError());
+			return;
+		}
+		Log("token (%s): restricted %d", why, IsTokenRestricted(token) ? 1 : 0);
+		TOKEN_USER* user = static_cast<TOKEN_USER*>(TokenInfo(token, TokenUser));
+		if (user)
+		{
+			char sid[512] = {};
+			SidText(user->User.Sid, sid, sizeof(sid));
+			Log("token user: %s", sid);
+		}
+		TOKEN_MANDATORY_LABEL* label =
+		    static_cast<TOKEN_MANDATORY_LABEL*>(TokenInfo(token, TokenIntegrityLevel));
+		if (label)
+		{
+			char sid[512] = {};
+			SidText(label->Label.Sid, sid, sizeof(sid));
+			Log("token integrity: %s", sid);
+		}
+		DWORD appContainer = 0;
+		DWORD length = 0;
+		if (GetTokenInformation(token, TokenIsAppContainer, &appContainer, sizeof(appContainer),
+		                        &length))
+			Log("token app container: %lu", appContainer);
+		TOKEN_GROUPS* groups = static_cast<TOKEN_GROUPS*>(TokenInfo(token, TokenGroups));
+		LogGroups("groups", groups);
+		TOKEN_GROUPS* restricted =
+		    static_cast<TOKEN_GROUPS*>(TokenInfo(token, TokenRestrictedSids));
+		LogGroups("restricted SIDs", restricted);
+		free(user);
+		free(label);
+		free(groups);
+		free(restricted);
+		(void)CloseHandle(token);
 	}
 
 #define CAMERA_RETURN_IF_FAILED(what, expr)         \
@@ -874,9 +971,16 @@ namespace
 				const ShadowCameraRingHeader* h = shadow_camera_ring_header(ring_);
 				format = { h->width, h->height, h->fps };
 			}
-			Log("source %p: ring %s (error %lu), NV12 %ux%u at %u fps", (void*)this,
-			    ring_ ? "open" : "not open", ring_ ? 0ul : error, format.width, format.height,
-			    format.fps);
+			const DWORD readersError = ring_ ? shadow_camera_ring_readers_error(ring_) : 0;
+			Log("source %p: ring %s (error %lu), readers' section %s (error %lu), NV12 %ux%u at %u "
+			    "fps",
+			    (void*)this, ring_ ? "open" : "not open", ring_ ? 0ul : error,
+			    (ring_ && !readersError) ? "open" : "not open", readersError, format.width,
+			    format.height, format.fps);
+			if (!ring_)
+				LogToken("the ring did not open");
+			else if (readersError)
+				LogToken("the readers' section did not open");
 
 			CAMERA_RETURN_IF_FAILED("MFCreateEventQueue", MFCreateEventQueue(&queue_));
 			CAMERA_RETURN_IF_FAILED("MFCreateAttributes", MFCreateAttributes(&attributes_, 8));
