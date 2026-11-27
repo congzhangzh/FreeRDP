@@ -1512,7 +1512,10 @@ static BOOL libavcodec_init(H264_CONTEXT* h264)
 
 		if (!sys->codecEncoder)
 		{
-			WLog_Print(h264->log, WLOG_ERROR, "Failed to initialize H264 encoder");
+			/* a decoders-only libavcodec (the LGPL build of release kits) has no encoder: not an
+			 * error, h264.c's codec check asks for one only to learn what this build supports */
+			WLog_Print(h264->log, WLOG_INFO, "libavcodec has no %s encoder",
+			           avcodec_get_name(codecId));
 			goto EXCEPTION;
 		}
 	}
