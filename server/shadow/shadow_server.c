@@ -45,6 +45,9 @@
 #include "shadow_stats_ipc.h"
 #include "shadow_config.h"
 #include "shadow_cliprdr.h"
+#if defined(WITH_SHADOW_CAMERA)
+#include "camera/shadow_camera.h"
+#endif
 
 #define TAG SERVER_TAG("shadow")
 
@@ -1460,6 +1463,12 @@ int shadow_server_start(rdpShadowServer* server)
 		}
 	}
 
+#if defined(WITH_SHADOW_CAMERA)
+	/* before the first client: the camera shows its still from the start */
+	if (!shadow_camera_server_start(server))
+		return -1;
+#endif
+
 	if (!(server->thread =
 	          CreateThread(nullptr, 0, shadow_server_thread, (void*)server, 0, nullptr)))
 	{
@@ -1483,6 +1492,10 @@ int shadow_server_stop(rdpShadowServer* server)
 		if (server->listener && server->listener->Close)
 			server->listener->Close(server->listener);
 	}
+
+#if defined(WITH_SHADOW_CAMERA)
+	shadow_camera_server_stop(server);
+#endif
 
 	if (server->screen)
 	{
