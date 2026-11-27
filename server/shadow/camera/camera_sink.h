@@ -88,15 +88,16 @@ extern "C"
 		BOOL (*moduleVersion)(char* buffer, size_t size);
 	} ShadowCameraV4l2Ops;
 
-/** the label v4l2loopback devices of ours are given (card_label=), preferred when several */
+/** the label a v4l2loopback device of ours is given (card_label=): the only one used */
 #define SHADOW_CAMERA_V4L2_LABEL "FreeRDP Camera"
 /** the devices looked at: /dev/video0 to /dev/video63 */
 #define SHADOW_CAMERA_V4L2_MAX_DEVICES 64
 
-	/** Finds a v4l2loopback device (VIDIOC_QUERYCAP driver "v4l2 loopback" with video
-	 *  output), the one labelled SHADOW_CAMERA_V4L2_LABEL first, or opens device when given,
-	 *  and sets it to YUYV width x height at fps. Without one it logs exactly one line,
-	 *  "camera: no v4l2loopback device", and returns nullptr. ops nullptr: the real calls.
+	/** Finds the v4l2loopback device (VIDIOC_QUERYCAP driver "v4l2 loopback" with video
+	 *  output) labelled SHADOW_CAMERA_V4L2_LABEL, or opens device when given (labelled or
+	 *  not), and sets it to YUYV width x height at fps. An unlabelled loopback is never used
+	 *  unless named: it is somebody else's. Without one it logs exactly one line (none at all;
+	 *  none labelled) and returns nullptr. ops nullptr: the real calls.
 	 *  Its readers come from v4l2loopback's client usage events (0.13.0 and later); an older
 	 *  module can't tell, which it logs in exactly one line. */
 	WINPR_ATTR_NODISCARD ShadowCameraSink*
