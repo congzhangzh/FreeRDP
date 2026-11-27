@@ -30,6 +30,12 @@
 #include <freerdp/settings.h>
 
 #include <freerdp/log.h>
+
+#if defined(WITH_SHADOW_CAMERA_MAC)
+#include <string.h>
+
+#include "camera_activate.h"
+#endif
 #define TAG SERVER_TAG("shadow")
 
 WINPR_ATTR_NODISCARD
@@ -54,6 +60,12 @@ static void dump_security_settings(const rdpSettings* settings)
 
 int main(int argc, char** argv)
 {
+#if defined(WITH_SHADOW_CAMERA_MAC)
+	/* the camera extension's commands (activate, deactivate, status, pattern): an
+	 * OSSystemExtensionRequest has to come from the app's main executable, this one */
+	if ((argc > 1) && (strcmp(argv[1], "--camera-extension") == 0))
+		return cam_mac_camera_main(argc - 1, &argv[1]);
+#endif
 	int status = 0;
 	DWORD dwExitCode = 0;
 	COMMAND_LINE_ARGUMENT_A shadow_args[] = {
