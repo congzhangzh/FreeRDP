@@ -1577,6 +1577,16 @@ static BOOL mac_shadow_camera_sample(rdpShadowSubsystem* subsystem, rdpShadowCli
 	return TRUE;
 }
 
+BOOL mac_shadow_camera_readers_active(rdpShadowSubsystem* subsystem)
+{
+	macShadowSubsystem* mac = (macShadowSubsystem*)subsystem;
+	if (!mac)
+		return FALSE;
+	if (mac->remote)
+		return mac_remote_camera_readers_active(mac->remote);
+	return cam_mac_sink_readers_active(mac->cameraSink) ? TRUE : FALSE;
+}
+
 /* the owner's camera stopped: the extension shows its still picture until the next owner */
 static void mac_shadow_camera_stop(rdpShadowSubsystem* subsystem,
                                    WINPR_ATTR_UNUSED rdpShadowClient* owner)
@@ -1690,6 +1700,14 @@ static rdpShadowSubsystem* mac_shadow_subsystem_new(void)
 #if defined(WITH_SHADOW_CAMERA_MAC)
 	mac->common.CameraSample = mac_shadow_camera_sample;
 	mac->common.CameraStop = mac_shadow_camera_stop;
+	/* in a user's session the server's own sink watches who reads the camera from the start
+	 * (as a daemon its agent does, in the session on the console) */
+	if (!mac->remote)
+	{
+		mac->cameraSink = cam_mac_sink_new(nullptr);
+		if (!mac->cameraSink || !cam_mac_sink_watch_readers(mac->cameraSink, nullptr, nullptr))
+			WLog_WARN(TAG, "camera: cannot watch who reads it");
+	}
 #endif
 #ifdef WITH_PAM
 	mac->common.Authenticate = mac_shadow_pam_authenticate;
