@@ -273,6 +273,35 @@ INT32 avc420_decompress(H264_CONTEXT* h264, const BYTE* pSrcData, UINT32 SrcSize
 	                       nDstHeight, regionRects, numRegionRects);
 }
 
+/* A picture was decoded. The first one after the decoder was selected names it in the log,
+ * the same line for every backend: "HEVC decoder: VideoToolbox (hardware)". */
+static void h264_last_decode_picture(H264_CONTEXT* h264)
+{
+	WINPR_ASSERT(h264);
+	h264->lastDecode.status = FREERDP_DECODE_PICTURE;
+	if (h264->decoderNamed)
+		return;
+	h264->decoderNamed = TRUE;
+
+	const char* hardware = "unknown";
+	switch (h264->lastDecode.hardware)
+	{
+		case FREERDP_DECODE_HARDWARE_YES:
+			hardware = "hardware";
+			break;
+		case FREERDP_DECODE_HARDWARE_NO:
+			hardware = "software";
+			break;
+		default:
+			break;
+	}
+	const char* codec = "H.264";
+	if (h264->hevc)
+		codec = h264->hevc444 ? "HEVC 4:4:4" : "HEVC";
+	WLog_Print(h264->log, WLOG_INFO, "%s decoder: %s (%s)", codec,
+	           h264->lastDecode.backend ? h264->lastDecode.backend : "unknown", hardware);
+}
+
 INT32 h26X_decompress(H264_CONTEXT* h264, const BYTE* pSrcData, UINT32 SrcSize, BYTE* pDstData,
                       DWORD DstFormat, UINT32 nDstStep, WINPR_ATTR_UNUSED UINT32 nDstWidth,
                       WINPR_ATTR_UNUSED UINT32 nDstHeight, const RECTANGLE_16* regionRects,
@@ -307,7 +336,7 @@ INT32 h26X_decompress(H264_CONTEXT* h264, const BYTE* pSrcData, UINT32 SrcSize, 
 	{
 		if (!yuv444_planes_decode(h264, DstFormat, pDstData, nDstStep, regionRects, numRegionRects))
 			return -1002;
-		h264->lastDecode.status = FREERDP_DECODE_PICTURE;
+		h264_last_decode_picture(h264);
 		return 1;
 	}
 
@@ -318,7 +347,7 @@ INT32 h26X_decompress(H264_CONTEXT* h264, const BYTE* pSrcData, UINT32 SrcSize, 
 	                           pDstData, nDstStep, regionRects, numRegionRects))
 		return -1002;
 
-	h264->lastDecode.status = FREERDP_DECODE_PICTURE;
+	h264_last_decode_picture(h264);
 	return 1;
 }
 
@@ -1042,6 +1071,7 @@ static BOOL h264_context_init(H264_CONTEXT* h264)
 	h264->subsystem = nullptr;
 	h264->yuv444 = FALSE;
 	h264->decoderHardware = FREERDP_DECODE_HARDWARE_UNKNOWN;
+	h264->decoderNamed = FALSE;
 	if (!InitOnceExecuteOnce(&subsystems_once, h264_register_subsystems, nullptr, nullptr))
 		return FALSE;
 
