@@ -99,6 +99,7 @@ addtargetwithresourcefile(${MODULE_NAME} "FALSE" "${FREERDP_VERSION}" SRCS)
 
 if(WITH_SHADOW_CAMERA)
   target_compile_definitions(${MODULE_NAME} PRIVATE WITH_SHADOW_CAMERA)
+  target_link_libraries(${MODULE_NAME} PRIVATE ${SHADOW_CAMERA_LIBS})
 endif()
 
 if(WITH_RDTK)
