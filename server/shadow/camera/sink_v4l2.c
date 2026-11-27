@@ -51,6 +51,29 @@
  * (v4l2loopback blocks them until a new frame comes) keep running */
 #define V4L2_PLACEHOLDER_INTERVAL_MS 200
 
+/*
+ * v4l2loopback's client usage event, not in the kernel's headers: v4l2loopback.c of 0.13.0,
+ * lines 802-809 (and of 0.15.4, lines 829-836):
+ *   #define V4L2LOOPBACK_EVENT_BASE (V4L2_EVENT_PRIVATE_START)
+ *   #define V4L2LOOPBACK_EVENT_OFFSET 0x08E00000
+ *   #define V4L2_EVENT_PRI_CLIENT_USAGE (V4L2LOOPBACK_EVENT_BASE + V4L2LOOPBACK_EVENT_OFFSET + 1)
+ *   struct v4l2_event_client_usage { __u32 count; };
+ * The count is in the first 4 bytes of v4l2_event.u. It is queued when a reader starts or stops
+ * streaming and when it closes (0.13.0: count = active_readers, lines 1917, 1948, 2252; 0.15.4:
+ * 1 while a reader holds the capture token, lines 2092, 2142), and once at subscription with
+ * V4L2_EVENT_SUB_FL_SEND_INITIAL. 0.12.7 subscribes V4L2_EVENT_CTRL only and fails the rest
+ * with EINVAL (v4l2loopback.c:1779-1788): that is how an older module is told apart.
+ * QUERYCAP can't tell the module's version: the kernel sets cap->version to its own
+ * (LINUX_VERSION_CODE, drivers/media/v4l2-core/v4l2-ioctl.c:1088 of 6.8) before the driver's
+ * querycap, and 0.12.7 sets its own only on kernels older than 3.1 (v4l2loopback.c:722-725).
+ * The version comes from /sys/module/v4l2loopback/version, which 0.13.0 declares
+ * (MODULE_VERSION, v4l2loopback.c:63-66) and 0.12.7 does not.
+ */
+#define V4L2LOOPBACK_EVENT_CLIENT_USAGE (V4L2_EVENT_PRIVATE_START + 0x08E00000 + 1)
+
+/* at most this many events taken in one Readers() */
+#define V4L2_MAX_EVENTS_PER_POLL 64
+
 typedef struct
 {
 	ShadowCameraSink sink;
@@ -59,6 +82,8 @@ typedef struct
 	size_t frameSize;
 	char path[64];
 	BOOL writeFailed;
+	BOOL usageEvents; /* the module sends client usage events */
+	INT32 readers;
 } V4l2Sink;
 
 static int v4l2_real_open(const char* path, int flags)
@@ -86,8 +111,20 @@ static int v4l2_real_close(int fd)
 	return close(fd);
 }
 
+static BOOL v4l2_real_module_version(char* buffer, size_t size)
+{
+	FILE* fp = fopen("/sys/module/v4l2loopback/version", "r");
+	if (!fp)
+		return FALSE;
+	const BOOL ok = fgets(buffer, (int)size, fp) != nullptr;
+	(void)fclose(fp);
+	if (ok)
+		buffer[strcspn(buffer, "\r\n")] = '\0';
+	return ok && (buffer[0] != '\0');
+}
+
 static const ShadowCameraV4l2Ops v4l2_real_ops = { v4l2_real_open, v4l2_real_ioctl, v4l2_real_write,
-	                                               v4l2_real_close };
+	                                               v4l2_real_close, v4l2_real_module_version };
 
 /* 1: a v4l2loopback device with video output, labelled ours; 0: one not labelled ours;
  * -1: none (not v4l2loopback, no output, or QUERYCAP failed) */
@@ -190,6 +227,51 @@ static BOOL v4l2_sink_write(ShadowCameraSink* sink, const ShadowCameraImage* fra
 	return TRUE;
 }
 
+static INT32 v4l2_sink_readers(ShadowCameraSink* sink)
+{
+	V4l2Sink* vs = (V4l2Sink*)sink;
+	WINPR_ASSERT(vs);
+
+	if (!vs->usageEvents)
+		return -1;
+
+	/* the fd is non-blocking: DQEVENT fails with ENOENT once none is pending */
+	for (size_t i = 0; i < V4L2_MAX_EVENTS_PER_POLL; i++)
+	{
+		struct v4l2_event ev = WINPR_C_ARRAY_INIT;
+		if (vs->ops.ioctl(vs->fd, VIDIOC_DQEVENT, &ev) < 0)
+			break;
+		if (ev.type != V4L2LOOPBACK_EVENT_CLIENT_USAGE)
+			continue;
+		UINT32 count = 0;
+		memcpy(&count, ev.u.data, sizeof(count));
+		vs->readers = (count > INT32_MAX) ? INT32_MAX : (INT32)count;
+	}
+	return vs->readers;
+}
+
+/* subscribes to the client usage events, or says once that this module can't tell */
+static void v4l2_subscribe_usage(V4l2Sink* vs)
+{
+	struct v4l2_event_subscription sub = WINPR_C_ARRAY_INIT;
+	sub.type = V4L2LOOPBACK_EVENT_CLIENT_USAGE;
+	sub.flags = V4L2_EVENT_SUB_FL_SEND_INITIAL;
+	if (vs->ops.ioctl(vs->fd, VIDIOC_SUBSCRIBE_EVENT, &sub) == 0)
+	{
+		vs->usageEvents = TRUE;
+		vs->readers = 0;
+		return;
+	}
+
+	char version[32] = WINPR_C_ARRAY_INIT;
+	if (!vs->ops.moduleVersion || !vs->ops.moduleVersion(version, sizeof(version)))
+		(void)snprintf(version, sizeof(version), "before 0.13");
+	WLog_INFO(TAG,
+	          "camera: v4l2loopback %s can't tell when an app reads it; the camera stays on while "
+	          "connected; 0.13+ fixes this",
+	          version);
+}
+
 static void v4l2_sink_free(ShadowCameraSink* sink)
 {
 	V4l2Sink* vs = (V4l2Sink*)sink;
@@ -221,6 +303,8 @@ ShadowCameraSink* shadow_camera_sink_v4l2_new(const char* device, UINT32 width, 
 	vs->sink.placeholderIntervalMs = V4L2_PLACEHOLDER_INTERVAL_MS;
 	vs->sink.Write = v4l2_sink_write;
 	vs->sink.Free = v4l2_sink_free;
+	vs->sink.Readers = v4l2_sink_readers;
+	vs->readers = -1;
 
 	int score = -1;
 	if (device)
@@ -264,6 +348,7 @@ ShadowCameraSink* shadow_camera_sink_v4l2_new(const char* device, UINT32 width, 
 		v4l2_sink_free(&vs->sink);
 		return nullptr;
 	}
+	v4l2_subscribe_usage(vs);
 
 	WLog_INFO(TAG, "camera: v4l2loopback %s, YUYV %" PRIu32 "x%" PRIu32 " at %" PRIu32 " fps",
 	          vs->path, width, height, fps);

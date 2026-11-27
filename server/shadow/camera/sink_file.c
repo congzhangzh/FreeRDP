@@ -38,6 +38,10 @@
  *   # format=YUY2 width=1280 height=720 fps=30 frame_size=1843200
  *   <number> <ms since the sink opened> <placeholder|client> <offset> [<detail>]
  * Each line is flushed with its frame, so a test can read them while the server runs.
+ *
+ * <dir>/readers, written by the test: how many apps read the camera ("0", "1", ...). Each change
+ * the camera sees is noted in the index as "# readers <n> <ms since the sink opened>". Without
+ * the file the sink can't tell (-1), and the client's camera runs while it owns the camera.
  */
 typedef struct
 {
@@ -47,6 +51,8 @@ typedef struct
 	size_t frameSize;
 	UINT64 count;
 	UINT64 startMs;
+	char* readersPath;
+	INT32 readers; /* the last value seen, -2 before the first */
 } FileSink;
 
 static BOOL file_sink_write(ShadowCameraSink* sink, const ShadowCameraImage* frame,
@@ -78,6 +84,31 @@ static BOOL file_sink_write(ShadowCameraSink* sink, const ShadowCameraImage* fra
 	return TRUE;
 }
 
+static INT32 file_sink_readers(ShadowCameraSink* sink)
+{
+	FileSink* fs = (FileSink*)sink;
+	WINPR_ASSERT(fs);
+
+	INT32 readers = -1;
+	FILE* fp = winpr_fopen(fs->readersPath, "r");
+	if (fp)
+	{
+		int value = -1;
+		if ((fscanf(fp, "%d", &value) == 1) && (value >= 0))
+			readers = value;
+		(void)fclose(fp);
+	}
+
+	if (readers != fs->readers)
+	{
+		(void)fprintf(fs->index, "# readers %" PRId32 " %" PRIu64 "\n", readers,
+		              GetTickCount64() - fs->startMs);
+		(void)fflush(fs->index);
+		fs->readers = readers;
+	}
+	return readers;
+}
+
 static void file_sink_free(ShadowCameraSink* sink)
 {
 	FileSink* fs = (FileSink*)sink;
@@ -87,6 +118,7 @@ static void file_sink_free(ShadowCameraSink* sink)
 		(void)fclose(fs->frames);
 	if (fs->index)
 		(void)fclose(fs->index);
+	free(fs->readersPath);
 	free(fs);
 }
 
@@ -119,13 +151,16 @@ ShadowCameraSink* shadow_camera_sink_file_new(const char* dir, SHADOW_CAMERA_PIX
 	fs->sink.placeholderIntervalMs = 0;
 	fs->sink.Write = file_sink_write;
 	fs->sink.Free = file_sink_free;
+	fs->sink.Readers = file_sink_readers;
+	fs->readers = -2;
 	fs->frameSize = frameSize;
 	fs->startMs = GetTickCount64();
 
 	char* framesPath =
 	    GetCombinedPath(dir, (format == SHADOW_CAMERA_PIXEL_NV12) ? "frames.nv12" : "frames.yuyv");
 	char* indexPath = GetCombinedPath(dir, "index.txt");
-	if (framesPath && indexPath)
+	fs->readersPath = GetCombinedPath(dir, "readers");
+	if (framesPath && indexPath && fs->readersPath)
 	{
 		fs->frames = winpr_fopen(framesPath, "wb");
 		fs->index = winpr_fopen(indexPath, "w");

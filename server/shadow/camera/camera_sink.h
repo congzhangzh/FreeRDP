@@ -57,10 +57,19 @@ extern "C"
 		                                   SHADOW_CAMERA_FRAME_KIND kind, const char* detail);
 		/** closes the sink and frees it */
 		void (*Free)(ShadowCameraSink* sink);
+		/** how many apps read the camera now, -1 when the sink can't tell (the client's camera
+		 *  then runs while it owns the virtual camera); called often (every
+		 *  SHADOW_CAMERA_READERS_POLL_MS), must not block. nullptr: can't tell. */
+		WINPR_ATTR_NODISCARD INT32 (*Readers)(ShadowCameraSink* sink);
 	};
 
+/** how often the camera asks a sink for its readers */
+#define SHADOW_CAMERA_READERS_POLL_MS 100u
+
 	/** A sink writing every frame to <dir>/frames.yuyv (or .nv12) and a line for each to
-	 *  <dir>/index.txt; for tests (CI), never the default. dir is created. */
+	 *  <dir>/index.txt; for tests (CI), never the default. dir is created.
+	 *  Its readers are what the file <dir>/readers says (a number, written by the test), each
+	 *  change noted in the index as "# readers <n>"; without the file it can't tell. */
 	WINPR_ATTR_NODISCARD ShadowCameraSink* shadow_camera_sink_file_new(const char* dir,
 	                                                                   SHADOW_CAMERA_PIXEL format,
 	                                                                   UINT32 width, UINT32 height,
@@ -74,6 +83,9 @@ extern "C"
 		int (*ioctl)(int fd, unsigned long request, void* arg);
 		SSIZE_T (*write)(int fd, const void* buffer, size_t size);
 		int (*close)(int fd);
+		/** the loaded module's version ("0.13.0"), from /sys/module/v4l2loopback/version;
+		 *  FALSE when it has none (0.12.x declares no MODULE_VERSION) */
+		BOOL (*moduleVersion)(char* buffer, size_t size);
 	} ShadowCameraV4l2Ops;
 
 /** the label v4l2loopback devices of ours are given (card_label=), preferred when several */
@@ -84,7 +96,9 @@ extern "C"
 	/** Finds a v4l2loopback device (VIDIOC_QUERYCAP driver "v4l2 loopback" with video
 	 *  output), the one labelled SHADOW_CAMERA_V4L2_LABEL first, or opens device when given,
 	 *  and sets it to YUYV width x height at fps. Without one it logs exactly one line,
-	 *  "camera: no v4l2loopback device", and returns nullptr. ops nullptr: the real calls. */
+	 *  "camera: no v4l2loopback device", and returns nullptr. ops nullptr: the real calls.
+	 *  Its readers come from v4l2loopback's client usage events (0.13.0 and later); an older
+	 *  module can't tell, which it logs in exactly one line. */
 	WINPR_ATTR_NODISCARD ShadowCameraSink*
 	shadow_camera_sink_v4l2_new(const char* device, UINT32 width, UINT32 height, UINT32 fps,
 	                            const ShadowCameraV4l2Ops* ops);

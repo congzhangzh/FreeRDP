@@ -18,6 +18,7 @@
  */
 
 #include <winpr/assert.h>
+#include <winpr/synch.h>
 
 #include "camera_policy.h"
 
@@ -197,4 +198,68 @@ BOOL shadow_camera_owner_is(const ShadowCameraOwner* owner, const void* camera)
 {
 	WINPR_ASSERT(owner);
 	return camera && (owner->owner == camera);
+}
+
+SHADOW_CAMERA_ADMIT shadow_camera_admit(ShadowCameraOwner* owner, const void* camera,
+                                        BOOL mayInteract, BOOL hasCamera)
+{
+	WINPR_ASSERT(owner);
+	WINPR_ASSERT(camera);
+
+	if (!mayInteract)
+		return SHADOW_CAMERA_ADMIT_VIEW_ONLY;
+	if (!hasCamera)
+		return SHADOW_CAMERA_ADMIT_NO_CAMERA;
+	if (shadow_camera_owner_claim(owner, camera) != SHADOW_CAMERA_CLAIM_GRANTED)
+		return SHADOW_CAMERA_ADMIT_OWNED;
+	return SHADOW_CAMERA_ADMIT_GRANTED;
+}
+
+BOOL shadow_camera_demand_update(ShadowCameraDemand* demand, INT32 readers, UINT64 nowMs,
+                                 UINT32* recheckMs)
+{
+	WINPR_ASSERT(demand);
+	WINPR_ASSERT(recheckMs);
+
+	*recheckMs = INFINITE;
+	if (readers != 0)
+	{
+		/* a reader, or a sink that can't tell: run */
+		demand->on = TRUE;
+		demand->leaving = FALSE;
+		return TRUE;
+	}
+
+	if (!demand->on)
+		return FALSE;
+
+	if (!demand->leaving)
+	{
+		demand->leaving = TRUE;
+		demand->zeroSince = nowMs;
+	}
+	const UINT64 elapsed = (nowMs > demand->zeroSince) ? nowMs - demand->zeroSince : 0;
+	if (elapsed >= SHADOW_CAMERA_DEMAND_DEBOUNCE_MS)
+	{
+		demand->on = FALSE;
+		demand->leaving = FALSE;
+		return FALSE;
+	}
+	*recheckMs = (UINT32)(SHADOW_CAMERA_DEMAND_DEBOUNCE_MS - elapsed);
+	return TRUE;
+}
+
+SHADOW_CAMERA_STREAM_ACTION shadow_camera_stream_action(SHADOW_CAMERA_STREAM state, BOOL wanted)
+{
+	switch (state)
+	{
+		case SHADOW_CAMERA_STREAM_IDLE:
+			return wanted ? SHADOW_CAMERA_STREAM_START : SHADOW_CAMERA_STREAM_NONE;
+		case SHADOW_CAMERA_STREAM_STREAMING:
+			return wanted ? SHADOW_CAMERA_STREAM_NONE : SHADOW_CAMERA_STREAM_STOP;
+		case SHADOW_CAMERA_STREAM_STARTING:
+		case SHADOW_CAMERA_STREAM_STOPPING:
+		default:
+			return SHADOW_CAMERA_STREAM_NONE;
+	}
 }
