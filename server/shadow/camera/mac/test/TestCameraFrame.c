@@ -31,14 +31,14 @@
 
 static int g_failures = 0;
 
-#define CHECK(cond)                                                       \
-	do                                                                    \
-	{                                                                     \
-		if (!(cond))                                                      \
-		{                                                                 \
+#define CHECK(cond)                                                               \
+	do                                                                            \
+	{                                                                             \
+		if (!(cond))                                                              \
+		{                                                                         \
 			(void)fprintf(stderr, "%s:%d: FAIL %s\n", __FILE__, __LINE__, #cond); \
-			g_failures++;                                                 \
-		}                                                                 \
+			g_failures++;                                                         \
+		}                                                                         \
 	} while (0)
 
 /* the pixel at icon coordinates (x, y) of a width x height picture (placeholder.c's frame) */
@@ -176,10 +176,10 @@ static void test_convert(void)
 	/* RGB32 (B, G, R, X): white, black, red, blue */
 	const uint8_t rgb32[16] = { 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 255, 0, 255, 0, 0, 0 };
 	CHECK(cam_frame_to_nv12(CAM_MAC_FORMAT_RGB32, 2, 2, rgb32, sizeof(rgb32), y, 2, uv, 2, 2, 2));
-	CHECK(y[0] == 235); /* white */
-	CHECK(y[1] == 16);  /* black */
-	CHECK(y[2] == 82);  /* red, BT.601 */
-	CHECK(y[3] == 41);  /* blue */
+	CHECK(y[0] == 235);                      /* white */
+	CHECK(y[1] == 16);                       /* black */
+	CHECK(y[2] == 82);                       /* red, BT.601 */
+	CHECK(y[3] == 41);                       /* blue */
 	CHECK((uv[0] == 128) && (uv[1] == 128)); /* the top left pixel's: white */
 
 	/* RGB24: one red pixel row */
@@ -192,10 +192,9 @@ static void test_h264(void)
 {
 	/* SPS, PPS (3-byte start code), an access unit delimiter, an IDR slice with a trailing
 	 * zero before a 3-byte start code, a non-IDR slice */
-	const uint8_t annexb[] = { 0,    0,    0,    1,    0x67, 0xAA, 0xBB, 0,    0,    1,
-		                       0x68, 0xCC, 0,    0,    0,    1,    0x09, 0xF0, 0,    0,
-		                       1,    0x65, 0x11, 0x22, 0x33, 0,    0,    0,    1,    0x41,
-		                       0x44 };
+	const uint8_t annexb[] = { 0,    0,    0,    1, 0x67, 0xAA, 0xBB, 0,    0,   1, 0x68,
+		                       0xCC, 0,    0,    0, 1,    0x09, 0xF0, 0,    0,   1, 0x65,
+		                       0x11, 0x22, 0x33, 0, 0,    0,    1,    0x41, 0x44 };
 	cam_h264_info info = { 0 };
 	CHECK(cam_h264_scan(annexb, sizeof(annexb), &info));
 	CHECK(info.nals == 5);
@@ -216,12 +215,40 @@ static void test_h264(void)
 	CHECK(!cam_h264_scan(junk, sizeof(junk), &info));
 }
 
+static void test_jpeg_size(void)
+{
+	/* SOI, APP0 (length 4), SOF0 640x360, EOI */
+	const uint8_t jpeg[] = { 0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0xAA, 0xBB, 0xFF, 0xC0, 0x00, 0x0B,
+		                     0x08, 0x01, 0x68, 0x02, 0x80, 0x01, 0x01, 0x11, 0x00, 0xFF, 0xD9 };
+	uint32_t w = 0;
+	uint32_t h = 0;
+	CHECK(cam_jpeg_frame_size(jpeg, sizeof(jpeg), &w, &h));
+	CHECK((w == 640) && (h == 360));
+	/* the garbage TestCameraDecode feeds the decoder: no frame header */
+	const uint8_t junk[64] = { 0xFF, 0xD8, 0xFF, 0x00 };
+	CHECK(!cam_jpeg_frame_size(junk, sizeof(junk), &w, &h));
+	/* no SOI */
+	CHECK(!cam_jpeg_frame_size(jpeg + 2, sizeof(jpeg) - 2, &w, &h));
+	/* a segment longer than the data */
+	uint8_t cut[sizeof(jpeg)];
+	memcpy(cut, jpeg, sizeof(jpeg));
+	cut[5] = 0x40;
+	CHECK(!cam_jpeg_frame_size(cut, sizeof(cut), &w, &h));
+	/* truncated inside the SOF */
+	CHECK(!cam_jpeg_frame_size(jpeg, 14, &w, &h));
+	/* DHT (C4) is not a frame header */
+	memcpy(cut, jpeg, sizeof(jpeg));
+	cut[9] = 0xC4;
+	CHECK(!cam_jpeg_frame_size(cut, sizeof(cut), &w, &h));
+}
+
 int main(void)
 {
 	test_placeholder();
 	test_sizes();
 	test_convert();
 	test_h264();
+	test_jpeg_size();
 	if (g_failures)
 		(void)fprintf(stderr, "TestCameraFrame: %d check(s) failed\n", g_failures);
 	else

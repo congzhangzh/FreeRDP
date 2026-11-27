@@ -28,6 +28,7 @@
 
 #include "camera_config.h"
 #include "camera_decode.h"
+#include "camera_frame.h"
 #include "camera_h264.h"
 
 struct cam_mac_decoder
@@ -40,9 +41,9 @@ struct cam_mac_decoder
 	CMVideoFormatDescriptionRef description;
 	VTDecompressionSessionRef session;
 	/* H.264: the parameter sets of the session, to see when they change */
-	uint8_t* sps;
+	uint8_t *sps;
 	size_t spsSize;
-	uint8_t* pps;
+	uint8_t *pps;
 	size_t ppsSize;
 	uint64_t decoded;
 	uint64_t failed;
@@ -58,7 +59,7 @@ static os_log_t decode_log(void)
 	return log;
 }
 
-static void drop_session(camMacDecoder* decoder)
+static void drop_session(camMacDecoder *decoder)
 {
 	if (decoder->session)
 	{
@@ -68,17 +69,17 @@ static void drop_session(camMacDecoder* decoder)
 	}
 }
 
-static bool make_session(camMacDecoder* decoder)
+static bool make_session(camMacDecoder *decoder)
 {
 	drop_session(decoder);
 	if (!decoder->description)
 		return false;
 	/* VideoToolbox converts (4:2:2 JPEG, full range) and scales to what it is asked for */
-	NSDictionary* destination = @{
-		(id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
-		(id)kCVPixelBufferWidthKey : @(decoder->dstWidth),
-		(id)kCVPixelBufferHeightKey : @(decoder->dstHeight),
-		(id)kCVPixelBufferIOSurfacePropertiesKey : @{},
+	NSDictionary *destination = @{
+		(id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+		(id)kCVPixelBufferWidthKey: @(decoder->dstWidth),
+		(id)kCVPixelBufferHeightKey: @(decoder->dstHeight),
+		(id)kCVPixelBufferIOSurfacePropertiesKey: @{},
 	};
 	/* no callback: each frame's comes with VTDecompressionSessionDecodeFrameWithOutputHandler */
 	const OSStatus status = VTDecompressionSessionCreate(
@@ -94,21 +95,21 @@ static bool make_session(camMacDecoder* decoder)
 	return true;
 }
 
-static bool same_bytes(const uint8_t* a, size_t aSize, const uint8_t* b, size_t bSize)
+static bool same_bytes(const uint8_t *a, size_t aSize, const uint8_t *b, size_t bSize)
 {
 	return a && b && (aSize == bSize) && (memcmp(a, b, aSize) == 0);
 }
 
-static uint8_t* copy_bytes(const uint8_t* data, size_t size)
+static uint8_t *copy_bytes(const uint8_t *data, size_t size)
 {
-	uint8_t* copy = malloc(size);
+	uint8_t *copy = malloc(size);
 	if (copy)
 		memcpy(copy, data, size);
 	return copy;
 }
 
 /* a new SPS or PPS: a new format description and session */
-static bool h264_parameters(camMacDecoder* decoder, const cam_h264_info* info)
+static bool h264_parameters(camMacDecoder *decoder, const cam_h264_info *info)
 {
 	if (!info->sps || !info->pps)
 		return decoder->session != NULL;
@@ -128,7 +129,7 @@ static bool h264_parameters(camMacDecoder* decoder, const cam_h264_info* info)
 	if (decoder->description)
 		CFRelease(decoder->description);
 	decoder->description = NULL;
-	const uint8_t* sets[2] = { decoder->sps, decoder->pps };
+	const uint8_t *sets[2] = { decoder->sps, decoder->pps };
 	const size_t sizes[2] = { decoder->spsSize, decoder->ppsSize };
 	const OSStatus status = CMVideoFormatDescriptionCreateFromH264ParameterSets(
 	    kCFAllocatorDefault, 2, sets, sizes, 4, &decoder->description);
@@ -145,13 +146,13 @@ static bool h264_parameters(camMacDecoder* decoder, const cam_h264_info* info)
 	return make_session(decoder);
 }
 
-camMacDecoder* cam_mac_decoder_new(uint32_t format, uint32_t width, uint32_t height,
+camMacDecoder *cam_mac_decoder_new(uint32_t format, uint32_t width, uint32_t height,
                                    uint32_t dstWidth, uint32_t dstHeight)
 {
 	if (((format != CAM_MAC_FORMAT_H264) && (format != CAM_MAC_FORMAT_MJPG)) || (dstWidth == 0) ||
 	    (dstHeight == 0) || (dstWidth % 2) || (dstHeight % 2))
 		return NULL;
-	camMacDecoder* decoder = calloc(1, sizeof(camMacDecoder));
+	camMacDecoder *decoder = calloc(1, sizeof(camMacDecoder));
 	if (!decoder)
 		return NULL;
 	decoder->format = format;
@@ -175,7 +176,7 @@ camMacDecoder* cam_mac_decoder_new(uint32_t format, uint32_t width, uint32_t hei
 	return decoder;
 }
 
-void cam_mac_decoder_free(camMacDecoder* decoder)
+void cam_mac_decoder_free(camMacDecoder *decoder)
 {
 	if (!decoder)
 		return;
@@ -187,7 +188,7 @@ void cam_mac_decoder_free(camMacDecoder* decoder)
 	free(decoder);
 }
 
-static CMSampleBufferRef sample_of(CMVideoFormatDescriptionRef description, const uint8_t* data,
+static CMSampleBufferRef sample_of(CMVideoFormatDescriptionRef description, const uint8_t *data,
                                    size_t size)
 {
 	CMBlockBufferRef block = NULL;
@@ -202,13 +203,13 @@ static CMSampleBufferRef sample_of(CMVideoFormatDescriptionRef description, cons
 	}
 	CMSampleBufferRef sample = NULL;
 	const size_t sizes[1] = { size };
-	const OSStatus status = CMSampleBufferCreateReady(kCFAllocatorDefault, block, description, 1,
-	                                                  0, NULL, 1, sizes, &sample);
+	const OSStatus status = CMSampleBufferCreateReady(kCFAllocatorDefault, block, description, 1, 0,
+	                                                  NULL, 1, sizes, &sample);
 	CFRelease(block);
 	return (status == noErr) ? sample : NULL;
 }
 
-static CVPixelBufferRef decode_sample(camMacDecoder* decoder, CMSampleBufferRef sample)
+static CVPixelBufferRef decode_sample(camMacDecoder *decoder, CMSampleBufferRef sample)
 {
 	__block CVPixelBufferRef out = NULL;
 	__block OSStatus result = noErr;
@@ -216,8 +217,8 @@ static CVPixelBufferRef decode_sample(camMacDecoder* decoder, CMSampleBufferRef 
 	/* flags 0: synchronous, the handler runs before this returns */
 	OSStatus status = VTDecompressionSessionDecodeFrameWithOutputHandler(
 	    decoder->session, sample, 0, &info,
-	    ^(OSStatus frameStatus, VTDecodeInfoFlags frameInfo, CVImageBufferRef image,
-	      CMTime pts, CMTime duration) {
+	    ^(OSStatus frameStatus, VTDecodeInfoFlags frameInfo, CVImageBufferRef image, CMTime pts,
+	      CMTime duration) {
 		    (void)frameInfo;
 		    (void)pts;
 		    (void)duration;
@@ -238,21 +239,30 @@ static CVPixelBufferRef decode_sample(camMacDecoder* decoder, CMSampleBufferRef 
 	return out;
 }
 
-CVPixelBufferRef cam_mac_decoder_decode(camMacDecoder* decoder, const uint8_t* data, size_t size)
+CVPixelBufferRef cam_mac_decoder_decode(camMacDecoder *decoder, const uint8_t *data, size_t size)
 {
 	if (!decoder || !data || (size == 0))
 		return NULL;
 
 	CMSampleBufferRef sample = NULL;
 	if (decoder->format == CAM_MAC_FORMAT_MJPG)
+	{
+		/* the sample comes from the remote client: only a JPEG of the stream's own size is
+		 * handed to VideoToolbox, which turns even garbage into a frame (kit run 46032560521) */
+		uint32_t w = 0;
+		uint32_t h = 0;
+		if (!cam_jpeg_frame_size(data, size, &w, &h) || (w != decoder->width) ||
+		    (h != decoder->height))
+			return NULL;
 		sample = sample_of(decoder->description, data, size);
+	}
 	else
 	{
 		cam_h264_info info = { 0 };
 		if (!cam_h264_scan(data, size, &info) || !h264_parameters(decoder, &info) ||
 		    (info.avccSize == 0))
 			return NULL; /* nothing to decode yet: waiting for a key frame's SPS and PPS */
-		uint8_t* avcc = malloc(info.avccSize);
+		uint8_t *avcc = malloc(info.avccSize);
 		if (!avcc)
 			return NULL;
 		const size_t avccSize = cam_h264_to_avcc(data, size, avcc, info.avccSize);

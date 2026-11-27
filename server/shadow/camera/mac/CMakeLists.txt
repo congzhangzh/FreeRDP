@@ -85,7 +85,13 @@ if(NOT APPLE OR IOS)
 endif()
 
 # --- macOS ------------------------------------------------------------------------------------
-enable_language(OBJC)
+# Standalone, the .m files are Objective-C sources. In the FreeRDP tree they are compiled as the
+# shadow's own .m files are (server/shadow/Mac): by the C compiler, clang taking Objective-C from
+# the extension. Enabling OBJC in a subdirectory of a project without it breaks the generate step
+# (CMAKE_OBJC_COMPILE_OBJECT not set, kit run 46033570427).
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  enable_language(OBJC)
+endif()
 # CMIOExtension: macOS 12.3; the kit's host is macOS 13 (ScreenCaptureKit's sound)
 if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
   set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0")
