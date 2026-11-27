@@ -17,9 +17,9 @@
 # limitations under the License.
 #
 # Two ways to build it:
-#  - inside FreeRDP: server/shadow/CMakeLists.txt adds this directory on macOS (with
-#    WITH_SHADOW_CAMERA_MAC); the shadow subsystem and its agent link
-#    freerdp-shadow-camera-mac;
+#  - inside FreeRDP: server/shadow/CMakeLists.txt adds this directory on macOS with
+#    -DWITH_SHADOW_CAMERA_MAC=ON; the shadow subsystem and its agent link
+#    freerdp-shadow-camera-mac, freerdp-shadow-cli takes --camera-extension;
 #  - on its own (the release kit does this until then, and the parts without Apple frameworks
 #    build anywhere):
 #      cmake -G Ninja -S server/shadow/camera/mac -B build-camera -DBUILD_TESTING=ON \
@@ -31,9 +31,8 @@
 #    inside out, with its entitlements: see the release kit's build/macos/sign-host.sh);
 #  - freerdp-shadow-camera: activate / deactivate / status / pattern (camera_activate.h);
 #  - libfreerdp-shadow-camera-mac.a: the sink helper, the decoder, the activation.
-cmake_minimum_required(VERSION 3.20)
-
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  cmake_minimum_required(VERSION 3.20)
   project(freerdp-shadow-camera-mac LANGUAGES C)
   include(CTest)
 endif()
@@ -67,7 +66,12 @@ add_library(
   camera_h264.h
   camera_h264.c
 )
-target_include_directories(freerdp-shadow-camera-frame PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CAMERA_SHARED_DIR})
+# the build tree's headers only: FreeRDP's static install exports these libraries
+# (FreeRDP-ShadowTargets) and installs no camera header
+target_include_directories(
+  freerdp-shadow-camera-frame PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+                                     $<BUILD_INTERFACE:${CAMERA_SHARED_DIR}>
+)
 set_target_properties(freerdp-shadow-camera-frame PROPERTIES POSITION_INDEPENDENT_CODE ON C_STANDARD 11)
 
 if(BUILD_TESTING)
@@ -112,6 +116,7 @@ add_library(
   camera_activate.m
 )
 target_compile_options(freerdp-shadow-camera-mac PRIVATE ${CAMERA_OBJC_OPTIONS})
+set_target_properties(freerdp-shadow-camera-mac PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(
   freerdp-shadow-camera-mac
   PUBLIC freerdp-shadow-camera-frame
