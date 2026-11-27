@@ -140,6 +140,10 @@ option(WITH_DSP_EXPERIMENTAL "Enable experimental sound encoder/decoder formats"
 option(WITH_GFX_AV1 "[experimental,unstable ABI/API] Enable AV1 support for GFX channel encoding/decoding" OFF)
 option(WITH_GFX_AV2 "[experimental,unstable ABI/API] Enable AV2 support for GFX channel encoding/decoding" OFF)
 option(WITH_GFX_AZURE "[experimental,unstable ABI/API] Enable Azure extension support for GFX channel" OFF)
+option(WITH_GFX_H264_DEFAULT
+       "Clients offer H.264 (AVC420, AVC444) when no codec is asked for (/gfx, /network:auto, an .rdp file's autodetect)"
+       ON
+)
 include(ConfigOptionsVideoToolbox)
 include(DetectIntrinsicSupport)
 cmake_dependent_option(WITH_H264_WEBCODECS "Decode H.264 with the browser's WebCodecs API" ON "EMSCRIPTEN" OFF)

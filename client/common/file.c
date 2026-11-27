@@ -2793,8 +2793,9 @@ static BOOL freerdp_set_connection_type_from_file(const rdpFile* file, rdpSettin
 		case CONNECTION_TYPE_AUTODETECT:
 			if (!freerdp_apply_connection_type_from_file(file, settings, type))
 				return FALSE;
-			/* Automatically activate GFX and RFX codec support */
-#ifdef WITH_GFX_H264
+			/* Automatically activate GFX and RFX codec support; H.264 as on the command line
+			 * (WITH_GFX_H264_DEFAULT) */
+#if defined(WITH_GFX_H264) && defined(WITH_GFX_H264_DEFAULT)
 			if (!freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444v2, TRUE) ||
 			    !freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, TRUE) ||
 			    !freerdp_settings_set_bool(settings, FreeRDP_GfxH264, TRUE))
