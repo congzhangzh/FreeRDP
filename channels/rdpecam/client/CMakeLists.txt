@@ -41,8 +41,16 @@ if(WITH_RDPECAM_GSTREAMER)
   endif()
 endif()
 
-# currently camera redirect client is supported for platforms with Video4Linux, Android or macOS/iOS
-if(NOT ANDROID AND NOT APPLE)
+# the mf backend captures the cameras of Windows with Media Foundation (/dvc:rdpecam,sys:mf), or
+# plays a media file as a camera (/dvc:rdpecam,sys:mf,file:<path or URL>)
+cmake_dependent_option(WITH_RDPECAM_MF "Build the rdpecam Media Foundation backend" ON "WIN32;NOT UWP" OFF)
+if(WITH_RDPECAM_MF)
+  add_compile_definitions("WITH_RDPECAM_MF")
+endif()
+
+# currently camera redirect client is supported for platforms with Video4Linux, Android, macOS/iOS
+# or Windows
+if(NOT ANDROID AND NOT APPLE AND NOT WITH_RDPECAM_MF)
   find_package(V4L)
   if(V4L_FOUND)
     set(WITH_V4L ON)
@@ -69,6 +77,10 @@ endif()
 
 if(APPLE)
   add_channel_client_subsystem(${MODULE_PREFIX} ${CHANNEL_NAME} "avfoundation" "")
+endif()
+
+if(WITH_RDPECAM_MF)
+  add_channel_client_subsystem(${MODULE_PREFIX} ${CHANNEL_NAME} "mf" "")
 endif()
 
 if(WITH_RDPECAM_MOVIE)
