@@ -21,7 +21,7 @@ set(MODULE_PREFIX "TEST_SHADOW_CAMERA_WIN")
 disable_warnings_for_directory(${CMAKE_CURRENT_BINARY_DIR})
 
 set(${MODULE_PREFIX}_DRIVER ${MODULE_NAME}.c)
-set(${MODULE_PREFIX}_TESTS TestShadowCameraWinSource.c)
+set(${MODULE_PREFIX}_TESTS TestShadowCameraWinSource.c TestShadowCameraWinReaders.c)
 
 create_test_sourcelist(${MODULE_PREFIX}_SRCS ${${MODULE_PREFIX}_DRIVER} ${${MODULE_PREFIX}_TESTS})
 
@@ -34,5 +34,7 @@ set_target_properties(${MODULE_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TEST
 add_test(NAME TestShadowCameraWinSource COMMAND ${MODULE_NAME} TestShadowCameraWinSource
                                                 $<TARGET_FILE:freerdp-shadow-camera-source>
 )
+
+add_test(NAME TestShadowCameraWinReaders COMMAND ${MODULE_NAME} TestShadowCameraWinReaders)
 
 set_property(TARGET ${MODULE_NAME} PROPERTY FOLDER "Server/shadow/Test")
