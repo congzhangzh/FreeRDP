@@ -57,3 +57,10 @@ target_link_libraries(freerdp-shadow-subsystem-impl PRIVATE ${LIBS})
 add_executable(freerdp-shadow-agent mac_agent.m ${MAC_COMMON})
 target_link_libraries(freerdp-shadow-agent PRIVATE winpr freerdp ${LIBS})
 install(TARGETS freerdp-shadow-agent DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT server)
+
+# the virtual camera (WITH_SHADOW_CAMERA_MAC, ../camera/mac): the server pushes the frames in a
+# user's session, the agent in the daemon mode
+if(WITH_SHADOW_CAMERA_MAC)
+  target_link_libraries(freerdp-shadow-subsystem-impl PRIVATE freerdp-shadow-camera-mac)
+  target_link_libraries(freerdp-shadow-agent PRIVATE freerdp-shadow-camera-mac)
+endif()

@@ -23,6 +23,10 @@ set(SRCS shadow.c)
 addtargetwithresourcefile(${MODULE_NAME} TRUE "${FREERDP_VERSION}" SRCS)
 
 list(APPEND LIBS freerdp-shadow-subsystem freerdp-shadow freerdp winpr)
+# --camera-extension (macOS, ../camera/mac/camera_activate.h)
+if(WITH_SHADOW_CAMERA_MAC)
+  list(APPEND LIBS freerdp-shadow-camera-mac)
+endif()
 
 target_link_libraries(${MODULE_NAME} PRIVATE ${LIBS})
 
