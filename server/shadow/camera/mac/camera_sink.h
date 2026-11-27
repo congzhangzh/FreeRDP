@@ -83,6 +83,25 @@ extern "C"
 	camMacSinkStatus cam_mac_sink_push_raw(camMacSink* sink, uint32_t format, uint32_t width,
 	                                       uint32_t height, const uint8_t* data, size_t size);
 
+	/* --- on demand: is an app on the Mac reading the camera? -------------------------------
+	 * The extension keeps the count of its source stream's clients in a device property
+	 * (camera_config.h, CAM_MAC_READERS_*). The watcher listens to it (a CoreMediaIO property
+	 * listener) and polls it every CAM_MAC_READERS_POLL_MS (the extension approved later,
+	 * restarted, a lost notification), and holds "in use" CAM_MAC_READERS_HOLD_MS after the
+	 * last reader (camera_readers.h). Independent of open/close: it watches before the first
+	 * frame, which is the point. */
+
+	/* fn(context, active) runs on the watcher's own queue at each change; it must not free the
+	 * sink. Once per sink; true when watching. */
+	typedef void (*camMacReadersFn)(void *context, bool active);
+	bool cam_mac_sink_watch_readers(camMacSink *sink, camMacReadersFn fn, void *context);
+
+	/* an app reads the camera now (with the hold); false when nobody does, or no watcher yet */
+	bool cam_mac_sink_readers_active(camMacSink *sink);
+
+	/* the readers the extension counted at the last look; -1: unknown (no device, no watcher) */
+	int cam_mac_sink_readers(camMacSink *sink);
+
 	/* --- the parts, for the daemon (which converts but cannot push) and the tests --- */
 
 	/* a new IOSurface-backed NV12 ('420v') pixel buffer, width x height (even); +1 */

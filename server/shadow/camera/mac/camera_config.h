@@ -51,6 +51,20 @@
  * long: the client's camera stopped, its owner left, or no client has one */
 #define CAM_MAC_SINK_IDLE_MS 500
 
+/* On demand: the client's camera runs only while an app on the Mac reads the virtual camera.
+ * The extension counts the clients of its source stream (startStream, stopStream) and keeps the
+ * count in a custom property of its device, a decimal string ('frdr', "4cc_frdr_glob_0000";
+ * a string because a number fails as a custom property on older macOS), notified on each
+ * change. The shadow side (the server in a user's session, the agent in the daemon mode)
+ * watches it (camera_sink.h), also polls it, and holds "in use" for CAM_MAC_READERS_HOLD_MS
+ * after the last reader left, so an app that restarts its stream does not cycle the remote
+ * camera. Not kCMIODevicePropertyDeviceIsRunningSomewhere: the sink stream our own side
+ * starts to push frames makes the device "running" too, so it could not say "no app". */
+#define CAM_MAC_READERS_SELECTOR 0x66726472u /* 'frdr' */
+#define CAM_MAC_READERS_PROPERTY "4cc_frdr_glob_0000"
+#define CAM_MAC_READERS_HOLD_MS 2000
+#define CAM_MAC_READERS_POLL_MS 1000
+
 /* the client's sample formats, MS-RDPECAM 2.2.3.1 (CAM_MEDIA_FORMAT in
  * freerdp/channels/rdpecam.h; the values are the protocol's, so they are the same) */
 #define CAM_MAC_FORMAT_H264 0x01u

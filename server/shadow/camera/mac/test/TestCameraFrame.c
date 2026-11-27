@@ -27,6 +27,7 @@
 #include "camera_config.h"
 #include "camera_frame.h"
 #include "camera_h264.h"
+#include "camera_readers.h"
 #include "placeholder.h"
 
 static int g_failures = 0;
@@ -242,6 +243,56 @@ static void test_jpeg_size(void)
 	CHECK(!cam_jpeg_frame_size(cut, sizeof(cut), &w, &h));
 }
 
+/* on demand: in use at once, out of use only after the hold */
+static void test_readers(void)
+{
+	cam_readers_state st;
+	cam_readers_init(&st);
+	const uint32_t hold = CAM_MAC_READERS_HOLD_MS;
+
+	CHECK(!st.active);
+	CHECK(!cam_readers_update(&st, 0, 1000, hold));  /* nobody, nothing changes */
+	CHECK(!cam_readers_update(&st, -1, 1000, hold)); /* unknown (no device): as nobody */
+	CHECK(cam_readers_update(&st, 1, 1000, hold));   /* an app opens the camera: at once */
+	CHECK(st.active);
+	CHECK(!cam_readers_update(&st, 2, 1100, hold)); /* a second one: still in use */
+	CHECK(!cam_readers_update(&st, 0, 2000, hold)); /* both stop: held */
+	CHECK(st.active);
+	CHECK(!cam_readers_update(&st, 0, 2000 + hold - 1, hold));
+	CHECK(st.active);
+	/* a reader again before any update saw the hold end (no poll in between): still in use */
+	CHECK(!cam_readers_update(&st, 1, 2500 + hold, hold));
+	CHECK(st.active);
+	/* the app restarted its stream before the hold ended: never out of use */
+	CHECK(!cam_readers_update(&st, 0, 10000, hold));
+	CHECK(!cam_readers_update(&st, 1, 10000 + hold / 2, hold));
+	CHECK(!cam_readers_update(&st, 0, 10000 + hold, hold)); /* a new idle period starts here */
+	CHECK(st.active);
+	CHECK(cam_readers_update(&st, 0, 10000 + 2 * hold, hold)); /* held long enough: off */
+	CHECK(!st.active);
+	CHECK(!cam_readers_update(&st, 0, 10000 + 3 * hold, hold));
+	/* the extension went away while in use (count unknown): off after the hold */
+	CHECK(cam_readers_update(&st, 3, 50000, hold));
+	CHECK(!cam_readers_update(&st, -1, 50000, hold));
+	CHECK(cam_readers_update(&st, -1, 50000 + hold, hold));
+	CHECK(!st.active);
+
+	int n = -1;
+	CHECK(cam_readers_parse("0", &n) && (n == 0));
+	CHECK(cam_readers_parse("3", &n) && (n == 3));
+	CHECK(cam_readers_parse("120", &n) && (n == 120));
+	CHECK(!cam_readers_parse("", &n));
+	CHECK(!cam_readers_parse("-1", &n));
+	CHECK(!cam_readers_parse("2 ", &n));
+	CHECK(!cam_readers_parse("x", &n));
+	CHECK(!cam_readers_parse("99999999999", &n));
+	CHECK(!cam_readers_parse(NULL, &n));
+	/* the selector is the property key's four characters */
+	CHECK(CAM_MAC_READERS_SELECTOR ==
+	      (((uint32_t)'f' << 24) | ((uint32_t)'r' << 16) | ((uint32_t)'d' << 8) | (uint32_t)'r'));
+	CHECK(strncmp(CAM_MAC_READERS_PROPERTY + 4, "frdr", 4) == 0);
+}
+
 int main(void)
 {
 	test_placeholder();
@@ -249,6 +300,7 @@ int main(void)
 	test_convert();
 	test_h264();
 	test_jpeg_size();
+	test_readers();
 	if (g_failures)
 		(void)fprintf(stderr, "TestCameraFrame: %d check(s) failed\n", g_failures);
 	else

@@ -370,7 +370,27 @@ static CVPixelBufferRef make_placeholder(void)
 - (NSSet<CMIOExtensionProperty>*)availableProperties
 {
 	return [NSSet setWithObjects:CMIOExtensionPropertyDeviceTransportType,
-	                             CMIOExtensionPropertyDeviceModel, nil];
+	                             CMIOExtensionPropertyDeviceModel, @CAM_MAC_READERS_PROPERTY, nil];
+}
+
+/* on demand: how many clients read the source stream now (camera_config.h, CAM_MAC_READERS_*),
+ * as the decimal string the shadow side parses */
+- (CMIOExtensionPropertyState*)readersState
+{
+	__block NSInteger readers = 0;
+	dispatch_sync(_queue, ^{
+		readers = self->_sourceClients;
+	});
+	return [CMIOExtensionPropertyState propertyStateWithValue:[@(readers) stringValue]];
+}
+
+/* on _queue, after the count changed: the watchers hear it at once (they poll too) */
+- (void)notifyReaders
+{
+	CMIOExtensionPropertyState* state =
+	    [CMIOExtensionPropertyState propertyStateWithValue:[@(_sourceClients) stringValue]];
+	[_device notifyPropertiesChanged:@{ @CAM_MAC_READERS_PROPERTY : state }];
+	os_log(ext_log(), "readers: %ld", (long)_sourceClients);
 }
 
 - (nullable CMIOExtensionDeviceProperties*)devicePropertiesForProperties:
@@ -384,6 +404,8 @@ static CVPixelBufferRef make_placeholder(void)
 		result.transportType = @('virt'); /* kIOAudioDeviceTransportTypeVirtual */
 	if ([properties containsObject:CMIOExtensionPropertyDeviceModel])
 		result.model = @CAM_MAC_DEVICE_MODEL;
+	if ([properties containsObject:@CAM_MAC_READERS_PROPERTY])
+		[result setPropertyState:[self readersState] forProperty:@CAM_MAC_READERS_PROPERTY];
 	return result;
 }
 
@@ -505,6 +527,7 @@ static dispatch_source_t start_timer(dispatch_queue_t queue, uint64_t hz, dispat
 			});
 			os_log(ext_log(), "the camera is in use");
 		}
+		[self notifyReaders];
 	});
 }
 
@@ -517,6 +540,7 @@ static dispatch_source_t start_timer(dispatch_queue_t queue, uint64_t hz, dispat
 			self->_sourceTimer = nil;
 			os_log(ext_log(), "the camera is no longer in use");
 		}
+		[self notifyReaders];
 	});
 }
 

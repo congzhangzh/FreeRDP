@@ -65,6 +65,8 @@ add_library(
   camera_frame.c
   camera_h264.h
   camera_h264.c
+  camera_readers.h
+  camera_readers.c
 )
 # the build tree's headers only: FreeRDP's static install exports these libraries
 # (FreeRDP-ShadowTargets) and installs no camera header
@@ -182,6 +184,25 @@ if(BUILD_TESTING)
   target_compile_options(TestCameraDecode PRIVATE ${CAMERA_OBJC_OPTIONS})
   target_link_libraries(TestCameraDecode PRIVATE freerdp-shadow-camera-mac ${CAM_COREGRAPHICS} ${CAM_IMAGEIO})
   add_test(NAME TestCameraDecode COMMAND TestCameraDecode)
+
+  # the extension's readers count (on demand), with its own objects in this process
+  add_executable(
+    TestCameraExtension test/TestCameraExtension.m extension/CameraProvider.h extension/CameraProvider.m
+  )
+  target_include_directories(TestCameraExtension PRIVATE extension)
+  target_compile_options(TestCameraExtension PRIVATE ${CAMERA_OBJC_OPTIONS})
+  target_link_libraries(
+    TestCameraExtension
+    PRIVATE freerdp-shadow-camera-frame
+            ${CAM_FOUNDATION}
+            ${CAM_COREMEDIA}
+            ${CAM_COREMEDIAIO}
+            ${CAM_COREVIDEO}
+            ${CAM_IOSURFACE}
+            ${CAM_SECURITY}
+  )
+  add_test(NAME TestCameraExtension COMMAND TestCameraExtension)
+  set_tests_properties(TestCameraExtension PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 if(NOT CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
