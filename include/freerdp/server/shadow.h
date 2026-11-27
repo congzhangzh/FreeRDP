@@ -29,6 +29,7 @@
 
 #include <freerdp/channels/wtsvc.h>
 #include <freerdp/channels/channels.h>
+#include <freerdp/channels/rdpecam.h>
 
 #include <freerdp/server/encomsp.h>
 #include <freerdp/server/remdesk.h>
@@ -153,6 +154,18 @@ extern "C"
 	 *  It is only valid during the call. */
 	typedef BOOL (*pfnShadowClipboardProvide)(rdpShadowSubsystem* subsystem, UINT32 request,
 	                                          const BYTE* data, size_t size);
+
+	/** A client's camera (MS-RDPECAM) feeds the session's virtual camera. The core decides the
+	 *  owner (one camera per host: the first client whose camera starts; the next one when it
+	 *  leaves) and the media type (H.264, MJPG, then raw); a subsystem with a virtual camera
+	 *  gets each sample of the owner, as its media type says. The sample is only valid during
+	 *  the call. @since version 3.34.0 */
+	typedef BOOL (*pfnShadowCameraSample)(rdpShadowSubsystem* subsystem, rdpShadowClient* owner,
+	                                      const CAM_MEDIA_TYPE_DESCRIPTION* type,
+	                                      const BYTE* sample, size_t size);
+	/** The owner's camera stopped (or the owner left): the virtual camera shows its still
+	 *  picture until the next owner. @since version 3.34.0 */
+	typedef void (*pfnShadowCameraStop)(rdpShadowSubsystem* subsystem, rdpShadowClient* owner);
 
 	struct rdp_shadow_client
 	{
@@ -443,6 +456,10 @@ extern "C"
 		/** whether this subsystem can share all monitors, set in its Init
 		 *  @since version 3.34.0 */
 		SHADOW_ALL_MONITORS allMonitors;
+
+		/** the session's virtual camera, for a subsystem that has one (both, or neither) */
+		WINPR_ATTR_NODISCARD pfnShadowCameraSample CameraSample; /** @since version 3.34.0 */
+		pfnShadowCameraStop CameraStop;                          /** @since version 3.34.0 */
 	};
 
 /* Definition of message between subsystem and clients */

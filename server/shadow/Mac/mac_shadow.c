@@ -1519,6 +1519,83 @@ static int mac_shadow_subsystem_start(rdpShadowSubsystem* subsystem)
 	return 1;
 }
 
+#if defined(WITH_SHADOW_CAMERA_MAC)
+/* The virtual camera: the owner's sample (the core picked the owner and the media type),
+ * decoded (H.264, MJPG: VideoToolbox) or converted (raw) to the camera's NV12; in a user's
+ * session pushed into the camera extension's sink here, as a daemon sent to the agent on the
+ * console, which pushes it from its GUI session. CAM_MAC_FORMAT_* are MS-RDPECAM's values. */
+WINPR_ATTR_NODISCARD
+static BOOL mac_shadow_camera_sample(rdpShadowSubsystem* subsystem, rdpShadowClient* owner,
+                                     const CAM_MEDIA_TYPE_DESCRIPTION* type, const BYTE* sample,
+                                     size_t size)
+{
+	macShadowSubsystem* mac = (macShadowSubsystem*)subsystem;
+	WINPR_ASSERT(mac);
+	WINPR_ASSERT(type);
+
+	CVPixelBufferRef frame = nullptr;
+	const UINT32 format = (UINT32)type->Format;
+	if ((format == CAM_MAC_FORMAT_H264) || (format == CAM_MAC_FORMAT_MJPG))
+	{
+		if (!mac->cameraDecoder || (mac->cameraFormat != format) ||
+		    (mac->cameraWidth != type->Width) || (mac->cameraHeight != type->Height))
+		{
+			cam_mac_decoder_free(mac->cameraDecoder);
+			mac->cameraDecoder = cam_mac_decoder_new(format, type->Width, type->Height,
+			                                         CAM_MAC_WIDTH, CAM_MAC_HEIGHT);
+			mac->cameraFormat = format;
+			mac->cameraWidth = type->Width;
+			mac->cameraHeight = type->Height;
+			if (!mac->cameraDecoder)
+			{
+				WLog_ERR(TAG, "camera: no decoder for format %" PRIu32 " %" PRIu32 "x%" PRIu32,
+				         format, type->Width, type->Height);
+				return FALSE;
+			}
+		}
+		frame = cam_mac_decoder_decode(mac->cameraDecoder, sample, size);
+	}
+	else
+		frame = cam_mac_pixel_buffer_from_raw(format, type->Width, type->Height, sample, size);
+	if (!frame)
+		return TRUE; /* nothing to show yet (H.264 before its key frame) or a bad sample */
+
+	const UINT64 id = (UINT64)(uintptr_t)owner;
+	if (mac->remote)
+		(void)mac_remote_camera_frame(mac->remote, CVPixelBufferGetIOSurface(frame), id);
+	else
+	{
+		if (!mac->cameraSink)
+			mac->cameraSink = cam_mac_sink_new(nullptr);
+		if (mac->cameraSink)
+		{
+			cam_mac_sink_set_owner(mac->cameraSink, id);
+			(void)cam_mac_sink_push(mac->cameraSink, frame);
+		}
+	}
+	CVPixelBufferRelease(frame);
+	return TRUE;
+}
+
+/* the owner's camera stopped: the extension shows its still picture until the next owner */
+static void mac_shadow_camera_stop(rdpShadowSubsystem* subsystem,
+                                   WINPR_ATTR_UNUSED rdpShadowClient* owner)
+{
+	macShadowSubsystem* mac = (macShadowSubsystem*)subsystem;
+	WINPR_ASSERT(mac);
+
+	if (mac->remote)
+		mac_remote_camera_stop(mac->remote);
+	if (mac->cameraSink)
+	{
+		cam_mac_sink_set_owner(mac->cameraSink, 0);
+		cam_mac_sink_close(mac->cameraSink);
+	}
+	cam_mac_decoder_free(mac->cameraDecoder);
+	mac->cameraDecoder = nullptr;
+}
+#endif
+
 static void mac_shadow_subsystem_free(rdpShadowSubsystem* subsystem)
 {
 	macShadowSubsystem* mac = (macShadowSubsystem*)subsystem;
@@ -1535,6 +1612,12 @@ static void mac_shadow_subsystem_free(rdpShadowSubsystem* subsystem)
 		mac->remote = nullptr;
 		s_remote = nullptr;
 	}
+#if defined(WITH_SHADOW_CAMERA_MAC)
+	cam_mac_sink_free(mac->cameraSink);
+	mac->cameraSink = nullptr;
+	cam_mac_decoder_free(mac->cameraDecoder);
+	mac->cameraDecoder = nullptr;
+#endif
 	if (mac->awake != kIOPMNullAssertionID)
 		(void)IOPMAssertionRelease(mac->awake);
 	region16_uninit(&mac->pending);
@@ -1604,6 +1687,10 @@ static rdpShadowSubsystem* mac_shadow_subsystem_new(void)
 	mac->common.ExtendedMouseEvent = mac_shadow_input_extended_mouse_event;
 	mac->common.ClientConnect = mac_shadow_client_connect;
 	mac->common.ClientDisconnect = mac_shadow_client_disconnect;
+#if defined(WITH_SHADOW_CAMERA_MAC)
+	mac->common.CameraSample = mac_shadow_camera_sample;
+	mac->common.CameraStop = mac_shadow_camera_stop;
+#endif
 #ifdef WITH_PAM
 	mac->common.Authenticate = mac_shadow_pam_authenticate;
 #endif
