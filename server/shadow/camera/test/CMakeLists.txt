@@ -22,7 +22,7 @@ disable_warnings_for_directory(${CMAKE_CURRENT_BINARY_DIR})
 
 set(${MODULE_PREFIX}_DRIVER ${MODULE_NAME}.c)
 
-set(${MODULE_PREFIX}_TESTS TestShadowCameraFormat.c TestShadowCameraOwner.c TestShadowCameraPlaceholder.c
+set(${MODULE_PREFIX}_TESTS TestShadowCameraFormat.c TestShadowCameraOwner.c TestShadowCameraDemand.c TestShadowCameraPlaceholder.c
                            TestShadowCameraImage.c TestShadowCameraFileSink.c
 )
 # the parts that need no channel and no client: their files are built in

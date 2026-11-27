@@ -86,6 +86,61 @@ extern "C"
 	WINPR_ATTR_NODISCARD BOOL shadow_camera_owner_is(const ShadowCameraOwner* owner,
 	                                                 const void* camera);
 
+	/** Why a camera may not own the virtual camera, or that it may */
+	typedef enum
+	{
+		SHADOW_CAMERA_ADMIT_GRANTED,
+		SHADOW_CAMERA_ADMIT_VIEW_ONLY, /**< its client may not interact */
+		SHADOW_CAMERA_ADMIT_NO_CAMERA, /**< the server has no virtual camera */
+		SHADOW_CAMERA_ADMIT_OWNED      /**< another camera owns it */
+	} SHADOW_CAMERA_ADMIT;
+
+	/** A camera announced by a client asks for the virtual camera: a view-only client is
+	 *  refused before anything else, and the owner is left as it was */
+	WINPR_ATTR_NODISCARD SHADOW_CAMERA_ADMIT shadow_camera_admit(ShadowCameraOwner* owner,
+	                                                             const void* camera,
+	                                                             BOOL mayInteract, BOOL hasCamera);
+
+/** how long nobody must read the virtual camera before the client's camera stops, so that an
+ *  app that closes and reopens it does not cycle the client's camera */
+#define SHADOW_CAMERA_DEMAND_DEBOUNCE_MS 500u
+
+	/** Whether the client's camera should run: while something reads the virtual camera.
+	 *  It starts at once when a reader comes, stops when none was there for
+	 *  SHADOW_CAMERA_DEMAND_DEBOUNCE_MS, and always runs when the sink can't tell. */
+	typedef struct
+	{
+		BOOL on;
+		BOOL leaving;     /**< no reader, waiting for the debounce */
+		UINT64 zeroSince; /**< when the readers went to 0, in ms */
+	} ShadowCameraDemand;
+
+	/** The readers now (-1: the sink can't tell) at nowMs; returns whether the camera should
+	 *  run. *recheckMs is how soon to call again for a pending stop, INFINITE otherwise. */
+	WINPR_ATTR_NODISCARD BOOL shadow_camera_demand_update(ShadowCameraDemand* demand, INT32 readers,
+	                                                      UINT64 nowMs, UINT32* recheckMs);
+
+	/** The stream of the owner's camera, as the server asked for it */
+	typedef enum
+	{
+		SHADOW_CAMERA_STREAM_IDLE,     /**< media type chosen, not started (or stopped) */
+		SHADOW_CAMERA_STREAM_STARTING, /**< Start Streams sent, no answer yet */
+		SHADOW_CAMERA_STREAM_STREAMING,
+		SHADOW_CAMERA_STREAM_STOPPING /**< Stop Streams sent, no answer yet */
+	} SHADOW_CAMERA_STREAM;
+
+	typedef enum
+	{
+		SHADOW_CAMERA_STREAM_NONE,
+		SHADOW_CAMERA_STREAM_START, /**< send Start Streams */
+		SHADOW_CAMERA_STREAM_STOP   /**< send Stop Streams */
+	} SHADOW_CAMERA_STREAM_ACTION;
+
+	/** What to send for a stream in state when the camera should (wanted) or should not run;
+	 *  a request in flight is answered first */
+	WINPR_ATTR_NODISCARD SHADOW_CAMERA_STREAM_ACTION
+	shadow_camera_stream_action(SHADOW_CAMERA_STREAM state, BOOL wanted);
+
 #ifdef __cplusplus
 }
 #endif
