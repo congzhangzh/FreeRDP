@@ -41,6 +41,8 @@
  *   stopped   the capture stream ended (the display turned off)
  *   cursor    w, h, xhot, yhot, pixels (32-bit BGRA, premultiplied)
  *   position  x, y: the pointer, in global display coordinates
+ *   camera-readers  active: whether an app in this session reads the virtual camera (on
+ *             demand: the client's camera runs only then); after each hello and each change
  *
  * server -> agent
  *   start     display, width, height (of the frames, in pixels), fps, audio, rate, channels
@@ -67,6 +69,7 @@
 #define MAC_IPC_EVENT "event"
 #define MAC_IPC_CAMERA "camera"
 #define MAC_IPC_CAMERA_STOP "camera-stop"
+#define MAC_IPC_CAMERA_READERS "camera-readers"
 
 #define MAC_IPC_SESSION_LOGINWINDOW "LoginWindow"
 #define MAC_IPC_SESSION_AQUA "Aqua"

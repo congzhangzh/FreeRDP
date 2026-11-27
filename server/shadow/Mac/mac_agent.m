@@ -44,6 +44,10 @@
 #include "mac_ipc.h"
 #if defined(WITH_SHADOW_CAMERA_MAC)
 #include "camera_sink.h"
+
+/* the virtual camera's sink (frames from the daemon) and its readers watcher (on demand) */
+static camMacSink *g_cameraSink;
+static void agent_send_camera_readers(bool active);
 #endif
 
 #define TAG SERVER_TAG("shadow.mac.agent")
@@ -112,6 +116,10 @@ static void agent_send_hello(void)
 	agent_send(msg);
 	g_displaysHash = agent_displays_hash();
 	WLog_INFO(TAG, "hello sent: uid %u, %u display(s)", (unsigned)getuid(), count);
+#if defined(WITH_SHADOW_CAMERA_MAC)
+	/* after the hello, so the server knows this agent: who reads the camera here */
+	agent_send_camera_readers(cam_mac_sink_readers_active(g_cameraSink));
+#endif
 }
 
 /* a display mode change (or a display added or gone): tell the server, which resizes and asks
@@ -325,7 +333,6 @@ static void agent_on_event(xpc_object_t msg)
 #if defined(WITH_SHADOW_CAMERA_MAC)
 /* the virtual camera: the daemon decodes the owner's camera, this agent (in the GUI session)
  * pushes each frame into the camera extension's sink */
-static camMacSink *g_cameraSink;
 
 static void agent_on_camera(xpc_object_t msg)
 {
@@ -339,14 +346,28 @@ static void agent_on_camera(xpc_object_t msg)
 	CFRelease(surface);
 	if ((rc != kCVReturnSuccess) || !pixels)
 		return;
-	if (!g_cameraSink)
-		g_cameraSink = cam_mac_sink_new(nullptr);
 	if (g_cameraSink)
 	{
 		cam_mac_sink_set_owner(g_cameraSink, xpc_dictionary_get_uint64(msg, "owner"));
 		(void)cam_mac_sink_push(g_cameraSink, pixels);
 	}
 	CVPixelBufferRelease(pixels);
+}
+
+/* on demand: whether an app in this session reads the camera, to the server */
+static void agent_send_camera_readers(bool active)
+{
+	xpc_object_t msg = agent_message(MAC_IPC_CAMERA_READERS);
+	xpc_dictionary_set_bool(msg, "active", active);
+	agent_send(msg);
+}
+
+/* the watcher's queue: sent from the agent's own queue, in order with the hello */
+static void agent_on_camera_readers(WINPR_ATTR_UNUSED void *context, bool active)
+{
+	dispatch_async(g_queue, ^{
+		agent_send_camera_readers(active);
+	});
 }
 
 static void agent_camera_stop(void)
@@ -419,6 +440,13 @@ int main(int argc, char *argv[])
 			}
 		});
 		xpc_connection_resume(g_server);
+#if defined(WITH_SHADOW_CAMERA_MAC)
+		/* the sink from the start: its watcher tells the server when an app opens the camera */
+		g_cameraSink = cam_mac_sink_new(nullptr);
+		if (!g_cameraSink ||
+		    !cam_mac_sink_watch_readers(g_cameraSink, agent_on_camera_readers, nullptr))
+			WLog_WARN(TAG, "camera: cannot watch who reads it");
+#endif
 		dispatch_async(g_queue, ^{
 			agent_send_hello();
 		});
