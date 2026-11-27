@@ -982,7 +982,12 @@ INT32 avc444_decompress(H264_CONTEXT* h264, BYTE op, const RECTANGLE_16* regionR
 	}
 
 	if (status == 0)
-		h264->lastDecode.status = picture ? FREERDP_DECODE_PICTURE : FREERDP_DECODE_NO_PICTURE;
+	{
+		if (picture)
+			h264_last_decode_picture(h264);
+		else
+			h264->lastDecode.status = FREERDP_DECODE_NO_PICTURE;
+	}
 
 #if defined(AVC444_FRAME_STAT)
 
