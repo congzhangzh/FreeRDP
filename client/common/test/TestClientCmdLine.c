@@ -465,6 +465,42 @@ static BOOL check_settings_network_auto_h264(rdpSettings* settings)
 	return result;
 }
 
+/* WITH_GFX_H264_DEFAULT=OFF: no codec asked for, H.264 stays off */
+static BOOL check_settings_h264_off_by_default(rdpSettings* settings)
+{
+	BOOL result = TRUE;
+	const FreeRDP_Settings_Keys_Bool off[] = { FreeRDP_GfxH264, FreeRDP_GfxAVC444,
+		                                       FreeRDP_GfxAVC444v2 };
+	for (size_t x = 0; x < ARRAYSIZE(off); x++)
+	{
+		if (freerdp_settings_get_bool(settings, off[x]))
+		{
+			TEST_FAILURE("Expected %s = FALSE without WITH_GFX_H264_DEFAULT, but it is TRUE!\n",
+			             freerdp_settings_get_name_for_key(off[x]));
+			result = FALSE;
+		}
+	}
+	if (!freerdp_settings_get_bool(settings, FreeRDP_SupportGraphicsPipeline))
+	{
+		TEST_FAILURE("Expected the graphics pipeline on by default, but it is off!\n");
+		result = FALSE;
+	}
+	return result;
+}
+
+/* /gfx:AVC444 turns AVC444 on, with or without WITH_GFX_H264_DEFAULT */
+static BOOL check_settings_gfx_avc444_asked(rdpSettings* settings)
+{
+	BOOL result = TRUE;
+	if (!freerdp_settings_get_bool(settings, FreeRDP_GfxAVC444) ||
+	    !freerdp_settings_get_bool(settings, FreeRDP_GfxAVC444v2))
+	{
+		TEST_FAILURE("Expected /gfx:AVC444 to turn AVC444 on!\n");
+		result = FALSE;
+	}
+	return result;
+}
+
 static BOOL check_settings_modem_with_fonts(rdpSettings* settings)
 {
 	BOOL result = TRUE;
@@ -817,9 +853,28 @@ static const test tests[] = {
 	  { "testfreerdp", "/network:auto", "/gfx:progressive,AVC420:off,AVC444:off",
 	    "/v:test.freerdp.com", nullptr },
 	  { WINPR_C_ARRAY_INIT } },
+#if defined(WITH_GFX_H264_DEFAULT)
 	{ 0,
 	  check_settings_network_auto_h264,
 	  { "testfreerdp", "/network:auto", "/v:test.freerdp.com", nullptr },
+	  { WINPR_C_ARRAY_INIT } },
+	{ 0,
+	  check_settings_network_auto_h264,
+	  { "testfreerdp", "/v:test.freerdp.com", nullptr },
+	  { WINPR_C_ARRAY_INIT } },
+#else
+	{ 0,
+	  check_settings_h264_off_by_default,
+	  { "testfreerdp", "/network:auto", "/v:test.freerdp.com", nullptr },
+	  { WINPR_C_ARRAY_INIT } },
+	{ 0,
+	  check_settings_h264_off_by_default,
+	  { "testfreerdp", "/v:test.freerdp.com", nullptr },
+	  { WINPR_C_ARRAY_INIT } },
+#endif
+	{ 0,
+	  check_settings_gfx_avc444_asked,
+	  { "testfreerdp", "/gfx:AVC444", "/v:test.freerdp.com", nullptr },
 	  { WINPR_C_ARRAY_INIT } },
 #endif
 	{ 0,
