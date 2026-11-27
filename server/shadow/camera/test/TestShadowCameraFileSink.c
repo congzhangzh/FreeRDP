@@ -39,6 +39,15 @@
 		}                                                                    \
 	} while (0)
 
+static BOOL write_text(const char* path, const char* text)
+{
+	FILE* fp = winpr_fopen(path, "w");
+	if (!fp)
+		return FALSE;
+	const BOOL ok = fputs(text, fp) >= 0;
+	return (fclose(fp) == 0) && ok;
+}
+
 static char* read_all(const char* path, size_t* size)
 {
 	FILE* fp = winpr_fopen(path, "rb");
@@ -62,10 +71,11 @@ int TestShadowCameraFileSink(int argc, char* argv[])
 	char* dir = temp ? GetCombinedPath(temp, name) : nullptr;
 	char* frames = dir ? GetCombinedPath(dir, "frames.yuyv") : nullptr;
 	char* index = dir ? GetCombinedPath(dir, "index.txt") : nullptr;
+	char* readers = dir ? GetCombinedPath(dir, "readers") : nullptr;
 	ShadowCameraSink* sink = nullptr;
 	char* text = nullptr;
 	char* data = nullptr;
-	CHECK(frames && index);
+	CHECK(frames && index && readers);
 
 	CHECK(!shadow_camera_sink_file_new(dir, SHADOW_CAMERA_PIXEL_BGRX32, 4, 2, 30));
 	CHECK(!shadow_camera_sink_file_new(dir, SHADOW_CAMERA_PIXEL_YUY2, 3, 2, 30));
@@ -86,6 +96,19 @@ int TestShadowCameraFileSink(int argc, char* argv[])
 	CHECK(sink->Write(sink, &fa, SHADOW_CAMERA_FRAME_PLACEHOLDER, nullptr));
 	CHECK(sink->Write(sink, &fb, SHADOW_CAMERA_FRAME_CLIENT, "H264 640x480"));
 	CHECK(!sink->Write(sink, &wrong, SHADOW_CAMERA_FRAME_CLIENT, nullptr));
+
+	/* the readers: what <dir>/readers says, -1 without it */
+	CHECK(sink->Readers);
+	CHECK(sink->Readers(sink) == -1);
+	CHECK(write_text(readers, "0\n"));
+	CHECK(sink->Readers(sink) == 0);
+	CHECK(sink->Readers(sink) == 0);
+	CHECK(write_text(readers, "1"));
+	CHECK(sink->Readers(sink) == 1);
+	CHECK(write_text(readers, "junk"));
+	CHECK(sink->Readers(sink) == -1);
+	CHECK(write_text(readers, "0"));
+	CHECK(sink->Readers(sink) == 0);
 	sink->Free(sink);
 	sink = nullptr;
 
@@ -110,7 +133,17 @@ int TestShadowCameraFileSink(int argc, char* argv[])
 		CHECK(sscanf(line2, "%llu %llu %15s %llu", &n, &ms, kind, &offset) == 4);
 		CHECK((n == 1) && (strcmp(kind, "client") == 0) && (offset == 16));
 		CHECK(strstr(line2, " H264 640x480\n"));
-		CHECK(*(strchr(line2, '\n') + 1) == '\0');
+		/* then each change of the readers: -1, 0, 1, -1, 0 */
+		const char* rest = strchr(line2, '\n') + 1;
+		const int expected[] = { -1, 0, 1, -1, 0 };
+		for (size_t i = 0; i < ARRAYSIZE(expected); i++)
+		{
+			int value = -2;
+			CHECK(sscanf(rest, "# readers %d", &value) == 1);
+			CHECK(value == expected[i]);
+			rest = strchr(rest, '\n') + 1;
+		}
+		CHECK(*rest == '\0');
 	}
 	rc = 0;
 fail:
@@ -122,10 +155,13 @@ fail:
 		(void)winpr_DeleteFile(frames);
 	if (index)
 		(void)winpr_DeleteFile(index);
+	if (readers)
+		(void)winpr_DeleteFile(readers);
 	if (dir)
 		(void)winpr_RemoveDirectory(dir);
 	free(frames);
 	free(index);
+	free(readers);
 	free(dir);
 	free(temp);
 	return rc;

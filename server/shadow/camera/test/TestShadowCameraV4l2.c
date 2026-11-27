@@ -45,7 +45,12 @@ typedef struct
 	const char* driver;
 	const char* card;
 	UINT32 caps;
+	BOOL usageEvents; /* v4l2loopback 0.13+: client usage events */
 } FakeDevice;
+
+/* v4l2loopback.c of 0.13.0, lines 802-805 */
+#define FAKE_EVENT_CLIENT_USAGE (V4L2_EVENT_PRIVATE_START + 0x08E00000 + 1)
+#define FAKE_MAX_EVENTS 16
 
 #define FAKE_FD_BASE 100
 #define FAKE_MAX 8
@@ -61,6 +66,14 @@ static size_t g_written;
 static BOOL g_shrink; /* S_FMT answers a smaller size, as a device already in use */
 static size_t g_noDeviceLines;
 static size_t g_cameraLines;
+static size_t g_fallbackLines;
+static char g_lastLine[512];
+static UINT32 g_queue[FAKE_MAX_EVENTS]; /* pending client usage counts */
+static size_t g_queued;
+static UINT32 g_readersNow; /* what SEND_INITIAL reports */
+static size_t g_subscribes;
+static size_t g_dequeues;
+static const char* g_moduleVersion;
 
 static void fake_reset(const FakeDevice* devices, size_t count)
 {
@@ -75,6 +88,20 @@ static void fake_reset(const FakeDevice* devices, size_t count)
 	g_shrink = FALSE;
 	g_noDeviceLines = 0;
 	g_cameraLines = 0;
+	g_fallbackLines = 0;
+	g_queued = 0;
+	g_readersNow = 0;
+	g_subscribes = 0;
+	g_dequeues = 0;
+	g_moduleVersion = nullptr;
+}
+
+/* a reader starts or stops: the module queues an event */
+static void fake_usage(UINT32 count)
+{
+	g_readersNow = count;
+	if (g_queued < FAKE_MAX_EVENTS)
+		g_queue[g_queued++] = count;
 }
 
 static size_t fake_open_count(void)
@@ -134,6 +161,36 @@ static int fake_ioctl(int fd, unsigned long request, void* arg)
 		case VIDIOC_S_PARM:
 			g_parm = *(struct v4l2_streamparm*)arg;
 			return 0;
+		case VIDIOC_SUBSCRIBE_EVENT:
+		{
+			const struct v4l2_event_subscription* sub = arg;
+			g_subscribes++;
+			/* 0.12.7 subscribes V4L2_EVENT_CTRL only (v4l2loopback.c:1779-1788) */
+			if (!g_devices[i].usageEvents || (sub->type != FAKE_EVENT_CLIENT_USAGE))
+			{
+				errno = EINVAL;
+				return -1;
+			}
+			if (sub->flags & V4L2_EVENT_SUB_FL_SEND_INITIAL)
+				fake_usage(g_readersNow);
+			return 0;
+		}
+		case VIDIOC_DQEVENT:
+		{
+			struct v4l2_event* ev = arg;
+			g_dequeues++;
+			if (g_queued == 0)
+			{
+				errno = ENOENT;
+				return -1;
+			}
+			memset(ev, 0, sizeof(*ev));
+			ev->type = FAKE_EVENT_CLIENT_USAGE;
+			memcpy(ev->u.data, &g_queue[0], sizeof(UINT32));
+			memmove(&g_queue[0], &g_queue[1], (g_queued - 1) * sizeof(UINT32));
+			g_queued--;
+			return 0;
+		}
 		default:
 			errno = ENOTTY;
 			return -1;
@@ -158,7 +215,16 @@ static int fake_close(int fd)
 	return 0;
 }
 
-static const ShadowCameraV4l2Ops g_ops = { fake_open, fake_ioctl, fake_write, fake_close };
+static BOOL fake_module_version(char* buffer, size_t size)
+{
+	if (!g_moduleVersion)
+		return FALSE;
+	(void)snprintf(buffer, size, "%s", g_moduleVersion);
+	return TRUE;
+}
+
+static const ShadowCameraV4l2Ops g_ops = { fake_open, fake_ioctl, fake_write, fake_close,
+	                                       fake_module_version };
 
 /* counts the camera's log lines */
 static BOOL log_message(const wLogMessage* msg)
@@ -169,6 +235,11 @@ static BOOL log_message(const wLogMessage* msg)
 		g_cameraLines++;
 	if (strcmp(msg->TextString, "camera: no v4l2loopback device") == 0)
 		g_noDeviceLines++;
+	if (strstr(msg->TextString, "can't tell when an app reads it"))
+	{
+		g_fallbackLines++;
+		(void)snprintf(g_lastLine, sizeof(g_lastLine), "%s", msg->TextString);
+	}
 	return TRUE;
 }
 
@@ -291,6 +362,76 @@ static int test_none(void)
 	return 0;
 }
 
+static int test_usage_events(void)
+{
+	/* 0.13+: subscribed with SEND_INITIAL, the readers follow the events */
+	const FakeDevice devices[] = {
+		{ "/dev/video0", "v4l2 loopback", SHADOW_CAMERA_V4L2_LABEL, CAPS_OUTPUT | CAPS_CAPTURE,
+		  TRUE },
+	};
+	fake_reset(devices, ARRAYSIZE(devices));
+	ShadowCameraSink* sink = shadow_camera_sink_v4l2_new(nullptr, 640, 480, 30, &g_ops);
+	CHECK(sink && sink->Readers);
+	CHECK(g_subscribes == 1);
+	CHECK(g_fallbackLines == 0);
+	CHECK(sink->Readers(sink) == 0); /* the initial event */
+	CHECK(sink->Readers(sink) == 0); /* nothing new: the last value */
+	fake_usage(1);
+	CHECK(sink->Readers(sink) == 1);
+	CHECK(sink->Readers(sink) == 1);
+	/* several at once: the last one counts */
+	fake_usage(0);
+	fake_usage(1);
+	fake_usage(0);
+	CHECK(sink->Readers(sink) == 0);
+	CHECK(g_queued == 0);
+	fake_usage(2);
+	CHECK(sink->Readers(sink) == 2);
+	sink->Free(sink);
+	CHECK(fake_open_count() == 0);
+
+	/* a reader already there when the server starts */
+	fake_reset(devices, ARRAYSIZE(devices));
+	g_readersNow = 1;
+	sink = shadow_camera_sink_v4l2_new(nullptr, 640, 480, 30, &g_ops);
+	CHECK(sink);
+	CHECK(sink->Readers(sink) == 1);
+	sink->Free(sink);
+	return 0;
+}
+
+static int test_fallback(void)
+{
+	/* 0.12.x: SUBSCRIBE fails, readers unknown, exactly one line, with the module's version */
+	const FakeDevice devices[] = {
+		{ "/dev/video0", "v4l2 loopback", SHADOW_CAMERA_V4L2_LABEL, CAPS_OUTPUT | CAPS_CAPTURE,
+		  FALSE },
+	};
+	fake_reset(devices, ARRAYSIZE(devices));
+	g_moduleVersion = "0.12.7";
+	ShadowCameraSink* sink = shadow_camera_sink_v4l2_new(nullptr, 640, 480, 30, &g_ops);
+	CHECK(sink);
+	CHECK(g_subscribes == 1);
+	for (size_t i = 0; i < 10; i++)
+		CHECK(sink->Readers(sink) == -1);
+	CHECK(g_dequeues == 0);
+	CHECK(g_fallbackLines == 1);
+	(void)printf("%s\n", g_lastLine);
+	CHECK(strcmp(g_lastLine, "camera: v4l2loopback 0.12.7 can't tell when an app reads it; the "
+	                         "camera stays on while connected; 0.13+ fixes this") == 0);
+	sink->Free(sink);
+
+	/* 0.12.7 declares no MODULE_VERSION: no /sys/module/v4l2loopback/version */
+	fake_reset(devices, ARRAYSIZE(devices));
+	sink = shadow_camera_sink_v4l2_new(nullptr, 640, 480, 30, &g_ops);
+	CHECK(sink);
+	CHECK(g_fallbackLines == 1);
+	CHECK(strcmp(g_lastLine, "camera: v4l2loopback before 0.13 can't tell when an app reads it; "
+	                         "the camera stays on while connected; 0.13+ fixes this") == 0);
+	sink->Free(sink);
+	return 0;
+}
+
 int TestShadowCameraV4l2(int argc, char* argv[])
 {
 	WINPR_UNUSED(argc);
@@ -303,6 +444,10 @@ int TestShadowCameraV4l2(int argc, char* argv[])
 	if (test_first_loopback() != 0)
 		return -1;
 	if (test_none() != 0)
+		return -1;
+	if (test_usage_events() != 0)
+		return -1;
+	if (test_fallback() != 0)
 		return -1;
 	return 0;
 }

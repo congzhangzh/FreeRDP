@@ -24,9 +24,15 @@
  * by its own lock. Lock order: a client's lock, then g_camera.lock; a channel context is
  * never closed (its thread joined) while either is held.
  *
- * A device's flow: Activate Device, Stream List, Media Type List (the choice), Start Streams,
- * then Sample Requests, kept ceil(fps * RTT) + 1 outstanding (at most 4); each sample is
- * decoded, scaled into the camera's size and written to the sink.
+ * A device's flow: Activate Device, Stream List, Media Type List (the choice); then, while an
+ * app reads the virtual camera (or always, when the sink can't tell), Start Streams and Sample
+ * Requests, kept ceil(fps * RTT) + 1 outstanding (at most 4); each sample is decoded, scaled
+ * into the camera's size and written to the sink. When no app has read it for 500 ms, Stop
+ * Streams: the client's camera goes off, the owner stays, the still comes back.
+ *
+ * Each device runs a thread of its own (the channel context in external thread mode), so that
+ * the camera's thread can wake it when the readers change: everything about a device's stream
+ * happens on that one thread.
  */
 
 #include <stdio.h>
@@ -34,6 +40,7 @@
 #include <string.h>
 
 #include <winpr/assert.h>
+#include <winpr/cast.h>
 #include <winpr/collections.h>
 #include <winpr/string.h>
 #include <winpr/synch.h>
@@ -76,8 +83,7 @@ typedef enum
 	CAMERA_DEVICE_ACTIVATING,
 	CAMERA_DEVICE_STREAM_LIST,
 	CAMERA_DEVICE_MEDIA_TYPES,
-	CAMERA_DEVICE_STARTING,
-	CAMERA_DEVICE_STREAMING,
+	CAMERA_DEVICE_READY, /* media type chosen: its stream starts and stops on demand */
 	CAMERA_DEVICE_FAILED
 } CAMERA_DEVICE_STATE;
 
@@ -87,9 +93,14 @@ typedef struct
 	CameraDeviceServerContext* ctx;
 	char* channel; /* the device's channel name */
 	char* name;    /* the device's name, UTF-8 */
+	HANDLE thread;
+	HANDLE stopEvent;
+	HANDLE wakeEvent; /* the readers changed */
 
 	/* the device's thread only, once its context is open */
 	CAMERA_DEVICE_STATE state;
+	SHADOW_CAMERA_STREAM stream;
+	UINT32 starts;
 	BYTE streamIndex;
 	CAM_MEDIA_TYPE_DESCRIPTION type;
 	ShadowCameraDecoder* decoder;
@@ -129,6 +140,9 @@ typedef struct
 	wArrayList* clients; /* CameraClient* */
 	UINT64 clientFrames;
 	UINT64 stills;
+	INT32 readers; /* the sink's, -1: it can't tell */
+	ShadowCameraDemand demand;
+	BOOL streamWanted; /* the owner's stream should run */
 } CameraServer;
 
 static INIT_ONCE g_cameraOnce = INIT_ONCE_STATIC_INIT;
@@ -199,6 +213,47 @@ static void camera_write_still_locked(void)
 
 /* shows the still when no client camera streams: once for a sink that keeps the last frame,
  * again and again for one whose readers wait for frames */
+/* the readers of the sink, and whether the owner's camera should run (g_camera.lock held);
+ * returns how soon to look again */
+static DWORD camera_update_demand_locked(void)
+{
+	if (!g_camera.sink)
+		return INFINITE;
+
+	const INT32 readers = g_camera.sink->Readers ? g_camera.sink->Readers(g_camera.sink) : -1;
+	if (readers != g_camera.readers)
+	{
+		WLog_DBG(TAG, "camera: %" PRId32 " readers", readers);
+		g_camera.readers = readers;
+	}
+
+	UINT32 recheck = INFINITE;
+	const BOOL wanted =
+	    shadow_camera_demand_update(&g_camera.demand, readers, GetTickCount64(), &recheck);
+	if (wanted != g_camera.streamWanted)
+	{
+		g_camera.streamWanted = wanted;
+		if (wanted && (readers < 0))
+			WLog_INFO(TAG, "camera: the sink can't tell its readers, the client's camera runs "
+			               "while it owns the virtual camera");
+		else if (wanted)
+			WLog_INFO(TAG, "camera: an app reads the camera, the client's camera runs");
+		else
+			WLog_INFO(TAG, "camera: no app read the camera for %u ms, the client's camera stops",
+			          SHADOW_CAMERA_DEMAND_DEBOUNCE_MS);
+		/* the owner's thread sends Start or Stop Streams; its events live until it is no
+		 * longer the owner, which takes this lock */
+		CameraDevice* owner = (CameraDevice*)WINPR_CAST_CONST_PTR_AWAY(g_camera.owner.owner, void*);
+		if (owner && owner->wakeEvent)
+			(void)SetEvent(owner->wakeEvent);
+	}
+
+	DWORD timeout = g_camera.sink->Readers ? SHADOW_CAMERA_READERS_POLL_MS : INFINITE;
+	if (recheck < timeout)
+		timeout = recheck;
+	return timeout;
+}
+
 static DWORD WINAPI camera_still_thread(WINPR_ATTR_UNUSED LPVOID arg)
 {
 	HANDLE events[] = { g_camera.stopEvent, g_camera.wakeEvent };
@@ -208,6 +263,7 @@ static DWORD WINAPI camera_still_thread(WINPR_ATTR_UNUSED LPVOID arg)
 		DWORD timeout = INFINITE;
 
 		EnterCriticalSection(&g_camera.lock);
+		const DWORD demandTimeout = camera_update_demand_locked();
 		if (g_camera.sink)
 		{
 			const UINT64 now = GetTickCount64();
@@ -226,6 +282,8 @@ static DWORD WINAPI camera_still_thread(WINPR_ATTR_UNUSED LPVOID arg)
 					timeout = interval;
 			}
 		}
+		if (demandTimeout < timeout)
+			timeout = demandTimeout;
 		LeaveCriticalSection(&g_camera.lock);
 
 		const DWORD status = WaitForMultipleObjects(ARRAYSIZE(events), events, FALSE, timeout);
@@ -349,9 +407,20 @@ static void camera_device_free(CameraDevice* dev)
 	if (!dev)
 		return;
 	/* joins the device's thread: no callback runs after this */
+	if (dev->thread)
+	{
+		(void)SetEvent(dev->stopEvent);
+		(void)WaitForSingleObject(dev->thread, INFINITE);
+		(void)CloseHandle(dev->thread);
+	}
 	if (dev->ctx)
 		camera_device_server_context_free(dev->ctx);
+	/* the camera's thread wakes the owner only: no longer the owner, its events can go */
 	camera_release(dev, "closed");
+	if (dev->stopEvent)
+		(void)CloseHandle(dev->stopEvent);
+	if (dev->wakeEvent)
+		(void)CloseHandle(dev->wakeEvent);
 	shadow_camera_decoder_free(dev->decoder);
 	free(dev->channel);
 	free(dev->name);
@@ -365,7 +434,7 @@ static CAM_SHARED_MSG_HEADER camera_header(const CameraDevice* dev, CAM_MSG_ID i
 
 static void camera_refill(CameraDevice* dev)
 {
-	if (dev->state != CAMERA_DEVICE_STREAMING)
+	if ((dev->state != CAMERA_DEVICE_READY) || (dev->stream != SHADOW_CAMERA_STREAM_STREAMING))
 		return;
 
 	const UINT32 rtt = shadow_client_autodetect_rtt_ms(dev->cc->client);
@@ -403,6 +472,67 @@ static BOOL camera_device_channel_id_assigned(CameraDeviceServerContext* context
 	return TRUE;
 }
 
+/* starts or stops the stream as the readers want (the device's thread) */
+static void camera_device_apply_demand(CameraDevice* dev)
+{
+	WINPR_ASSERT(dev);
+
+	if (dev->state != CAMERA_DEVICE_READY)
+		return;
+
+	EnterCriticalSection(&g_camera.lock);
+	const BOOL wanted = g_camera.streamWanted && shadow_camera_owner_is(&g_camera.owner, dev);
+	const INT32 readers = g_camera.readers;
+	LeaveCriticalSection(&g_camera.lock);
+
+	switch (shadow_camera_stream_action(dev->stream, wanted))
+	{
+		case SHADOW_CAMERA_STREAM_START:
+		{
+			CAM_START_STREAMS_REQUEST request = {
+				.Header = camera_header(dev, CAM_MSG_ID_StartStreamsRequest), .N_Infos = 1
+			};
+			request.StartStreamsInfo[0].StreamIndex = dev->streamIndex;
+			request.StartStreamsInfo[0].MediaTypeDescription = dev->type;
+			dev->stream = SHADOW_CAMERA_STREAM_STARTING;
+			dev->outstanding = 0;
+			dev->errors = 0;
+			dev->starts++;
+			WLog_INFO(TAG, "camera: \"%s\" of client %s: Start Streams #%" PRIu32 " (%s)",
+			          dev->name, camera_client_name(dev->cc), dev->starts,
+			          (readers < 0) ? "the sink can't tell its readers"
+			                        : "an app reads the camera");
+			if (dev->ctx->StartStreamsRequest(dev->ctx, &request) != CHANNEL_RC_OK)
+				camera_fail(dev, "start streams request failed");
+		}
+		break;
+		case SHADOW_CAMERA_STREAM_STOP:
+		{
+			const CAM_STOP_STREAMS_REQUEST request = { .Header = camera_header(
+				                                           dev, CAM_MSG_ID_StopStreamsRequest) };
+			dev->stream = SHADOW_CAMERA_STREAM_STOPPING;
+			WLog_INFO(TAG, "camera: \"%s\" of client %s: Stop Streams (no app reads the camera)",
+			          dev->name, camera_client_name(dev->cc));
+			if (dev->ctx->StopStreamsRequest(dev->ctx, &request) != CHANNEL_RC_OK)
+				camera_fail(dev, "stop streams request failed");
+
+			/* the still, at once */
+			EnterCriticalSection(&g_camera.lock);
+			if (shadow_camera_owner_is(&g_camera.owner, dev))
+			{
+				g_camera.ownerStreaming = FALSE;
+				g_camera.stillShown = FALSE;
+				camera_wake();
+			}
+			LeaveCriticalSection(&g_camera.lock);
+		}
+		break;
+		case SHADOW_CAMERA_STREAM_NONE:
+		default:
+			break;
+	}
+}
+
 static UINT camera_device_success(CameraDeviceServerContext* context,
                                   WINPR_ATTR_UNUSED const CAM_SUCCESS_RESPONSE* response)
 {
@@ -420,11 +550,22 @@ static UINT camera_device_success(CameraDeviceServerContext* context,
 				camera_fail(dev, "stream list request failed");
 		}
 		break;
-		case CAMERA_DEVICE_STARTING:
-			dev->state = CAMERA_DEVICE_STREAMING;
-			WLog_INFO(TAG, "camera: \"%s\" of client %s streams %s", dev->name,
-			          camera_client_name(dev->cc), dev->detail);
-			camera_refill(dev);
+		case CAMERA_DEVICE_READY:
+			if (dev->stream == SHADOW_CAMERA_STREAM_STARTING)
+			{
+				dev->stream = SHADOW_CAMERA_STREAM_STREAMING;
+				WLog_INFO(TAG, "camera: \"%s\" of client %s streams %s", dev->name,
+				          camera_client_name(dev->cc), dev->detail);
+				camera_refill(dev);
+			}
+			else if (dev->stream == SHADOW_CAMERA_STREAM_STOPPING)
+			{
+				dev->stream = SHADOW_CAMERA_STREAM_IDLE;
+				WLog_INFO(TAG, "camera: \"%s\" of client %s stopped", dev->name,
+				          camera_client_name(dev->cc));
+			}
+			/* the readers may have changed meanwhile */
+			camera_device_apply_demand(dev);
 			break;
 		default:
 			break;
@@ -537,14 +678,10 @@ static UINT camera_device_media_types(CameraDeviceServerContext* context,
 		return CHANNEL_RC_OK;
 	}
 
-	CAM_START_STREAMS_REQUEST request = { .Header =
-		                                      camera_header(dev, CAM_MSG_ID_StartStreamsRequest),
-		                                  .N_Infos = 1 };
-	request.StartStreamsInfo[0].StreamIndex = dev->streamIndex;
-	request.StartStreamsInfo[0].MediaTypeDescription = dev->type;
-	dev->state = CAMERA_DEVICE_STARTING;
-	if (context->StartStreamsRequest(context, &request) != CHANNEL_RC_OK)
-		camera_fail(dev, "start streams request failed");
+	/* started when an app reads the camera */
+	dev->state = CAMERA_DEVICE_READY;
+	dev->stream = SHADOW_CAMERA_STREAM_IDLE;
+	camera_device_apply_demand(dev);
 	return CHANNEL_RC_OK;
 }
 
@@ -574,7 +711,7 @@ static UINT camera_device_sample(CameraDeviceServerContext* context,
 	WINPR_ASSERT(dev);
 	WINPR_ASSERT(response);
 
-	if (dev->state != CAMERA_DEVICE_STREAMING)
+	if ((dev->state != CAMERA_DEVICE_READY) || (dev->stream != SHADOW_CAMERA_STREAM_STREAMING))
 		return CHANNEL_RC_OK;
 	if (dev->outstanding > 0)
 		dev->outstanding--;
@@ -609,7 +746,7 @@ static UINT camera_device_sample_error(CameraDeviceServerContext* context,
 	WINPR_ASSERT(dev);
 	WINPR_ASSERT(response);
 
-	if (dev->state != CAMERA_DEVICE_STREAMING)
+	if ((dev->state != CAMERA_DEVICE_READY) || (dev->stream != SHADOW_CAMERA_STREAM_STREAMING))
 		return CHANNEL_RC_OK;
 	if (dev->outstanding > 0)
 		dev->outstanding--;
@@ -694,6 +831,48 @@ static CameraDevice* camera_client_find_locked(CameraClient* cc, const char* cha
 	return nullptr;
 }
 
+/* the device's channel and its stream's demand, on one thread */
+static DWORD WINAPI camera_device_thread(LPVOID arg)
+{
+	CameraDevice* dev = arg;
+	WINPR_ASSERT(dev);
+	CameraDeviceServerContext* ctx = dev->ctx;
+	WINPR_ASSERT(ctx);
+
+	/* opens the channel; ChannelIdAssigned sends Activate Device */
+	HANDLE channel = nullptr;
+	if ((ctx->Poll(ctx) != CHANNEL_RC_OK) || !ctx->ChannelHandle(ctx, &channel) || !channel)
+	{
+		camera_fail(dev, "channel not opened");
+		return 0;
+	}
+
+	for (;;)
+	{
+		HANDLE events[] = { dev->stopEvent, dev->wakeEvent, channel };
+		const DWORD status = WaitForMultipleObjects(ARRAYSIZE(events), events, FALSE, INFINITE);
+		if (status == WAIT_OBJECT_0)
+			break;
+		if (status == WAIT_OBJECT_0 + 2)
+		{
+			const UINT rc = ctx->Poll(ctx);
+			if (rc != CHANNEL_RC_OK)
+			{
+				WLog_DBG(TAG, "camera: the channel of \"%s\" ended (%" PRIu32 ")", dev->name, rc);
+				camera_fail(dev, "channel closed");
+				break;
+			}
+		}
+		else if (status != WAIT_OBJECT_0 + 1)
+		{
+			camera_fail(dev, "wait failed");
+			break;
+		}
+		camera_device_apply_demand(dev);
+	}
+	return 0;
+}
+
 static BOOL camera_device_open(CameraDevice* dev)
 {
 	CameraClient* cc = dev->cc;
@@ -713,9 +892,15 @@ static BOOL camera_device_open(CameraDevice* dev)
 	ctx->MediaTypeListResponse = camera_device_media_types;
 	ctx->SampleResponse = camera_device_sample;
 	ctx->SampleErrorResponse = camera_device_sample_error;
-	if (ctx->Initialize(ctx, FALSE) != CHANNEL_RC_OK)
+	if ((ctx->Initialize(ctx, TRUE) != CHANNEL_RC_OK) || (ctx->Open(ctx) != CHANNEL_RC_OK))
 		return FALSE;
-	return ctx->Open(ctx) == CHANNEL_RC_OK;
+
+	dev->stopEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+	dev->wakeEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+	if (!dev->stopEvent || !dev->wakeEvent)
+		return FALSE;
+	dev->thread = CreateThread(nullptr, 0, camera_device_thread, dev, 0, nullptr);
+	return dev->thread != nullptr;
 }
 
 static UINT camera_enum_device_added(CamDevEnumServerContext* context,
@@ -756,30 +941,33 @@ static UINT camera_enum_device_added(CamDevEnumServerContext* context,
 		return CHANNEL_RC_OK;
 	}
 
-	/* the one line a refused camera gets */
-	if (!cc->client->mayInteract)
-	{
-		WLog_INFO(TAG, "camera: \"%s\" of client %s refused: the client may not interact",
-		          dev->name, camera_client_name(cc));
-		camera_device_free(dev);
-		return CHANNEL_RC_OK;
-	}
 	EnterCriticalSection(&g_camera.lock);
-	const BOOL hasSink = g_camera.running && g_camera.sink;
-	const SHADOW_CAMERA_CLAIM claim =
-	    hasSink ? shadow_camera_owner_claim(&g_camera.owner, dev) : SHADOW_CAMERA_CLAIM_REFUSED;
+	const SHADOW_CAMERA_ADMIT admit =
+	    shadow_camera_admit(&g_camera.owner, dev, cc->client->mayInteract,
+	                        g_camera.running && (g_camera.sink != nullptr));
 	LeaveCriticalSection(&g_camera.lock);
-	if (!hasSink)
+
+	/* the one line a refused camera gets */
+	const char* refused = nullptr;
+	switch (admit)
 	{
-		WLog_INFO(TAG, "camera: \"%s\" of client %s refused: the server has no virtual camera",
-		          dev->name, camera_client_name(cc));
-		camera_device_free(dev);
-		return CHANNEL_RC_OK;
+		case SHADOW_CAMERA_ADMIT_VIEW_ONLY:
+			refused = "the client may not interact";
+			break;
+		case SHADOW_CAMERA_ADMIT_NO_CAMERA:
+			refused = "the server has no virtual camera";
+			break;
+		case SHADOW_CAMERA_ADMIT_OWNED:
+			refused = "another client owns the camera";
+			break;
+		case SHADOW_CAMERA_ADMIT_GRANTED:
+		default:
+			break;
 	}
-	if (claim != SHADOW_CAMERA_CLAIM_GRANTED)
+	if (refused)
 	{
-		WLog_INFO(TAG, "camera: \"%s\" of client %s refused: another client owns the camera",
-		          dev->name, camera_client_name(cc));
+		WLog_INFO(TAG, "camera: \"%s\" of client %s refused: %s", dev->name, camera_client_name(cc),
+		          refused);
 		camera_device_free(dev);
 		return CHANNEL_RC_OK;
 	}
@@ -846,6 +1034,9 @@ BOOL shadow_camera_server_start(WINPR_ATTR_UNUSED rdpShadowServer* server)
 	g_camera.stills = 0;
 	g_camera.stillShown = FALSE;
 	g_camera.decoders = decoders;
+	g_camera.readers = -1;
+	g_camera.demand = (ShadowCameraDemand){ 0 };
+	g_camera.streamWanted = FALSE;
 	if (!g_camera.clients)
 		g_camera.clients = ArrayList_New(FALSE);
 	if (sink)
@@ -865,6 +1056,7 @@ BOOL shadow_camera_server_start(WINPR_ATTR_UNUSED rdpShadowServer* server)
 	g_camera.running = TRUE;
 	/* at once: v4l2loopback with exclusive_caps=1 offers capture only once a writer wrote */
 	camera_write_still_locked();
+	(void)camera_update_demand_locked();
 	LeaveCriticalSection(&g_camera.lock);
 
 	if (!g_camera.clients)
