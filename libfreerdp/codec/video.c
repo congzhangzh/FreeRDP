@@ -24,6 +24,7 @@
 #include <winpr/assert.h>
 #include <winpr/wlog.h>
 #include <winpr/stream.h>
+#include <winpr/synch.h>
 #include <freerdp/log.h>
 
 #include <freerdp/codec/video.h>
@@ -79,6 +80,11 @@ struct s_FREERDP_VIDEO_CONTEXT
 	UINT32 width;
 	UINT32 height;
 	struct SwsContext* sws;
+	/* what sws was made for: a frame of another size or format needs another context */
+	UINT32 swsWidth;
+	UINT32 swsHeight;
+	enum AVPixelFormat swsSrcFormat;
+	enum AVPixelFormat swsDstFormat;
 
 #if defined(WITH_MJPEG_DECODER)
 	AVCodecContext* mjpegDecoder;
@@ -130,6 +136,38 @@ static enum AVPixelFormat video_format_to_av(wLog* log, FREERDP_VIDEO_FORMAT for
 	}
 }
 
+/*
+ * What the build was configured with is not what the process can do: an avcodec without the
+ * MJPEG decoder, or with no H.264 encoder (an LGPL FFmpeg of decoders only), still defines
+ * WITH_VIDEO_FFMPEG. Both are asked once, the way freerdp_codec_support_status probes the H.264
+ * encoder (h264.c), so a conversion announced here also works in freerdp_video_sample_convert.
+ */
+static INIT_ONCE video_probe_once = INIT_ONCE_STATIC_INIT;
+static BOOL video_mjpeg_decoder = FALSE;
+static BOOL video_h264_encoder = FALSE;
+
+static BOOL CALLBACK video_probe(PINIT_ONCE once, PVOID param, PVOID* context)
+{
+	WINPR_UNUSED(once);
+	WINPR_UNUSED(param);
+	WINPR_UNUSED(context);
+
+#if defined(WITH_MJPEG_DECODER)
+	video_mjpeg_decoder = avcodec_find_decoder(AV_CODEC_ID_MJPEG) != nullptr;
+#endif
+
+#if defined(WITH_OPENH264) || defined(WITH_VIDEO_FFMPEG) || defined(WITH_MEDIA_FOUNDATION) || \
+    defined(WITH_MEDIACODEC) || defined(WITH_APPLE_VIDEOTOOLBOX)
+	H264_CONTEXT* h264 = h264_context_new(TRUE);
+	video_h264_encoder = h264 != nullptr;
+	h264_context_free(h264);
+#endif
+
+	WLog_Print(WLog_Get(VTAG), WLOG_DEBUG, "MJPEG decoder: %s, H.264 encoder: %s",
+	           video_mjpeg_decoder ? "yes" : "no", video_h264_encoder ? "yes" : "no");
+	return TRUE;
+}
+
 BOOL freerdp_video_available(void)
 {
 	return freerdp_swscale_available() && freerdp_avutil_available();
@@ -156,12 +194,11 @@ FREERDP_VIDEO_CONTEXT* freerdp_video_context_new(UINT32 width, UINT32 height)
 
 #if defined(WITH_MJPEG_DECODER)
 	/* Initialize MJPEG decoder */
+	/* an avcodec without it still converts the raw formats: only MJPEG input is refused
+	 * (freerdp_video_conversion_supported, freerdp_video_decode_mjpeg) */
 	const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_MJPEG);
 	if (!codec)
-	{
-		WLog_Print(context->log, WLOG_ERROR, "avcodec_find_decoder failed to find MJPEG codec");
-		goto fail;
-	}
+		return context;
 
 	context->mjpegDecoder = avcodec_alloc_context3(codec);
 	if (!context->mjpegDecoder)
@@ -253,6 +290,17 @@ BOOL freerdp_video_context_reconfigure(FREERDP_VIDEO_CONTEXT* context, UINT32 wi
 
 	if (bitrate == 0)
 		bitrate = video_get_h264_bitrate(context->log, height);
+
+	/* Raw output needs no encoder: without one, only the size is taken, and H.264 output
+	 * stays refused (h264Configured) */
+	if (!InitOnceExecuteOnce(&video_probe_once, video_probe, nullptr, nullptr))
+		return FALSE;
+	if (!video_h264_encoder)
+	{
+		context->width = width;
+		context->height = height;
+		return TRUE;
+	}
 
 	if (!context->h264)
 	{
@@ -385,6 +433,26 @@ BOOL freerdp_video_sample_convert(FREERDP_VIDEO_CONTEXT* context, FREERDP_VIDEO_
 	else
 	{
 		intermediate_format = video_format_to_av(context->log, srcFormat);
+
+		/* a raw sample is read as a whole frame of the context's size: it may come from the
+		 * remote side (a camera server), so it must hold that frame */
+		int srcLineSize[4] = WINPR_C_ARRAY_INIT;
+		BYTE* srcPlanes[4] = WINPR_C_ARRAY_INIT;
+		const int srcSize =
+		    (intermediate_format == AV_PIX_FMT_NONE) ||
+		            (freerdp_av_image_fill_linesizes(srcLineSize, intermediate_format,
+		                                             (int)context->width) < 0)
+		        ? -1
+		        : freerdp_av_image_fill_pointers(srcPlanes, intermediate_format,
+		                                         (int)context->height, nullptr, srcLineSize);
+		if ((srcSize <= 0) || (srcSampleLength < (size_t)srcSize))
+		{
+			WLog_Print(context->log, WLOG_ERROR,
+			           "Sample of %" PRIuz " bytes, a %" PRIu32 "x%" PRIu32 " %s frame needs %d",
+			           srcSampleLength, context->width, context->height,
+			           freerdp_video_format_string(srcFormat), srcSize);
+			return FALSE;
+		}
 	}
 
 	if (dstFormat == FREERDP_VIDEO_FORMAT_H264)
@@ -470,8 +538,53 @@ BOOL freerdp_video_sample_convert(FREERDP_VIDEO_CONTEXT* context, FREERDP_VIDEO_
 		return FALSE;
 	}
 
-	WLog_Print(context->log, WLOG_ERROR, "Raw format output not yet implemented");
-	return FALSE;
+	/* A raw frame: its planes packed without padding (av_image_fill_linesizes), as the camera
+	 * formats of [MS-RDPECAM] carry them, written at the stream's position */
+	const enum AVPixelFormat dstPixFmt = video_format_to_av(context->log, dstFormat);
+	int dstLineSize[4] = WINPR_C_ARRAY_INIT;
+	BYTE* dstPlanes[4] = WINPR_C_ARRAY_INIT;
+	if ((dstPixFmt == AV_PIX_FMT_NONE) ||
+	    (freerdp_av_image_fill_linesizes(dstLineSize, dstPixFmt, (int)context->width) < 0))
+	{
+		WLog_Print(context->log, WLOG_ERROR, "Unsupported output format %u", dstFormat);
+		return FALSE;
+	}
+
+	const int dstSize = freerdp_av_image_fill_pointers(dstPlanes, dstPixFmt, (int)context->height,
+	                                                   nullptr, dstLineSize);
+	if ((dstSize <= 0) || !Stream_EnsureRemainingCapacity(output, (size_t)dstSize) ||
+	    (freerdp_av_image_fill_pointers(dstPlanes, dstPixFmt, (int)context->height,
+	                                    Stream_Pointer(output), dstLineSize) != dstSize))
+	{
+		WLog_Print(context->log, WLOG_ERROR, "Failed to lay out a %" PRIu32 "x%" PRIu32 " frame",
+		           context->width, context->height);
+		return FALSE;
+	}
+
+	BYTE* srcPlanes[4] = { intermediate_data[0], intermediate_data[1], intermediate_data[2],
+		                   intermediate_data[3] };
+	int srcStrides[4] = { intermediate_linesize[0], intermediate_linesize[1],
+		                  intermediate_linesize[2], intermediate_linesize[3] };
+	if (!srcCompressed &&
+	    !freerdp_video_fill_plane_info(context->log, srcPlanes, srcStrides, srcFormat,
+	                                   context->width, context->height, (const BYTE*)srcSampleData))
+	{
+		WLog_Print(context->log, WLOG_ERROR, "Failed to fill plane info");
+		return FALSE;
+	}
+
+	const BYTE* cSrcPlanes[4] = { srcPlanes[0], srcPlanes[1], srcPlanes[2], srcPlanes[3] };
+	if (!freerdp_video_convert_to_yuv(context, cSrcPlanes, srcStrides, intermediate_format,
+	                                  dstPlanes, dstLineSize, dstFormat, context->width,
+	                                  context->height))
+	{
+		WLog_Print(context->log, WLOG_ERROR, "Conversion to %s failed",
+		           freerdp_video_format_string(dstFormat));
+		return FALSE;
+	}
+
+	Stream_Seek(output, (size_t)dstSize);
+	return TRUE;
 }
 
 static BOOL freerdp_video_decode_mjpeg(FREERDP_VIDEO_CONTEXT* context, const BYTE* srcData,
@@ -507,6 +620,19 @@ static BOOL freerdp_video_decode_mjpeg(FREERDP_VIDEO_CONTEXT* context, const BYT
 		return FALSE;
 	}
 
+	/* The JPEG says its own size: from a remote camera it may not be the negotiated one, and
+	 * the frame is read with the context's size */
+	if ((context->mjpegFrame->width != (int)context->width) ||
+	    (context->mjpegFrame->height != (int)context->height))
+	{
+		WLog_Print(context->log, WLOG_ERROR,
+		           "MJPEG frame of %dx%d, the stream is %" PRIu32 "x%" PRIu32,
+		           context->mjpegFrame->width, context->mjpegFrame->height, context->width,
+		           context->height);
+		av_frame_unref(context->mjpegFrame);
+		return FALSE;
+	}
+
 	/* Copy plane pointers and line sizes */
 	for (size_t i = 0; i < 4; i++)
 	{
@@ -514,8 +640,8 @@ static BOOL freerdp_video_decode_mjpeg(FREERDP_VIDEO_CONTEXT* context, const BYT
 		dstLineSize[i] = context->mjpegFrame->linesize[i];
 	}
 
-	/* Convert pixel format */
-	*dstFormat = context->mjpegDecoder->pix_fmt;
+	/* the frame's own format: a later JPEG may change it (4:2:0, then 4:2:2) */
+	*dstFormat = (enum AVPixelFormat)context->mjpegFrame->format;
 
 	return TRUE;
 #else
@@ -563,6 +689,14 @@ static BOOL freerdp_video_convert_to_yuv(FREERDP_VIDEO_CONTEXT* context, const B
 	struct SwsContext* sws = nullptr;
 	BOOL needFree = FALSE;
 
+	if (context && context->sws &&
+	    ((context->swsWidth != width) || (context->swsHeight != height) ||
+	     (context->swsSrcFormat != srcPixFmt) || (context->swsDstFormat != dstPixFmt)))
+	{
+		freerdp_sws_freeContext(context->sws);
+		context->sws = nullptr;
+	}
+
 	if (context && context->sws)
 	{
 		sws = context->sws;
@@ -578,7 +712,13 @@ static BOOL freerdp_video_convert_to_yuv(FREERDP_VIDEO_CONTEXT* context, const B
 		}
 
 		if (context)
+		{
 			context->sws = sws;
+			context->swsWidth = width;
+			context->swsHeight = height;
+			context->swsSrcFormat = srcPixFmt;
+			context->swsDstFormat = dstPixFmt;
+		}
 		else
 			needFree = TRUE;
 	}
@@ -646,28 +786,17 @@ BOOL freerdp_video_conversion_supported(FREERDP_VIDEO_FORMAT srcFormat,
 	if (!freerdp_video_available())
 		return FALSE;
 
-	if (srcFormat == FREERDP_VIDEO_FORMAT_MJPEG)
-	{
-#if !defined(WITH_MJPEG_DECODER)
+	if ((srcFormat == FREERDP_VIDEO_FORMAT_H264) || (dstFormat == FREERDP_VIDEO_FORMAT_MJPEG))
 		return FALSE;
-#endif
-	}
-	else if (srcFormat == FREERDP_VIDEO_FORMAT_H264)
-	{
-		return FALSE;
-	}
 
-	if (dstFormat == FREERDP_VIDEO_FORMAT_MJPEG)
-	{
+	if (!InitOnceExecuteOnce(&video_probe_once, video_probe, nullptr, nullptr))
 		return FALSE;
-	}
-	else if (dstFormat == FREERDP_VIDEO_FORMAT_H264)
-	{
-#if !defined(WITH_OPENH264) && !defined(WITH_VIDEO_FFMPEG) && !defined(WITH_MEDIA_FOUNDATION) && \
-    !defined(WITH_MEDIACODEC) && !defined(WITH_APPLE_VIDEOTOOLBOX)
+
+	if ((srcFormat == FREERDP_VIDEO_FORMAT_MJPEG) && !video_mjpeg_decoder)
 		return FALSE;
-#endif
-	}
+
+	if ((dstFormat == FREERDP_VIDEO_FORMAT_H264) && !video_h264_encoder)
+		return FALSE;
 
 	return TRUE;
 }
