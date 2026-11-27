@@ -282,4 +282,20 @@ WINPR_ATTR_NODISCARD FREERDP_LOCAL UINT32 h264_get_max_bitrate(UINT32 height);
 WINPR_ATTR_NODISCARD
 FREERDP_LOCAL FREERDP_VIDEO_FORMAT ecamToVideoFormat(CAM_MEDIA_FORMAT ecamFormat);
 
+/**
+ * @brief TRUE for the virtual camera of a FreeRDP server (RDPECAM_FREERDP_CAMERA_NAME, or
+ * that name with a suffix in parentheses, as Windows lists its virtual cameras): never
+ * offered, so a client on a server's own machine does not send it its own camera. Only
+ * this one: other virtual or loopback cameras (OBS') are offered as any camera.
+ */
+static inline BOOL ecam_is_freerdp_camera(const char* name)
+{
+	if (!name)
+		return FALSE;
+	const size_t len = strlen(RDPECAM_FREERDP_CAMERA_NAME);
+	if (strncmp(name, RDPECAM_FREERDP_CAMERA_NAME, len) != 0)
+		return FALSE;
+	return (name[len] == '\0') || (strncmp(&name[len], " (", 2) == 0);
+}
+
 #endif /* FREERDP_CLIENT_CAMERA_H */
