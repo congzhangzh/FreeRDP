@@ -31,6 +31,12 @@
  * a stream that starts adds one, one that stops or shuts down takes it back, and readerTick
  * says when one last took a frame, so a reader that died without a word stops counting.
  *
+ * v2: the count lives in a small section of its own, so that the frames are read-only for the
+ * reader (Frame Server's svchost, Local Service, could not open v1's one section for writing:
+ * ERROR_ACCESS_DENIED, kit run 46066264731). The reader opens the frames read-only and the
+ * count read-write when it may; without the count the shadow server still knows its readers
+ * from the virtual camera's SOURCE_START and SOURCE_STOP events (sink_win.c).
+ *
  * Plain Win32, no WinPR: the media source DLL links nothing of FreeRDP.
  */
 
@@ -47,14 +53,15 @@ extern "C"
 {
 #endif
 
-/** the section and the event, in the Global\ namespace (the reader is in session 0) */
-#define SHADOW_CAMERA_RING_NAME L"Global\\FreeRDP-Shadow-Camera-Ring-v1"
-#define SHADOW_CAMERA_RING_EVENT_NAME L"Global\\FreeRDP-Shadow-Camera-Frame-v1"
+/** the sections and the event, in the Global\ namespace (the reader is in session 0) */
+#define SHADOW_CAMERA_RING_NAME L"Global\\FreeRDP-Shadow-Camera-Ring-v2"
+#define SHADOW_CAMERA_RING_READERS_NAME L"Global\\FreeRDP-Shadow-Camera-Readers-v2"
+#define SHADOW_CAMERA_RING_EVENT_NAME L"Global\\FreeRDP-Shadow-Camera-Frame-v2"
 /** tests: a different name prefix (e.g. "Local\\TestCamera-1234"), read by both sides */
 #define SHADOW_CAMERA_RING_NAME_ENV "FREERDP_SHADOW_CAMERA_RING"
 
 #define SHADOW_CAMERA_RING_MAGIC 0x46435246u /* "FRCF" */
-#define SHADOW_CAMERA_RING_VERSION 1u
+#define SHADOW_CAMERA_RING_VERSION 2u
 #define SHADOW_CAMERA_RING_SLOTS 3u
 #define SHADOW_CAMERA_RING_FOURCC_NV12 0x3231564Eu /* 'N','V','1','2' */
 /** a reader that took no frame for this long no longer counts */
@@ -74,31 +81,46 @@ extern "C"
 		UINT32 slotOffset; /**< from the start of the section */
 		UINT32 slotStride;
 		UINT32 writerPid;
-		volatile LONG latest;       /**< the slot of the newest complete frame, -1 none yet */
-		volatile LONG readers;      /**< media source streams running */
+		volatile LONG latest; /**< the slot of the newest complete frame, -1 none yet */
+		UINT32 reserved;
 		volatile LONG64 frames;     /**< frames written */
-		volatile LONG64 readerTick; /**< GetTickCount64() when a reader last took a frame */
 		volatile LONG64 writerTick; /**< GetTickCount64() of the last frame written */
 		volatile LONG64 slotSequence[SHADOW_CAMERA_RING_SLOTS]; /**< odd while written */
 	} ShadowCameraRingHeader;
 
+	/** the readers' own section: what they write */
+	typedef struct
+	{
+		UINT32 magic;
+		UINT32 version;
+		volatile LONG readers; /**< media source streams running */
+		UINT32 reserved;
+		volatile LONG64 readerTick; /**< GetTickCount64() when a reader last took a frame */
+	} ShadowCameraRingReaders;
+
 	typedef struct s_shadow_camera_ring ShadowCameraRing;
 
-	/** The writer: creates the section and the event (Local System and Administrators: all;
-	 *  Local Service: read and write the section, wait on the event). error: GetLastError()
+	/** The writer: creates the sections and the event (Local System and Administrators: all;
+	 *  Local Service: read the frames, read and write the readers' section, wait on the
+	 *  event). error: GetLastError()
 	 *  of what failed. A ring that exists already (another shadow server) is an error:
 	 *  ERROR_ALREADY_EXISTS. */
 	ShadowCameraRing* shadow_camera_ring_create(UINT32 width, UINT32 height, UINT32 fps,
 	                                            DWORD* error);
 
-	/** The reader: opens the ring the writer made, nullptr when there is none */
+	/** The reader: opens the ring the writer made (the frames read-only), nullptr when there is
+	 *  none or it may not; error: GetLastError() of what failed */
 	ShadowCameraRing* shadow_camera_ring_open(DWORD* error);
+
+	/** reader: why the readers' section did not open (0: it did); the ring works without it,
+	 *  this reader then just does not count */
+	DWORD shadow_camera_ring_readers_error(const ShadowCameraRing* ring);
 
 	void shadow_camera_ring_close(ShadowCameraRing* ring);
 
 	const ShadowCameraRingHeader* shadow_camera_ring_header(const ShadowCameraRing* ring);
 
-	/** The event the writer sets after each frame */
+	/** The event the writer sets after each frame (a reader's may be nullptr: it may not wait) */
 	HANDLE shadow_camera_ring_event(const ShadowCameraRing* ring);
 
 	/** writer: one tightly packed NV12 frame of the ring's size */

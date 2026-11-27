@@ -95,6 +95,8 @@ struct s_win_sink
 	ShadowCameraRing* ring;
 	size_t frameSize;
 	LONG lastReaders;
+	/* SOURCE_START to SOURCE_STOP (the virtual camera's own events): 1 while an app streams */
+	volatile LONG sourceStreams;
 
 	HANDLE thread;
 	HANDLE ready; /* the thread set up the camera, or gave up: started */
@@ -289,9 +291,9 @@ static const char* win_camera_event_name(const GUID* extended)
 	return "other";
 }
 
-static HRESULT STDMETHODCALLTYPE win_callback_invoke(WINPR_ATTR_UNUSED IMFAsyncCallback* This,
-                                                     IMFAsyncResult* result)
+static HRESULT STDMETHODCALLTYPE win_callback_invoke(IMFAsyncCallback* This, IMFAsyncResult* result)
 {
+	WinSink* ws = win_callback(This)->sink;
 	if (!result)
 		return S_OK;
 	IUnknown* unknown = nullptr;
@@ -322,6 +324,19 @@ static HRESULT STDMETHODCALLTYPE win_callback_invoke(WINPR_ATTR_UNUSED IMFAsyncC
 	else
 		WLog_INFO(TAG, "camera: virtual camera event %s (status 0x%08" PRIX32 ")",
 		          win_camera_event_name(&extended), (UINT32)status);
+
+	/* the readers' first signal: Frame Server says when an app starts and stops streaming */
+	if (ws && (type == MEExtendedType))
+	{
+		if (IsEqualGUID(&extended, &CameraMF_VCAMEVENT_SOURCE_START))
+			(void)InterlockedExchange(&ws->sourceStreams, 1);
+		else if (IsEqualGUID(&extended, &CameraMF_VCAMEVENT_SOURCE_STOP) ||
+		         IsEqualGUID(&extended, &CameraMF_VCAMEVENT_SOURCE_UNINITIALIZE) ||
+		         IsEqualGUID(&extended, &CameraMF_VCAMEVENT_PIPELINE_SHUTDOWN))
+			(void)InterlockedExchange(&ws->sourceStreams, 0);
+	}
+	else if (ws && (type == MEError))
+		(void)InterlockedExchange(&ws->sourceStreams, 0);
 	return S_OK;
 }
 
@@ -464,18 +479,22 @@ static BOOL win_sink_write(ShadowCameraSink* sink, const ShadowCameraImage* fram
 	return TRUE;
 }
 
-/* the media source's streams that run (each counts itself in the ring from SOURCE_START to
- * SOURCE_STOP, and stops counting when it took no frame for 3 s); never blocks */
+/* the readers: an app streams from SOURCE_START to SOURCE_STOP (the virtual camera's events,
+ * the first signal), or the media source's streams count themselves in the ring (the second:
+ * Frame Server's process may not be allowed to write the count); never blocks */
 static INT32 win_sink_readers(ShadowCameraSink* sink)
 {
 	WinSink* ws = (WinSink*)sink;
 	WINPR_ASSERT(ws);
-	const LONG readers = shadow_camera_ring_readers(ws->ring);
+	const LONG events = InterlockedCompareExchange(&ws->sourceStreams, 0, 0);
+	const LONG ring = shadow_camera_ring_readers(ws->ring);
+	const LONG readers = (events > ring) ? events : ring;
 	const LONG last = InterlockedExchange(&ws->lastReaders, readers);
 	if ((readers > 0) != (last > 0))
-		WLog_INFO(TAG, "camera: %s",
+		WLog_INFO(TAG, "camera: %s (camera events %" PRId32 ", ring count %" PRId32 ")",
 		          (readers > 0) ? "an app reads the virtual camera"
-		                        : "no app reads the virtual camera");
+		                        : "no app reads the virtual camera",
+		          (INT32)events, (INT32)ring);
 	return (INT32)readers;
 }
 
