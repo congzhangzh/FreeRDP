@@ -1448,6 +1448,8 @@ WINPR_ATTR_NODISCARD
 static BOOL mf_init(H264_CONTEXT* h264)
 {
 	HRESULT hr;
+	/* no decoder for this stream here: not an error, the next subsystem decodes */
+	BOOL declined = FALSE;
 
 	WINPR_ASSERT(h264);
 
@@ -1521,7 +1523,10 @@ static BOOL mf_init(H264_CONTEXT* h264)
 		{
 			hr = mf_decoder_create_hevc(h264, sys);
 			if (FAILED(hr))
+			{
+				declined = (hr == MF_E_TOPO_CODEC_NOT_FOUND);
 				goto error;
+			}
 		}
 		else
 		{
@@ -1661,7 +1666,11 @@ static BOOL mf_init(H264_CONTEXT* h264)
 	h264->hwAccel = FALSE; /* not supported */
 	return TRUE;
 error:
-	WLog_Print(h264->log, WLOG_ERROR, "mf_init failure");
+	if (declined)
+		WLog_Print(h264->log, WLOG_INFO,
+		           "MediaFoundation not used for this stream, the next decoder takes over");
+	else
+		WLog_Print(h264->log, WLOG_ERROR, "mf_init failure");
 	mf_uninit(h264);
 	return FALSE;
 }
