@@ -42,6 +42,9 @@
 #include "mac_cursor.h"
 #include "mac_input.h"
 #include "mac_ipc.h"
+#if defined(WITH_SHADOW_CAMERA_MAC)
+#include "camera_sink.h"
+#endif
 
 #define TAG SERVER_TAG("shadow.mac.agent")
 
@@ -319,6 +322,43 @@ static void agent_on_event(xpc_object_t msg)
 		(void)mac_input_post(&g_input, event);
 }
 
+#if defined(WITH_SHADOW_CAMERA_MAC)
+/* the virtual camera: the daemon decodes the owner's camera, this agent (in the GUI session)
+ * pushes each frame into the camera extension's sink */
+static camMacSink *g_cameraSink;
+
+static void agent_on_camera(xpc_object_t msg)
+{
+	xpc_object_t value = xpc_dictionary_get_value(msg, "surface");
+	IOSurfaceRef surface = value ? IOSurfaceLookupFromXPCObject(value) : nullptr;
+	if (!surface)
+		return;
+	CVPixelBufferRef pixels = nullptr;
+	const CVReturn rc =
+	    CVPixelBufferCreateWithIOSurface(kCFAllocatorDefault, surface, nullptr, &pixels);
+	CFRelease(surface);
+	if ((rc != kCVReturnSuccess) || !pixels)
+		return;
+	if (!g_cameraSink)
+		g_cameraSink = cam_mac_sink_new(nullptr);
+	if (g_cameraSink)
+	{
+		cam_mac_sink_set_owner(g_cameraSink, xpc_dictionary_get_uint64(msg, "owner"));
+		(void)cam_mac_sink_push(g_cameraSink, pixels);
+	}
+	CVPixelBufferRelease(pixels);
+}
+
+static void agent_camera_stop(void)
+{
+	if (g_cameraSink)
+	{
+		cam_mac_sink_set_owner(g_cameraSink, 0);
+		cam_mac_sink_close(g_cameraSink);
+	}
+}
+#endif
+
 static void agent_on_message(xpc_object_t msg)
 {
 	const char *type = xpc_dictionary_get_string(msg, MAC_IPC_TYPE);
@@ -330,6 +370,12 @@ static void agent_on_message(xpc_object_t msg)
 		agent_start(msg);
 	else if (strcmp(type, MAC_IPC_STOP) == 0)
 		agent_stop();
+#if defined(WITH_SHADOW_CAMERA_MAC)
+	else if (strcmp(type, MAC_IPC_CAMERA) == 0)
+		agent_on_camera(msg);
+	else if (strcmp(type, MAC_IPC_CAMERA_STOP) == 0)
+		agent_camera_stop();
+#endif
 }
 
 int main(int argc, char *argv[])
@@ -359,6 +405,9 @@ int main(int argc, char *argv[])
 				/* the server restarted: say hello again, it asks for the capture again */
 				WLog_INFO(TAG, "the server restarted");
 				agent_stop();
+#if defined(WITH_SHADOW_CAMERA_MAC)
+				agent_camera_stop();
+#endif
 				agent_send_hello();
 			}
 			else if (event == XPC_ERROR_CONNECTION_INVALID)
