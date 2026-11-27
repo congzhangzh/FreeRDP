@@ -421,7 +421,9 @@ static bool test_data(const char* json, const void* data, size_t len, bool unche
 		goto fail;
 	}
 
-#ifndef WITH_GFX_H264
+	/* the files' connection type 7 (autodetect) turns H.264 on only with a decoder and
+	 * WITH_GFX_H264_DEFAULT */
+#if !defined(WITH_GFX_H264) || !defined(WITH_GFX_H264_DEFAULT)
 	if (!freerdp_settings_set_bool(expect, FreeRDP_GfxH264, FALSE) ||
 	    !freerdp_settings_set_bool(expect, FreeRDP_GfxAVC444, FALSE) ||
 	    !freerdp_settings_set_bool(expect, FreeRDP_GfxAVC444v2, FALSE))
@@ -546,6 +548,53 @@ fail:
 }
 
 WINPR_ATTR_NODISCARD
+/* An .rdp file with connection type 7 (autodetect) offers H.264 as the command line does
+ * without a codec named: only with a decoder and WITH_GFX_H264_DEFAULT. */
+static BOOL test_autodetect_h264(void)
+{
+	static const char data[] = "full address:s:test.freerdp.com\n"
+	                           "connection type:i:7\n";
+	BOOL rc = FALSE;
+	rdpFile* file = freerdp_client_rdp_file_new();
+	rdpSettings* settings = freerdp_settings_new(0);
+	if (!file || !settings ||
+	    !freerdp_client_parse_rdp_file_buffer(file, (const BYTE*)data, sizeof(data) - 1) ||
+	    !freerdp_client_populate_settings_from_rdp_file(file, settings))
+	{
+		printf("connection type 7: the file was not taken\n");
+		goto fail;
+	}
+
+#if defined(WITH_GFX_H264) && defined(WITH_GFX_H264_DEFAULT)
+	const BOOL want = TRUE;
+#else
+	const BOOL want = FALSE;
+#endif
+	const FreeRDP_Settings_Keys_Bool keys[] = { FreeRDP_GfxH264, FreeRDP_GfxAVC444,
+		                                        FreeRDP_GfxAVC444v2 };
+	rc = TRUE;
+	for (size_t x = 0; x < ARRAYSIZE(keys); x++)
+	{
+		const BOOL value = freerdp_settings_get_bool(settings, keys[x]);
+		if (value != want)
+		{
+			printf("connection type 7: %s is %s, want %s\n",
+			       freerdp_settings_get_name_for_key(keys[x]), value ? "on" : "off",
+			       want ? "on" : "off");
+			rc = FALSE;
+		}
+	}
+	if (!freerdp_settings_get_bool(settings, FreeRDP_SupportGraphicsPipeline))
+	{
+		printf("connection type 7: the graphics pipeline is off, want on\n");
+		rc = FALSE;
+	}
+fail:
+	freerdp_settings_free(settings);
+	freerdp_client_rdp_file_free(file);
+	return rc;
+}
+
 static BOOL test_ascii(rdpSettings* settings)
 {
 	WINPR_ASSERT(settings);
@@ -874,7 +923,9 @@ int TestClientRdpFile(int argc, char* argv[])
 		return -1;
 
 	int rc = 0;
-	if (!test_ascii(settings))
+	if (!test_autodetect_h264())
+		rc = -1;
+	else if (!test_ascii(settings))
 		rc = -1;
 	else if (!test_foo(settings))
 		rc = -1;
