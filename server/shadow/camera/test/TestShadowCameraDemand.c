@@ -119,7 +119,8 @@ static int test_owner_kept(void)
 	size_t starts = 0;
 	size_t stops = 0;
 
-	CHECK(shadow_camera_admit(&owner, &a, TRUE, TRUE) == SHADOW_CAMERA_ADMIT_GRANTED);
+	CHECK(shadow_camera_admit(&owner, &a, "Integrated Camera", TRUE, TRUE) ==
+	      SHADOW_CAMERA_ADMIT_GRANTED);
 
 	/* readers over time: 0, 1, 0 (debounced away), 1, 0 for good */
 	const struct
@@ -146,7 +147,8 @@ static int test_owner_kept(void)
 		}
 		/* never released by a stop: no one else can take it */
 		CHECK(shadow_camera_owner_is(&owner, &a));
-		CHECK(shadow_camera_admit(&owner, &b, TRUE, TRUE) == SHADOW_CAMERA_ADMIT_OWNED);
+		CHECK(shadow_camera_admit(&owner, &b, "USB Camera", TRUE, TRUE) ==
+		      SHADOW_CAMERA_ADMIT_OWNED);
 	}
 	CHECK(starts == 1);
 	CHECK(stops == 1);
@@ -161,15 +163,50 @@ static int test_view_only(void)
 	int b = 0;
 	ShadowCameraOwner owner = WINPR_C_ARRAY_INIT;
 
-	CHECK(shadow_camera_admit(&owner, &a, FALSE, TRUE) == SHADOW_CAMERA_ADMIT_VIEW_ONLY);
+	CHECK(shadow_camera_admit(&owner, &a, "Integrated Camera", FALSE, TRUE) ==
+	      SHADOW_CAMERA_ADMIT_VIEW_ONLY);
 	CHECK(owner.owner == nullptr);
-	CHECK(shadow_camera_admit(&owner, &a, TRUE, FALSE) == SHADOW_CAMERA_ADMIT_NO_CAMERA);
+	CHECK(shadow_camera_admit(&owner, &a, "Integrated Camera", TRUE, FALSE) ==
+	      SHADOW_CAMERA_ADMIT_NO_CAMERA);
 	CHECK(owner.owner == nullptr);
-	CHECK(shadow_camera_admit(&owner, &b, TRUE, TRUE) == SHADOW_CAMERA_ADMIT_GRANTED);
+	CHECK(shadow_camera_admit(&owner, &b, "USB Camera", TRUE, TRUE) == SHADOW_CAMERA_ADMIT_GRANTED);
 	/* view-only is said first, even when another owns it */
-	CHECK(shadow_camera_admit(&owner, &a, FALSE, TRUE) == SHADOW_CAMERA_ADMIT_VIEW_ONLY);
-	CHECK(shadow_camera_admit(&owner, &a, TRUE, TRUE) == SHADOW_CAMERA_ADMIT_OWNED);
+	CHECK(shadow_camera_admit(&owner, &a, "Integrated Camera", FALSE, TRUE) ==
+	      SHADOW_CAMERA_ADMIT_VIEW_ONLY);
+	CHECK(shadow_camera_admit(&owner, &a, "Integrated Camera", TRUE, TRUE) ==
+	      SHADOW_CAMERA_ADMIT_OWNED);
 	CHECK(shadow_camera_owner_is(&owner, &b));
+	return 0;
+}
+
+/* a FreeRDP server's own camera, announced by a client on this machine (or on another server's):
+ * refused, whatever else, so that the server never reads its own output */
+static int test_own_camera(void)
+{
+	int a = 0;
+	int b = 0;
+	ShadowCameraOwner owner = WINPR_C_ARRAY_INIT;
+
+	const char* own[] = { RDPECAM_FREERDP_CAMERA_NAME, "FreeRDP Camera (Windows Virtual Camera)" };
+	for (size_t i = 0; i < ARRAYSIZE(own); i++)
+	{
+		CHECK(shadow_camera_admit(&owner, &a, own[i], TRUE, TRUE) ==
+		      SHADOW_CAMERA_ADMIT_OWN_CAMERA);
+		CHECK(owner.owner == nullptr);
+	}
+	/* view-only is said first */
+	CHECK(shadow_camera_admit(&owner, &a, RDPECAM_FREERDP_CAMERA_NAME, FALSE, TRUE) ==
+	      SHADOW_CAMERA_ADMIT_VIEW_ONLY);
+	/* other virtual cameras are cameras */
+	CHECK(shadow_camera_admit(&owner, &a, "OBS Virtual Camera", TRUE, TRUE) ==
+	      SHADOW_CAMERA_ADMIT_GRANTED);
+	/* refused also while another owns the camera: never "owned", never a loop */
+	CHECK(shadow_camera_admit(&owner, &b, "FreeRDP Camera", TRUE, TRUE) ==
+	      SHADOW_CAMERA_ADMIT_OWN_CAMERA);
+	CHECK(shadow_camera_owner_is(&owner, &a));
+	CHECK(shadow_camera_admit(&owner, &b, "FreeRDP Camera 2", TRUE, TRUE) ==
+	      SHADOW_CAMERA_ADMIT_OWNED);
+	CHECK(shadow_camera_admit(&owner, &b, nullptr, TRUE, TRUE) == SHADOW_CAMERA_ADMIT_OWNED);
 	return 0;
 }
 
@@ -185,6 +222,8 @@ int TestShadowCameraDemand(int argc, char* argv[])
 	if (test_owner_kept() != 0)
 		return -1;
 	if (test_view_only() != 0)
+		return -1;
+	if (test_own_camera() != 0)
 		return -1;
 	return 0;
 }

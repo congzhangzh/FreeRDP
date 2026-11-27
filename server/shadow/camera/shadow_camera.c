@@ -943,7 +943,7 @@ static UINT camera_enum_device_added(CamDevEnumServerContext* context,
 
 	EnterCriticalSection(&g_camera.lock);
 	const SHADOW_CAMERA_ADMIT admit =
-	    shadow_camera_admit(&g_camera.owner, dev, cc->client->mayInteract,
+	    shadow_camera_admit(&g_camera.owner, dev, dev->name, cc->client->mayInteract,
 	                        g_camera.running && (g_camera.sink != nullptr));
 	LeaveCriticalSection(&g_camera.lock);
 
@@ -953,6 +953,9 @@ static UINT camera_enum_device_added(CamDevEnumServerContext* context,
 	{
 		case SHADOW_CAMERA_ADMIT_VIEW_ONLY:
 			refused = "the client may not interact";
+			break;
+		case SHADOW_CAMERA_ADMIT_OWN_CAMERA:
+			refused = "it is a FreeRDP server's own camera";
 			break;
 		case SHADOW_CAMERA_ADMIT_NO_CAMERA:
 			refused = "the server has no virtual camera";

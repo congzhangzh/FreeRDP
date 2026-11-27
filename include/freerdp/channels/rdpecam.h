@@ -20,6 +20,8 @@
 #ifndef FREERDP_CHANNEL_RDPECAM_H
 #define FREERDP_CHANNEL_RDPECAM_H
 
+#include <string.h>
+
 #include <freerdp/api.h>
 #include <freerdp/dvc.h>
 #include <freerdp/types.h>
@@ -43,6 +45,21 @@
 extern "C"
 {
 #endif
+
+	/** @brief TRUE for the virtual camera of a FreeRDP server: RDPECAM_FREERDP_CAMERA_NAME, or
+	 *  that name with a suffix in parentheses (as Windows lists its virtual cameras). A client
+	 *  does not offer it, and a server refuses it, so that a server never gets its own camera
+	 *  back. Only this one: other virtual or loopback cameras (OBS') are cameras like any other.
+	 *  @since version 3.34.0 */
+	static inline BOOL rdpecam_is_freerdp_camera(const char* name)
+	{
+		if (!name)
+			return FALSE;
+		const size_t len = strlen(RDPECAM_FREERDP_CAMERA_NAME);
+		if (strncmp(name, RDPECAM_FREERDP_CAMERA_NAME, len) != 0)
+			return FALSE;
+		return (name[len] == '\0') || (strncmp(&name[len], " (", 2) == 0);
+	}
 
 	typedef enum
 	{

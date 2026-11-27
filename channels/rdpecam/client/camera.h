@@ -290,12 +290,8 @@ FREERDP_LOCAL FREERDP_VIDEO_FORMAT ecamToVideoFormat(CAM_MEDIA_FORMAT ecamFormat
  */
 static inline BOOL ecam_is_freerdp_camera(const char* name)
 {
-	if (!name)
-		return FALSE;
-	const size_t len = strlen(RDPECAM_FREERDP_CAMERA_NAME);
-	if (strncmp(name, RDPECAM_FREERDP_CAMERA_NAME, len) != 0)
-		return FALSE;
-	return (name[len] == '\0') || (strncmp(&name[len], " (", 2) == 0);
+	/* the server side refuses the same names (rdpecam_is_freerdp_camera, rdpecam.h) */
+	return rdpecam_is_freerdp_camera(name);
 }
 
 #endif /* FREERDP_CLIENT_CAMERA_H */

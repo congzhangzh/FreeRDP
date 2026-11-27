@@ -201,13 +201,15 @@ BOOL shadow_camera_owner_is(const ShadowCameraOwner* owner, const void* camera)
 }
 
 SHADOW_CAMERA_ADMIT shadow_camera_admit(ShadowCameraOwner* owner, const void* camera,
-                                        BOOL mayInteract, BOOL hasCamera)
+                                        const char* name, BOOL mayInteract, BOOL hasCamera)
 {
 	WINPR_ASSERT(owner);
 	WINPR_ASSERT(camera);
 
 	if (!mayInteract)
 		return SHADOW_CAMERA_ADMIT_VIEW_ONLY;
+	if (rdpecam_is_freerdp_camera(name))
+		return SHADOW_CAMERA_ADMIT_OWN_CAMERA;
 	if (!hasCamera)
 		return SHADOW_CAMERA_ADMIT_NO_CAMERA;
 	if (shadow_camera_owner_claim(owner, camera) != SHADOW_CAMERA_CLAIM_GRANTED)
