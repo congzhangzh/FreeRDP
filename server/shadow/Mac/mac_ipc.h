@@ -46,6 +46,10 @@
  *   start     display, width, height (of the frames, in pixels), fps, audio, rate, channels
  *   stop
  *   event     data: a CGEvent (CGEventCreateData), for the agent to post
+ *   camera    surface (IOSurface XPC object: an NV12 '420v' frame of the virtual camera,
+ *             1280x720), owner (the client whose camera it is, as a number): the agent
+ *             pushes it into the camera extension's sink from its GUI session
+ *   camera-stop  the owner's camera stopped: the extension shows its still picture
  */
 
 #define MAC_IPC_SERVICE_DEFAULT "org.freerdp.shadow"
@@ -61,6 +65,8 @@
 #define MAC_IPC_START "start"
 #define MAC_IPC_STOP "stop"
 #define MAC_IPC_EVENT "event"
+#define MAC_IPC_CAMERA "camera"
+#define MAC_IPC_CAMERA_STOP "camera-stop"
 
 #define MAC_IPC_SESSION_LOGINWINDOW "LoginWindow"
 #define MAC_IPC_SESSION_AQUA "Aqua"

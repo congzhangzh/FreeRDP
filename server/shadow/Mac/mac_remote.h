@@ -26,6 +26,7 @@
 #include <freerdp/server/shadow.h>
 
 #include <ApplicationServices/ApplicationServices.h>
+#include <IOSurface/IOSurfaceRef.h>
 
 #include "mac_capture.h"
 #include "mac_cursor.h"
@@ -61,6 +62,13 @@ extern "C"
 	/* set when an agent's displays differ from the ones before (another session, another
 	 * display mode): the server resizes its surface and asks for the capture again itself */
 	void mac_remote_set_displays_event(macRemote *remote, HANDLE event);
+
+	/* the virtual camera: an NV12 frame of the owner's camera for the agent on the console to
+	 * push into the camera extension's sink (MAC_IPC_CAMERA); FALSE when no agent is there.
+	 * The agent holds the surface once it has the message. */
+	BOOL mac_remote_camera_frame(macRemote *remote, IOSurfaceRef nv12, UINT64 owner);
+	/* the owner's camera stopped (MAC_IPC_CAMERA_STOP) */
+	void mac_remote_camera_stop(macRemote *remote);
 
 	/* the user on the console (root at the login window), from /dev/console */
 	uid_t mac_remote_console_uid(void);

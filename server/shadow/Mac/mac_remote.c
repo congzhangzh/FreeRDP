@@ -538,6 +538,47 @@ BOOL mac_remote_post(macRemote* remote, CGEventRef event)
 	return TRUE;
 }
 
+BOOL mac_remote_camera_frame(macRemote* remote, IOSurfaceRef nv12, UINT64 owner)
+{
+	WINPR_ASSERT(remote);
+	if (!nv12)
+		return FALSE;
+
+	EnterCriticalSection(&remote->lock);
+	xpc_connection_t agent = remote->agent ? (xpc_connection_t)xpc_retain(remote->agent) : nullptr;
+	LeaveCriticalSection(&remote->lock);
+	if (!agent)
+		return FALSE;
+
+	xpc_object_t surface = IOSurfaceCreateXPCObject(nv12);
+	const BOOL sent = (surface != nullptr);
+	if (surface)
+	{
+		xpc_object_t msg = xpc_dictionary_create(nullptr, nullptr, 0);
+		xpc_dictionary_set_string(msg, MAC_IPC_TYPE, MAC_IPC_CAMERA);
+		xpc_dictionary_set_value(msg, "surface", surface);
+		xpc_dictionary_set_uint64(msg, "owner", owner);
+		xpc_connection_send_message(agent, msg);
+		xpc_release(msg);
+		xpc_release(surface);
+	}
+	xpc_release(agent);
+	return sent;
+}
+
+void mac_remote_camera_stop(macRemote* remote)
+{
+	WINPR_ASSERT(remote);
+	EnterCriticalSection(&remote->lock);
+	xpc_connection_t agent = remote->agent ? (xpc_connection_t)xpc_retain(remote->agent) : nullptr;
+	LeaveCriticalSection(&remote->lock);
+	if (agent)
+	{
+		mac_remote_send_type(agent, MAC_IPC_CAMERA_STOP);
+		xpc_release(agent);
+	}
+}
+
 BOOL mac_remote_cursor_get(macRemote* remote, macCursorImage* image, UINT32 maxSize)
 {
 	WINPR_ASSERT(remote);
