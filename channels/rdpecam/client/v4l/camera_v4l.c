@@ -379,9 +379,16 @@ static UINT cam_v4l_enumerate(WINPR_ATTR_UNUSED ICamHal* ihal, ICamHalEnumCallba
 			close(fd);
 			continue;
 		}
+		const char* deviceName = (char*)cap.card;
+		if (ecam_is_freerdp_camera(deviceName))
+		{
+			WLog_DBG(TAG, "%s is \"%s\", a FreeRDP server's own camera: not offered", device,
+			         deviceName);
+			close(fd);
+			continue;
+		}
 		count++;
 
-		const char* deviceName = (char*)cap.card;
 		const char* deviceId = device;
 		if (cap.bus_info[0] != 0) /* may not be available in all drivers */
 			deviceId = (char*)cap.bus_info;

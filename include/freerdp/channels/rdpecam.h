@@ -32,6 +32,13 @@
 #define RDPECAM_DVC_CHANNEL_NAME "rdpecam"
 #define RDPECAM_CONTROL_DVC_CHANNEL_NAME "RDCamera_Device_Enumerator"
 
+/** @brief the name of the virtual camera a FreeRDP server shows its client's camera as (a
+ *  v4l2loopback card label, a Windows virtual camera, a macOS camera extension). A client
+ *  does not offer it back: that would send a server its own camera. Windows lists it as
+ *  "FreeRDP Camera (Windows Virtual Camera)".
+ *  @since version 3.34.0 */
+#define RDPECAM_FREERDP_CAMERA_NAME "FreeRDP Camera"
+
 #ifdef __cplusplus
 extern "C"
 {
