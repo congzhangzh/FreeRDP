@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #import <Foundation/Foundation.h>
 
@@ -173,12 +174,42 @@ static void test_sink_without_extension(void)
 	cam_mac_sink_free(sink);
 }
 
+static void on_readers(void* context, bool active)
+{
+	(void)active;
+	(*(int*)context)++;
+}
+
+/* on demand, before the extension exists: the watcher runs, finds no device, says "nobody
+ * reads" (count unknown), calls nobody back, and stops cleanly with the sink */
+static void test_readers_without_extension(void)
+{
+	camMacSink* sink = cam_mac_sink_new("00000000-0000-0000-0000-000000000000");
+	CHECK(sink);
+	if (!sink)
+		return;
+	CHECK(!cam_mac_sink_readers_active(sink));
+	CHECK(cam_mac_sink_readers(sink) == -1);
+	int calls = 0;
+	CHECK(cam_mac_sink_watch_readers(sink, on_readers, &calls));
+	CHECK(cam_mac_sink_watch_readers(sink, on_readers, &calls)); /* once per sink: still true */
+	usleep(2500 * 1000); /* two polls and more (CAM_MAC_READERS_POLL_MS) */
+	CHECK(!cam_mac_sink_readers_active(sink));
+	CHECK(cam_mac_sink_readers(sink) == -1);
+	CHECK(calls == 0);
+	cam_mac_sink_free(sink); /* stops the watcher: no callback after this */
+	CHECK(calls == 0);
+	CHECK(!cam_mac_sink_readers_active(NULL));
+	CHECK(cam_mac_sink_readers(NULL) == -1);
+}
+
 int main(void)
 {
 	@autoreleasepool
 	{
 		test_pixel_buffers();
 		test_sink_without_extension();
+		test_readers_without_extension();
 	}
 	if (g_failures)
 		(void)fprintf(stderr, "TestCameraSink: %d check(s) failed\n", g_failures);

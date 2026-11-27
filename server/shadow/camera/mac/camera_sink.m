@@ -29,6 +29,7 @@
 
 #include "camera_config.h"
 #include "camera_frame.h"
+#include "camera_readers.h"
 #include "camera_sink.h"
 #include "placeholder.h"
 
@@ -48,6 +49,11 @@ struct cam_mac_sink
 	uint64_t owner;
 	uint64_t pushed;
 	uint64_t dropped;
+	/* on demand (cam_mac_sink_watch_readers): the watcher (a CamMacReadersWatcher, retained),
+	 * what it saw last, under lock */
+	void* watcher;
+	int readers;
+	BOOL readersActive;
 };
 
 static os_log_t sink_log(void)
@@ -225,6 +231,150 @@ static camMacSinkStatus sink_open_locked(camMacSink* sink)
 	return CAM_MAC_SINK_OK;
 }
 
+/* --- on demand: the readers ------------------------------------------------------------- */
+
+static uint64_t now_ms(void)
+{
+	return now_ns() / 1000000ull;
+}
+
+/* the extension's count of its source stream's clients; false when the device has no such
+ * property (not ours, or gone) */
+static bool read_readers(CMIODeviceID device, int* count)
+{
+	CMIOObjectPropertyAddress address = global_address(CAM_MAC_READERS_SELECTOR);
+	CFStringRef value = NULL;
+	UInt32 used = 0;
+	if ((CMIOObjectGetPropertyData(device, &address, 0, NULL, sizeof(value), &used, &value) !=
+	     kCMIOHardwareNoError) ||
+	    !value)
+		return false;
+	char text[16] = { 0 };
+	const bool ok = (CFGetTypeID(value) == CFStringGetTypeID()) &&
+	                CFStringGetCString(value, text, sizeof(text), kCFStringEncodingUTF8) &&
+	                cam_readers_parse(text, count);
+	CFRelease(value);
+	return ok;
+}
+
+@interface CamMacReadersWatcher : NSObject
+- (instancetype)initWithSink:(camMacSink*)sink fn:(camMacReadersFn)fn context:(void*)context;
+- (void)stop;
+@end
+
+@implementation CamMacReadersWatcher
+{
+	camMacSink* _sink; /* outlives the watcher: cam_mac_sink_free stops it first */
+	camMacReadersFn _fn;
+	void* _context;
+	dispatch_queue_t _queue;
+	dispatch_source_t _timer;
+	CMIODeviceID _device;
+	CMIOObjectPropertyListenerBlock _listener;
+	cam_readers_state _state;
+}
+
+- (instancetype)initWithSink:(camMacSink*)sink fn:(camMacReadersFn)fn context:(void*)context
+{
+	self = [super init];
+	if (!self)
+		return nil;
+	_sink = sink;
+	_fn = fn;
+	_context = context;
+	_device = kCMIOObjectUnknown;
+	cam_readers_init(&_state);
+	_queue = dispatch_queue_create("org.freerdp.shadow.camera.readers", DISPATCH_QUEUE_SERIAL);
+	_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _queue);
+	if (!_queue || !_timer)
+		return nil;
+	const uint64_t interval = CAM_MAC_READERS_POLL_MS * NSEC_PER_MSEC;
+	dispatch_source_set_timer(_timer, DISPATCH_TIME_NOW, interval, interval / 10);
+	__weak CamMacReadersWatcher* weakSelf = self;
+	dispatch_source_set_event_handler(_timer, ^{
+		[weakSelf tick];
+	});
+	dispatch_resume(_timer);
+	return self;
+}
+
+- (void)listen
+{
+	CMIOObjectPropertyAddress address = global_address(CAM_MAC_READERS_SELECTOR);
+	__weak CamMacReadersWatcher* weakSelf = self;
+	CMIOObjectPropertyListenerBlock listener =
+	    ^(UInt32 count, const CMIOObjectPropertyAddress addresses[]) {
+		    (void)count;
+		    (void)addresses;
+		    [weakSelf tick];
+	    };
+	const OSStatus status = CMIOObjectAddPropertyListenerBlock(_device, &address, _queue, listener);
+	if (status == kCMIOHardwareNoError)
+		_listener = listener;
+	else
+		os_log_error(sink_log(), "readers: no listener on device %u (%d): polling only",
+		             (unsigned)_device, (int)status);
+}
+
+- (void)unlisten
+{
+	if (_listener && (_device != kCMIOObjectUnknown))
+	{
+		CMIOObjectPropertyAddress address = global_address(CAM_MAC_READERS_SELECTOR);
+		(void)CMIOObjectRemovePropertyListenerBlock(_device, &address, _queue, _listener);
+	}
+	_listener = nil;
+}
+
+/* on _queue: look, publish, report a change */
+- (void)tick
+{
+	if (_device == kCMIOObjectUnknown)
+	{
+		os_unfair_lock_lock(&_sink->lock);
+		CFStringRef uid = (CFStringRef)CFRetain(_sink->uid);
+		os_unfair_lock_unlock(&_sink->lock);
+		_device = find_device(uid);
+		CFRelease(uid);
+		if (_device != kCMIOObjectUnknown)
+			[self listen];
+	}
+	int count = -1;
+	if ((_device != kCMIOObjectUnknown) && !read_readers(_device, &count))
+	{
+		[self unlisten];
+		_device = kCMIOObjectUnknown;
+		count = -1;
+	}
+	const bool changed = cam_readers_update(&_state, count, now_ms(), CAM_MAC_READERS_HOLD_MS);
+	os_unfair_lock_lock(&_sink->lock);
+	_sink->readers = count;
+	_sink->readersActive = _state.active;
+	os_unfair_lock_unlock(&_sink->lock);
+	if (changed)
+	{
+		os_log(sink_log(), "readers: %{public}s (%d app(s))",
+		       _state.active ? "an app reads the camera" : "no app reads the camera", count);
+		if (_fn)
+			_fn(_context, _state.active);
+	}
+}
+
+- (void)stop
+{
+	dispatch_source_t timer = _timer;
+	_timer = nil;
+	if (timer)
+		dispatch_source_cancel(timer);
+	/* after any tick in flight: no callback once this returns */
+	dispatch_sync(_queue, ^{
+		[self unlisten];
+		self->_fn = NULL;
+	});
+}
+
+@end
+
 camMacSink* cam_mac_sink_new(const char* deviceUID)
 {
 	camMacSink* sink = calloc(1, sizeof(camMacSink));
@@ -241,6 +391,7 @@ camMacSink* cam_mac_sink_new(const char* deviceUID)
 	}
 	sink->device = kCMIOObjectUnknown;
 	sink->stream = kCMIOObjectUnknown;
+	sink->readers = -1;
 	return sink;
 }
 
@@ -248,6 +399,12 @@ void cam_mac_sink_free(camMacSink* sink)
 {
 	if (!sink)
 		return;
+	if (sink->watcher)
+	{
+		CamMacReadersWatcher* watcher = (__bridge_transfer CamMacReadersWatcher*)sink->watcher;
+		sink->watcher = NULL;
+		[watcher stop];
+	}
 	cam_mac_sink_close(sink);
 	os_log(sink_log(), "sink: %llu frame(s) pushed, %llu dropped",
 	       (unsigned long long)sink->pushed, (unsigned long long)sink->dropped);
@@ -474,4 +631,44 @@ camMacSinkStatus cam_mac_sink_push_raw(camMacSink* sink, uint32_t format, uint32
 	const camMacSinkStatus status = cam_mac_sink_push(sink, pixels);
 	CVPixelBufferRelease(pixels);
 	return status;
+}
+
+bool cam_mac_sink_watch_readers(camMacSink* sink, camMacReadersFn fn, void* context)
+{
+	if (!sink)
+		return false;
+	os_unfair_lock_lock(&sink->lock);
+	const bool watching = sink->watcher != NULL;
+	os_unfair_lock_unlock(&sink->lock);
+	if (watching)
+		return true;
+	CamMacReadersWatcher* watcher = [[CamMacReadersWatcher alloc] initWithSink:sink
+	                                                                        fn:fn
+	                                                                   context:context];
+	if (!watcher)
+		return false;
+	os_unfair_lock_lock(&sink->lock);
+	sink->watcher = (__bridge_retained void*)watcher;
+	os_unfair_lock_unlock(&sink->lock);
+	return true;
+}
+
+bool cam_mac_sink_readers_active(camMacSink* sink)
+{
+	if (!sink)
+		return false;
+	os_unfair_lock_lock(&sink->lock);
+	const bool active = sink->readersActive;
+	os_unfair_lock_unlock(&sink->lock);
+	return active;
+}
+
+int cam_mac_sink_readers(camMacSink* sink)
+{
+	if (!sink)
+		return -1;
+	os_unfair_lock_lock(&sink->lock);
+	const int readers = sink->readers;
+	os_unfair_lock_unlock(&sink->lock);
+	return readers;
 }
