@@ -28,6 +28,9 @@
 #include <freerdp/codec/video.h>
 
 #include "camera_decode.h"
+#if defined(_WIN32)
+#include "camera_decode_mf.h"
+#endif
 
 #define TAG SERVER_TAG("shadow.camera")
 
@@ -41,6 +44,9 @@ struct s_shadow_camera_decoder
 
 	FREERDP_VIDEO_CONTEXT* video;
 	wStream* nv12; /* the MJPG decoder's output */
+#if defined(_WIN32)
+	CameraMfMjpeg* mfMjpeg; /* Windows' MJPEG decoder, when there is no FFmpeg */
+#endif
 };
 
 static SHADOW_CAMERA_PIXEL camera_decode_raw_layout(CAM_MEDIA_FORMAT format)
@@ -72,6 +78,10 @@ void shadow_camera_decoders_probe(ShadowCameraDecoders* decoders)
 
 	decoders->mjpg =
 	    freerdp_video_conversion_supported(FREERDP_VIDEO_FORMAT_MJPEG, FREERDP_VIDEO_FORMAT_NV12);
+#if defined(_WIN32)
+	if (!decoders->mjpg)
+		decoders->mjpg = camera_mf_mjpeg_available();
+#endif
 }
 
 ShadowCameraDecoder* shadow_camera_decoder_new(const CAM_MEDIA_TYPE_DESCRIPTION* type)
@@ -100,13 +110,25 @@ ShadowCameraDecoder* shadow_camera_decoder_new(const CAM_MEDIA_TYPE_DESCRIPTION*
 			break;
 		case CAM_MEDIA_FORMAT_MJPG:
 		{
-			decoder->video = freerdp_video_context_new(type->Width, type->Height);
 			const size_t nv12Size =
 			    shadow_camera_image_size(SHADOW_CAMERA_PIXEL_NV12, type->Width, type->Height);
 			if (nv12Size == 0)
 				goto fail;
 			decoder->nv12 = Stream_New(nullptr, nv12Size);
-			if (!decoder->video || !decoder->nv12)
+			if (!decoder->nv12)
+				goto fail;
+#if defined(_WIN32)
+			if (!freerdp_video_conversion_supported(FREERDP_VIDEO_FORMAT_MJPEG,
+			                                        FREERDP_VIDEO_FORMAT_NV12))
+			{
+				decoder->mfMjpeg = camera_mf_mjpeg_new(type->Width, type->Height);
+				if (!decoder->mfMjpeg)
+					goto fail;
+				break;
+			}
+#endif
+			decoder->video = freerdp_video_context_new(type->Width, type->Height);
+			if (!decoder->video)
 				goto fail;
 		}
 		break;
@@ -134,6 +156,9 @@ void shadow_camera_decoder_free(ShadowCameraDecoder* decoder)
 	free(decoder->rgb);
 	freerdp_video_context_free(decoder->video);
 	Stream_Free(decoder->nv12, TRUE);
+#if defined(_WIN32)
+	camera_mf_mjpeg_free(decoder->mfMjpeg);
+#endif
 	free(decoder);
 }
 
@@ -176,6 +201,17 @@ static BOOL camera_decode_mjpg(ShadowCameraDecoder* decoder, const BYTE* sample,
 		return FALSE;
 
 	Stream_ResetPosition(decoder->nv12);
+#if defined(_WIN32)
+	if (decoder->mfMjpeg)
+	{
+		if (!camera_mf_mjpeg_decode(decoder->mfMjpeg, sample, size, Stream_Buffer(decoder->nv12)))
+			return FALSE;
+		*picture = TRUE;
+		return shadow_camera_image_wrap(image, SHADOW_CAMERA_PIXEL_NV12, decoder->type.Width,
+		                                decoder->type.Height, Stream_Buffer(decoder->nv12),
+		                                Stream_Capacity(decoder->nv12));
+	}
+#endif
 	if (!freerdp_video_sample_convert(decoder->video, FREERDP_VIDEO_FORMAT_MJPEG, sample, size,
 	                                  FREERDP_VIDEO_FORMAT_NV12, decoder->nv12))
 		return FALSE;

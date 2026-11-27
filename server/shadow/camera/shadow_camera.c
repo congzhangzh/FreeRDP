@@ -59,6 +59,9 @@
 #include "camera_policy.h"
 #include "camera_sink.h"
 #include "placeholder.h"
+#if defined(_WIN32)
+#include "win/sink_win.h"
+#endif
 
 #define TAG SERVER_TAG("shadow.camera")
 
@@ -339,6 +342,8 @@ static ShadowCameraSink* camera_sink_from_settings(void)
 	{
 #if defined(__linux__)
 		sink = "v4l2";
+#elif defined(_WIN32)
+		sink = "win";
 #else
 		sink = "none";
 #endif
@@ -369,6 +374,11 @@ static ShadowCameraSink* camera_sink_from_settings(void)
 		return shadow_camera_sink_v4l2_new(nullptr, width, height, fps, nullptr);
 	if (strncmp(sink, "v4l2:", 5) == 0)
 		return shadow_camera_sink_v4l2_new(sink + 5, width, height, fps, nullptr);
+#endif
+
+#if defined(_WIN32)
+	if (strcmp(sink, "win") == 0)
+		return shadow_camera_sink_win_new(width, height, fps);
 #endif
 
 	WLog_WARN(TAG, "camera: FREERDP_SHADOW_CAMERA_SINK=%s is not known, no camera", sink);
