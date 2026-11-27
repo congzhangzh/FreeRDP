@@ -229,7 +229,8 @@ const char* av1_mf_name(const AV1_MF* enc)
 
 static BOOL load(AV1_MF* enc)
 {
-	enc->mfplat = LoadLibraryA("mfplat.dll");
+	/* Windows' own mfplat.dll only, never one beside the program (the DLL search order) */
+	enc->mfplat = LoadLibraryExA("mfplat.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
 	if (!enc->mfplat)
 	{
 		WLog_Print(enc->log, WLOG_DEBUG, "Media Foundation: no mfplat.dll");

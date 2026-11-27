@@ -1465,8 +1465,9 @@ static BOOL mf_init(H264_CONTEXT* h264)
 
 	h264->pSystemData = (void*)sys;
 	/* http://decklink-sdk-delphi.googlecode.com/svn/trunk/Blackmagic%20DeckLink%20SDK%209.7/Win/Samples/Streaming/StreamingPreview/DecoderMF.cpp
-	 */
-	sys->mfplat = LoadLibraryA("mfplat.dll");
+	 * Windows' own mfplat.dll only: the DLL search order would take one beside the program first
+	 * (a portable client unpacked in Downloads) */
+	sys->mfplat = LoadLibraryExA("mfplat.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
 
 	if (!sys->mfplat)
 		goto error;
