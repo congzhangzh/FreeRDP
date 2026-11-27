@@ -90,3 +90,7 @@ endif()
 if(WITH_RDPECAM_GSTREAMER)
   add_channel_client_subsystem(${MODULE_PREFIX} ${CHANNEL_NAME} "gst" "")
 endif()
+
+if(BUILD_TESTING)
+  add_subdirectory(test)
+endif()
