@@ -40,6 +40,11 @@ typedef struct mac_shadow_subsystem macShadowSubsystem;
 #include "mac_cursor.h"
 #include "mac_input.h"
 #include "mac_remote.h"
+#if defined(WITH_SHADOW_CAMERA_MAC)
+#include "camera_config.h"
+#include "camera_decode.h"
+#include "camera_sink.h"
+#endif
 
 #define MAC_SHADOW_MAX_DISPLAYS 16
 
@@ -112,6 +117,17 @@ struct mac_shadow_subsystem
 	IOPMAssertionID awake;
 	UINT64 pointerInput;
 	BOOL cursorResend;
+
+#if defined(WITH_SHADOW_CAMERA_MAC)
+	/* the virtual camera (CameraSample, CameraStop; the core calls both from its camera
+	 * thread): the sink the frames go into in a user's session (a daemon sends them to its
+	 * agent instead), and the decoder of the owner's H.264 or MJPG with what it was made for */
+	camMacSink *cameraSink;
+	camMacDecoder *cameraDecoder;
+	UINT32 cameraFormat;
+	UINT32 cameraWidth;
+	UINT32 cameraHeight;
+#endif
 };
 
 #endif /* FREERDP_SERVER_SHADOW_MAC_SHADOW_H */
