@@ -16,7 +16,7 @@
 # limitations under the License.
 
 # Built into freerdp-shadow (server/shadow/CMakeLists.txt, WITH_SHADOW_CAMERA): the core, the
-# file sink (tests) and, on Linux, the v4l2loopback sink.
+# file sink (tests), on Linux the v4l2loopback sink, on Windows the virtual camera.
 set(SHADOW_CAMERA_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/shadow_camera.c
     ${CMAKE_CURRENT_SOURCE_DIR}/shadow_camera.h
@@ -34,7 +34,26 @@ set(SHADOW_CAMERA_SRCS
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   list(APPEND SHADOW_CAMERA_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/sink_v4l2.c)
 endif()
+set(SHADOW_CAMERA_LIBS "")
+if(WIN32)
+  # the Windows virtual camera (win/: the sink, the frame ring and the media source DLL) and
+  # Windows' own MJPEG decoder; Media Foundation is loaded at run time
+  list(
+    APPEND
+    SHADOW_CAMERA_SRCS
+    ${CMAKE_CURRENT_SOURCE_DIR}/camera_decode_mf.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/camera_decode_mf.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/win/camera_mf_ids.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/win/camera_ring.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/win/camera_ring.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/win/sink_win.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/win/sink_win.h
+  )
+  set(SHADOW_CAMERA_LIBS ole32 advapi32)
+  add_subdirectory(win)
+endif()
 set(SHADOW_CAMERA_SRCS ${SHADOW_CAMERA_SRCS} PARENT_SCOPE)
+set(SHADOW_CAMERA_LIBS ${SHADOW_CAMERA_LIBS} PARENT_SCOPE)
 
 if(BUILD_TESTING)
   add_subdirectory(test)
