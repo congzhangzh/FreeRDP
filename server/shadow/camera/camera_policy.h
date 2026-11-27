@@ -90,16 +90,20 @@ extern "C"
 	typedef enum
 	{
 		SHADOW_CAMERA_ADMIT_GRANTED,
-		SHADOW_CAMERA_ADMIT_VIEW_ONLY, /**< its client may not interact */
-		SHADOW_CAMERA_ADMIT_NO_CAMERA, /**< the server has no virtual camera */
-		SHADOW_CAMERA_ADMIT_OWNED      /**< another camera owns it */
+		SHADOW_CAMERA_ADMIT_VIEW_ONLY,  /**< its client may not interact */
+		SHADOW_CAMERA_ADMIT_OWN_CAMERA, /**< it is a FreeRDP server's own camera (a loop) */
+		SHADOW_CAMERA_ADMIT_NO_CAMERA,  /**< the server has no virtual camera */
+		SHADOW_CAMERA_ADMIT_OWNED       /**< another camera owns it */
 	} SHADOW_CAMERA_ADMIT;
 
-	/** A camera announced by a client asks for the virtual camera: a view-only client is
-	 *  refused before anything else, and the owner is left as it was */
+	/** A camera announced by a client, named name, asks for the virtual camera: a view-only
+	 *  client is refused before anything else, then a FreeRDP server's own camera
+	 *  (rdpecam_is_freerdp_camera: a client on this machine, or on another FreeRDP server's,
+	 *  offering what the server shows); the owner is left as it was */
 	WINPR_ATTR_NODISCARD SHADOW_CAMERA_ADMIT shadow_camera_admit(ShadowCameraOwner* owner,
 	                                                             const void* camera,
-	                                                             BOOL mayInteract, BOOL hasCamera);
+	                                                             const char* name, BOOL mayInteract,
+	                                                             BOOL hasCamera);
 
 /** how long nobody must read the virtual camera before the client's camera stops, so that an
  *  app that closes and reopens it does not cycle the client's camera */
