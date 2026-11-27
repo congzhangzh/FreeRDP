@@ -69,6 +69,9 @@ extern "C"
 	BOOL mac_remote_camera_frame(macRemote *remote, IOSurfaceRef nv12, UINT64 owner);
 	/* the owner's camera stopped (MAC_IPC_CAMERA_STOP) */
 	void mac_remote_camera_stop(macRemote *remote);
+	/* on demand: an app in the console's session reads the virtual camera, as its agent last
+	 * said (MAC_IPC_CAMERA_READERS); FALSE without an agent */
+	BOOL mac_remote_camera_readers_active(macRemote *remote);
 
 	/* the user on the console (root at the login window), from /dev/console */
 	uid_t mac_remote_console_uid(void);

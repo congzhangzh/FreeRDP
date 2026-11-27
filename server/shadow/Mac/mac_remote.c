@@ -69,6 +69,9 @@ struct mac_remote
 	BOOL cursorValid;
 	CGPoint location;
 	BOOL locationValid;
+
+	/* on demand: the agent's last word on who reads the virtual camera */
+	BOOL cameraReaders;
 };
 
 uid_t mac_remote_console_uid(void)
@@ -144,6 +147,7 @@ static void mac_remote_on_hello(macRemote* remote, xpc_connection_t peer, xpc_ob
 		remote->agent = (xpc_connection_t)xpc_retain(peer);
 		remote->cursorValid = FALSE;
 		remote->locationValid = FALSE;
+		remote->cameraReaders = FALSE; /* the new agent says it right after its hello */
 	}
 	const BOOL capturing = remote->capturing;
 	LeaveCriticalSection(&remote->lock);
@@ -311,6 +315,16 @@ static void mac_remote_on_message(macRemote* remote, xpc_connection_t peer, xpc_
 	}
 	else if (strcmp(type, MAC_IPC_CURSOR) == 0)
 		mac_remote_on_cursor(remote, msg);
+	else if (strcmp(type, MAC_IPC_CAMERA_READERS) == 0)
+	{
+		const BOOL active = xpc_dictionary_get_bool(msg, "active") ? TRUE : FALSE;
+		EnterCriticalSection(&remote->lock);
+		const BOOL changed = remote->cameraReaders != active;
+		remote->cameraReaders = active;
+		LeaveCriticalSection(&remote->lock);
+		if (changed)
+			WLog_INFO(TAG, "camera: %s", active ? "an app reads it" : "no app reads it");
+	}
 	else if (strcmp(type, MAC_IPC_POSITION) == 0)
 	{
 		EnterCriticalSection(&remote->lock);
@@ -329,6 +343,7 @@ static void mac_remote_on_peer_gone(macRemote* remote, xpc_connection_t peer)
 	{
 		xpc_release(remote->agent);
 		remote->agent = nullptr;
+		remote->cameraReaders = FALSE;
 		(void)ResetEvent(remote->helloEvent);
 	}
 	const BOOL capturing = remote->capturing;
@@ -564,6 +579,15 @@ BOOL mac_remote_camera_frame(macRemote* remote, IOSurfaceRef nv12, UINT64 owner)
 	}
 	xpc_release(agent);
 	return sent;
+}
+
+BOOL mac_remote_camera_readers_active(macRemote* remote)
+{
+	WINPR_ASSERT(remote);
+	EnterCriticalSection(&remote->lock);
+	const BOOL active = remote->agent && remote->cameraReaders;
+	LeaveCriticalSection(&remote->lock);
+	return active;
 }
 
 void mac_remote_camera_stop(macRemote* remote)

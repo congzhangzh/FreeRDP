@@ -130,4 +130,11 @@ struct mac_shadow_subsystem
 #endif
 };
 
+#if defined(WITH_SHADOW_CAMERA_MAC)
+/* on demand: an app on the Mac reads the virtual camera now (held a moment after the last one
+ * stops); the camera core starts the owner's camera only then. In a user's session the
+ * server's own sink watches; as a daemon the agent on the console tells it. */
+BOOL mac_shadow_camera_readers_active(rdpShadowSubsystem *subsystem);
+#endif
+
 #endif /* FREERDP_SERVER_SHADOW_MAC_SHADOW_H */
