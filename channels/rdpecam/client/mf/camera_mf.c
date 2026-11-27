@@ -2046,6 +2046,15 @@ static BOOL cam_mf_enumerate_in_mta(void* data)
 			found->name = nullptr;
 			continue;
 		}
+		if (ecam_is_freerdp_camera(found->name))
+		{
+			WLog_DBG(TAG, "\"%s\" is a FreeRDP server's own camera: not offered", found->name);
+			free(found->link);
+			free(found->name);
+			found->link = nullptr;
+			found->name = nullptr;
+			continue;
+		}
 
 		cam_mf_device_id(found->link, found->deviceId, sizeof(found->deviceId));
 		enumeration->nFound++;
