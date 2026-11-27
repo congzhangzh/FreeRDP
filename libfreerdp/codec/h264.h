@@ -95,6 +95,7 @@ extern "C"
 		               *   (Y, Cb, Cr) instead of 4:2:0 */
 		FREERDP_DECODE_HARDWARE decoderHardware; /* set by the subsystem that says */
 		FREERDP_DECODE_RESULT lastDecode;
+		BOOL decoderNamed; /**< the log has named the decoder since it was selected */
 	};
 
 	WINPR_ATTR_NODISCARD
