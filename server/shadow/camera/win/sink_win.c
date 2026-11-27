@@ -33,8 +33,9 @@
  *   users and for the life of this process (the shadow server runs as SYSTEM in the console
  *   session: a current-user camera would be SYSTEM's own), removing a stale one first, and
  *   for all users until removed when that fails; removes it when the server stops;
- * - reports readers: the media source's streams count themselves in the ring while they
- *   run (SOURCE_START to SOURCE_STOP), so the client's camera can run only then.
+ * - reports readers: the virtual camera's events (SOURCE_START to SOURCE_STOP) once it sent
+ *   one, the media source's count in the ring only before (camera_readers.h), so the client's
+ *   camera runs only while an app reads.
  *
  * Media Foundation and COM run on a thread of the sink's own (MTA), the frames do not:
  * Write copies into the ring.
@@ -60,6 +61,7 @@
 #include <mfidl.h>
 
 #include "camera_mf_ids.h"
+#include "camera_readers.h"
 #include "camera_ring.h"
 #include "sink_win.h"
 
@@ -97,6 +99,11 @@ struct s_win_sink
 	LONG lastReaders;
 	/* SOURCE_START to SOURCE_STOP (the virtual camera's own events): 1 while an app streams */
 	volatile LONG sourceStreams;
+	/* the callback delivered an event since registration: from then on only the events count
+	 * (camera_readers.h) */
+	volatile LONG eventsSeen;
+	/* which signal Readers() went by last: 0 none yet, 1 the ring's count, 2 the events */
+	LONG signal;
 
 	HANDLE thread;
 	HANDLE ready; /* the thread set up the camera, or gave up: started */
@@ -325,7 +332,9 @@ static HRESULT STDMETHODCALLTYPE win_callback_invoke(IMFAsyncCallback* This, IMF
 		WLog_INFO(TAG, "camera: virtual camera event %s (status 0x%08" PRIX32 ")",
 		          win_camera_event_name(&extended), (UINT32)status);
 
-	/* the readers' first signal: Frame Server says when an app starts and stops streaming */
+	/* the readers: Frame Server says when an app starts and stops streaming */
+	if (ws && ((type == MEExtendedType) || (type == MEError)))
+		(void)InterlockedExchange(&ws->eventsSeen, 1);
 	if (ws && (type == MEExtendedType))
 	{
 		if (IsEqualGUID(&extended, &CameraMF_VCAMEVENT_SOURCE_START))
@@ -479,22 +488,32 @@ static BOOL win_sink_write(ShadowCameraSink* sink, const ShadowCameraImage* fram
 	return TRUE;
 }
 
-/* the readers: an app streams from SOURCE_START to SOURCE_STOP (the virtual camera's events,
- * the first signal), or the media source's streams count themselves in the ring (the second:
- * Frame Server's process may not be allowed to write the count); never blocks */
+/* the readers: once the virtual camera sent an event, its events alone (SOURCE_START to
+ * SOURCE_STOP); before any, the media source's count in the ring (camera_readers.h); never
+ * blocks */
 static INT32 win_sink_readers(ShadowCameraSink* sink)
 {
 	WinSink* ws = (WinSink*)sink;
 	WINPR_ASSERT(ws);
+	const BOOL seen = InterlockedCompareExchange(&ws->eventsSeen, 0, 0) != 0;
 	const LONG events = InterlockedCompareExchange(&ws->sourceStreams, 0, 0);
-	const LONG ring = shadow_camera_ring_readers(ws->ring);
-	const LONG readers = (events > ring) ? events : ring;
+	const LONG ring = seen ? 0 : shadow_camera_ring_readers(ws->ring);
+	const LONG readers = shadow_camera_win_readers(seen, events, ring);
+
+	const LONG signal = seen ? 2 : 1;
+	if (InterlockedExchange(&ws->signal, signal) != signal)
+		WLog_INFO(TAG, "camera: %s",
+		          seen ? "the virtual camera's events say who reads it, the media source's count "
+		                 "is ignored"
+		               : "no event from the virtual camera yet, its readers come from the "
+		                 "media source's count until one comes");
+
 	const LONG last = InterlockedExchange(&ws->lastReaders, readers);
 	if ((readers > 0) != (last > 0))
-		WLog_INFO(TAG, "camera: %s (camera events %" PRId32 ", ring count %" PRId32 ")",
+		WLog_INFO(TAG, "camera: %s (by its %s)",
 		          (readers > 0) ? "an app reads the virtual camera"
 		                        : "no app reads the virtual camera",
-		          (INT32)events, (INT32)ring);
+		          seen ? "events" : "media source's count");
 	return (INT32)readers;
 }
 
