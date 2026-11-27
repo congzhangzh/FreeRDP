@@ -306,16 +306,30 @@ ShadowCameraSink* shadow_camera_sink_v4l2_new(const char* device, UINT32 width, 
 	vs->sink.Readers = v4l2_sink_readers;
 	vs->readers = -1;
 
-	int score = -1;
 	if (device)
 	{
+		/* the explicit setting: that device, labelled or not, if it is a loopback output */
+		int score = -1;
 		vs->fd = v4l2_open_probe(&vs->ops, device, &score);
 		(void)snprintf(vs->path, sizeof(vs->path), "%s", device);
+		if (vs->fd < 0)
+		{
+			WLog_INFO(
+			    TAG,
+			    "camera: %s (FREERDP_SHADOW_CAMERA_SINK) is not a v4l2loopback output device; "
+			    "no camera",
+			    device);
+			v4l2_sink_free(&vs->sink);
+			return nullptr;
+		}
+		WLog_INFO(TAG, "camera: using %s (FREERDP_SHADOW_CAMERA_SINK)", device);
 	}
 	else
 	{
-		/* the one labelled ours, else the first */
-		for (int i = 0; (i < SHADOW_CAMERA_V4L2_MAX_DEVICES) && (score < 1); i++)
+		/* only the one labelled ours: an unlabelled loopback is somebody else's camera (OBS',
+		 * another app's), even when it is the only one */
+		BOOL anyLoopback = FALSE;
+		for (int i = 0; (i < SHADOW_CAMERA_V4L2_MAX_DEVICES) && (vs->fd < 0); i++)
 		{
 			char path[sizeof(vs->path)] = WINPR_C_ARRAY_INIT;
 			(void)snprintf(path, sizeof(path), "/dev/video%d", i);
@@ -323,24 +337,30 @@ ShadowCameraSink* shadow_camera_sink_v4l2_new(const char* device, UINT32 width, 
 			const int fd = v4l2_open_probe(&vs->ops, path, &s);
 			if (fd < 0)
 				continue;
-			if (s > score)
+			anyLoopback = TRUE;
+			if (s == 1)
 			{
-				if (vs->fd >= 0)
-					(void)vs->ops.close(vs->fd);
 				vs->fd = fd;
-				score = s;
 				(void)snprintf(vs->path, sizeof(vs->path), "%s", path);
 			}
 			else
 				(void)vs->ops.close(fd);
 		}
-	}
 
-	if (vs->fd < 0)
-	{
-		WLog_INFO(TAG, "camera: no v4l2loopback device");
-		v4l2_sink_free(&vs->sink);
-		return nullptr;
+		if (vs->fd < 0)
+		{
+			if (!anyLoopback)
+				WLog_INFO(TAG, "camera: no v4l2loopback device; no camera. Load the module: "
+				               "modprobe v4l2loopback card_label=\"" SHADOW_CAMERA_V4L2_LABEL
+				               "\" exclusive_caps=1");
+			else
+				WLog_INFO(TAG,
+				          "camera: no v4l2loopback device is labelled \"" SHADOW_CAMERA_V4L2_LABEL
+				          "\"; no camera. Load one with card_label=\"" SHADOW_CAMERA_V4L2_LABEL
+				          "\", or set FREERDP_SHADOW_CAMERA_SINK=v4l2:<device>");
+			v4l2_sink_free(&vs->sink);
+			return nullptr;
+		}
 	}
 
 	if (!v4l2_set_format(vs))

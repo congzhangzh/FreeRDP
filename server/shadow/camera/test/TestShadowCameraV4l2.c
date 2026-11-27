@@ -63,8 +63,10 @@ static struct v4l2_format g_fmt;
 static struct v4l2_streamparm g_parm;
 static size_t g_writes;
 static size_t g_written;
-static BOOL g_shrink; /* S_FMT answers a smaller size, as a device already in use */
-static size_t g_noDeviceLines;
+static BOOL g_shrink;            /* S_FMT answers a smaller size, as a device already in use */
+static size_t g_noDeviceLines;   /* the PO's line 1, word for word */
+static size_t g_unlabelledLines; /* line 2 */
+static size_t g_usingLines;      /* line 3 */
 static size_t g_cameraLines;
 static size_t g_fallbackLines;
 static char g_lastLine[512];
@@ -87,6 +89,8 @@ static void fake_reset(const FakeDevice* devices, size_t count)
 	g_written = 0;
 	g_shrink = FALSE;
 	g_noDeviceLines = 0;
+	g_unlabelledLines = 0;
+	g_usingLines = 0;
 	g_cameraLines = 0;
 	g_fallbackLines = 0;
 	g_queued = 0;
@@ -233,8 +237,18 @@ static BOOL log_message(const wLogMessage* msg)
 		return TRUE;
 	if (strstr(msg->TextString, "camera:"))
 		g_cameraLines++;
-	if (strcmp(msg->TextString, "camera: no v4l2loopback device") == 0)
+	/* the product owner's lines, written out here rather than from the macro */
+	if (strcmp(msg->TextString,
+	           "camera: no v4l2loopback device; no camera. Load the module: modprobe v4l2loopback "
+	           "card_label=\"FreeRDP Camera\" exclusive_caps=1") == 0)
 		g_noDeviceLines++;
+	if (strcmp(msg->TextString,
+	           "camera: no v4l2loopback device is labelled \"FreeRDP Camera\"; no camera. Load one "
+	           "with card_label=\"FreeRDP Camera\", or set "
+	           "FREERDP_SHADOW_CAMERA_SINK=v4l2:<device>") == 0)
+		g_unlabelledLines++;
+	if (strcmp(msg->TextString, "camera: using /dev/video4 (FREERDP_SHADOW_CAMERA_SINK)") == 0)
+		g_usingLines++;
 	if (strstr(msg->TextString, "can't tell when an app reads it"))
 	{
 		g_fallbackLines++;
@@ -301,35 +315,58 @@ static int test_prefers_ours(void)
 	return 0;
 }
 
-static int test_first_loopback(void)
+static int test_unlabelled_refused(void)
+{
+	/* several loopbacks, none ours: none is used, one line */
+	const FakeDevice several[] = {
+		{ "/dev/video0", "uvcvideo", "Integrated Camera", CAPS_CAPTURE },
+		{ "/dev/video2", "v4l2 loopback", "Dummy video device", CAPS_OUTPUT | CAPS_CAPTURE },
+		{ "/dev/video4", "v4l2 loopback", "OBS Virtual Camera", CAPS_OUTPUT | CAPS_CAPTURE },
+	};
+	fake_reset(several, ARRAYSIZE(several));
+	CHECK(!shadow_camera_sink_v4l2_new(nullptr, 640, 480, 15, &g_ops));
+	CHECK(fake_open_count() == 0);
+	CHECK((g_unlabelledLines == 1) && (g_noDeviceLines == 0) && (g_cameraLines == 1));
+
+	/* a single unlabelled loopback is somebody else's too: refused */
+	const FakeDevice one[] = {
+		{ "/dev/video2", "v4l2 loopback", "Dummy video device", CAPS_OUTPUT | CAPS_CAPTURE },
+	};
+	fake_reset(one, ARRAYSIZE(one));
+	CHECK(!shadow_camera_sink_v4l2_new(nullptr, 640, 480, 15, &g_ops));
+	CHECK(fake_open_count() == 0);
+	CHECK((g_unlabelledLines == 1) && (g_noDeviceLines == 0) && (g_cameraLines == 1));
+	return 0;
+}
+
+static int test_explicit(void)
 {
 	const FakeDevice devices[] = {
 		{ "/dev/video0", "uvcvideo", "Integrated Camera", CAPS_CAPTURE },
 		{ "/dev/video2", "v4l2 loopback", "Dummy video device", CAPS_OUTPUT | CAPS_CAPTURE },
 		{ "/dev/video4", "v4l2 loopback", "Second", CAPS_OUTPUT | CAPS_CAPTURE },
 	};
+	/* named on purpose: that one, unlabelled or not, and only it is opened */
 	fake_reset(devices, ARRAYSIZE(devices));
-	ShadowCameraSink* sink = shadow_camera_sink_v4l2_new(nullptr, 640, 480, 15, &g_ops);
+	ShadowCameraSink* sink = shadow_camera_sink_v4l2_new("/dev/video4", 640, 480, 15, &g_ops);
 	CHECK(sink);
-	CHECK((g_open[0] == 0) && (g_open[1] == 1) && (g_open[2] == 0));
+	CHECK((g_opens == 1) && (g_open[2] == 1));
+	CHECK(g_usingLines == 1);
 	sink->Free(sink);
 	CHECK(fake_open_count() == 0);
 
-	/* a device named on purpose: only that one is opened */
-	fake_reset(devices, ARRAYSIZE(devices));
-	sink = shadow_camera_sink_v4l2_new("/dev/video4", 640, 480, 15, &g_ops);
-	CHECK(sink);
-	CHECK((g_opens == 1) && (g_open[2] == 1));
-	sink->Free(sink);
-
-	/* a device that is no loopback is refused even when named */
+	/* a named device that is no loopback output is refused */
 	fake_reset(devices, ARRAYSIZE(devices));
 	CHECK(!shadow_camera_sink_v4l2_new("/dev/video0", 640, 480, 15, &g_ops));
 	CHECK(fake_open_count() == 0);
-	CHECK(g_noDeviceLines == 1);
+	CHECK((g_usingLines == 0) && (g_noDeviceLines == 0) && (g_unlabelledLines == 0));
+	CHECK(g_cameraLines == 1);
 
 	/* S_FMT that does not take the size (a writer of another size is attached) */
-	fake_reset(devices, ARRAYSIZE(devices));
+	const FakeDevice ours[] = {
+		{ "/dev/video1", "v4l2 loopback", SHADOW_CAMERA_V4L2_LABEL, CAPS_OUTPUT | CAPS_CAPTURE },
+	};
+	fake_reset(ours, ARRAYSIZE(ours));
 	g_shrink = TRUE;
 	CHECK(!shadow_camera_sink_v4l2_new(nullptr, 1280, 720, 30, &g_ops));
 	CHECK(fake_open_count() == 0);
@@ -441,7 +478,9 @@ int TestShadowCameraV4l2(int argc, char* argv[])
 		return -1;
 	if (test_prefers_ours() != 0)
 		return -1;
-	if (test_first_loopback() != 0)
+	if (test_unlabelled_refused() != 0)
+		return -1;
+	if (test_explicit() != 0)
 		return -1;
 	if (test_none() != 0)
 		return -1;
