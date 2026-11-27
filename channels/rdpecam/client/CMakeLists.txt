@@ -47,6 +47,10 @@ if(NOT ANDROID AND NOT APPLE)
   if(V4L_FOUND)
     set(WITH_V4L ON)
     add_compile_definitions("WITH_V4L")
+    # libusb finds the UVC H.264 extension unit of a camera (uvc_h264.c). OFF builds the v4l
+    # backend without libusb, e.g. for a portable client that must not need libusb-1.0.so: the
+    # formats V4L2 itself lists, H.264 included, are still announced and passed through
+    option(WITH_RDPECAM_UVC_H264 "rdpecam v4l: look up the UVC H.264 extension unit (requires libusb-1.0)" ON)
   elseif(NOT WITH_RDPECAM_MOVIE AND NOT WITH_RDPECAM_GSTREAMER)
     message(FATAL_ERROR "libv4l-dev required for CHANNEL_RDPECAM_CLIENT")
   endif()
