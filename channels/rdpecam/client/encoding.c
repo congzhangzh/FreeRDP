@@ -115,20 +115,34 @@ static BOOL ecam_init_video_context(CameraDeviceStream* stream)
 
 /**
  * Function description
+ * Capture and negotiated output formats match: samples are sent unchanged.
+ *
+ * @return TRUE for a pass-through stream
+ */
+static BOOL ecam_encoder_passthrough(CameraDeviceStream* stream)
+{
+	WINPR_ASSERT(stream);
+
+	return (ecamToVideoFormat(streamInputFormat(stream)) != FREERDP_VIDEO_FORMAT_NONE) &&
+	       (streamInputFormat(stream) == streamOutputFormat(stream));
+}
+
+/**
+ * Function description
  *
  * @return success/failure
  */
 BOOL ecam_encoder_context_init(CameraDeviceStream* stream)
 {
+	/* A pass-through stream needs neither the H.264 encoder nor a video context:
+	 * freerdp_video_conversion_supported announces every format as convertible to itself,
+	 * even when freerdp_video_context_new fails (FFmpeg not loaded with WITH_SWSCALE_LOADING,
+	 * an avcodec without the MJPEG decoder), so pass-through must not depend on it. */
+	if (ecam_encoder_passthrough(stream))
+		return TRUE;
+
 	if (!ecam_init_video_context(stream))
 		return FALSE;
-
-	/* When capture and negotiated output formats match, the video converter copies
-	 * samples unchanged. Skip the unused H.264 encoder setup so passthrough works
-	 * without an encoder. */
-	if ((ecamToVideoFormat(streamInputFormat(stream)) != FREERDP_VIDEO_FORMAT_NONE) &&
-	    (streamInputFormat(stream) == streamOutputFormat(stream)))
-		return TRUE;
 
 	const UINT32 framerate =
 	    stream->currMediaType.FrameRateNumerator / stream->currMediaType.FrameRateDenominator;
@@ -171,6 +185,17 @@ BOOL ecam_encoder_context_free(CameraDeviceStream* stream)
 BOOL ecam_encoder_compress(CameraDeviceStream* stream, const BYTE* srcData, size_t srcSize,
                            wStream* output)
 {
+	WINPR_ASSERT(stream);
+	WINPR_ASSERT(output);
+
+	if (ecam_encoder_passthrough(stream))
+	{
+		if (!Stream_EnsureRemainingCapacity(output, srcSize))
+			return FALSE;
+		Stream_Write(output, srcData, srcSize);
+		return TRUE;
+	}
+
 	const FREERDP_VIDEO_FORMAT inputFormat = ecamToVideoFormat(streamInputFormat(stream));
 	const FREERDP_VIDEO_FORMAT outputFormat = ecamToVideoFormat(streamOutputFormat(stream));
 
