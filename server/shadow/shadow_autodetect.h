@@ -39,6 +39,12 @@ extern "C"
 	/** sends a continuous RTT Measure Request when one is due; client thread only */
 	WINPR_ATTR_NODISCARD BOOL shadow_client_autodetect_poll(rdpShadowClient* client);
 
+#if defined(WITH_SHADOW_CAMERA)
+	/** the smoothed RTT in ms, 0 before the first measurement; any thread
+	 *  (server/shadow/camera paces its sample requests with it) */
+	WINPR_ATTR_NODISCARD UINT32 shadow_client_autodetect_rtt_ms(rdpShadowClient* client);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

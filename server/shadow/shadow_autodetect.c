@@ -307,6 +307,23 @@ void shadow_client_autodetect_uninit(rdpShadowClient* client)
 	free(ad);
 }
 
+#if defined(WITH_SHADOW_CAMERA)
+UINT32 shadow_client_autodetect_rtt_ms(rdpShadowClient* client)
+{
+	WINPR_ASSERT(client);
+
+	rdpAutoDetect* autodetect = client->context.autodetect;
+	if (!autodetect)
+		return 0;
+	const ShadowAutoDetect* ad = shadow_autodetect_get(autodetect);
+	if (!ad || (ad->rttSamples == 0))
+		return 0;
+	/* written on the client's thread: another one reads an aligned 64-bit value, at worst one
+	 * measurement old */
+	return shadow_autodetect_us_to_ms(ad->averageRttUs);
+}
+
+#endif
 DWORD shadow_client_autodetect_timeout(rdpShadowClient* client)
 {
 	WINPR_ASSERT(client);
