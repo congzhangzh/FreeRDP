@@ -257,6 +257,13 @@ static bool read_readers(CMIODeviceID device, int* count)
 	return ok;
 }
 
+/* The watcher: a CoreMediaIO property listener on the extension's device, AND a poll every
+ * CAM_MAC_READERS_POLL_MS. The poll is a permanent part of the design, not a bridge until the
+ * listener is proven: it finds the device when the extension is approved or restarted after the
+ * server started (a listener needs the device), it reads the count again after a notification
+ * that never came (no documentation promises a custom property's notifications reach another
+ * process), and it is what ends the hold (camera_readers.h) when no notification comes at all.
+ * One property read a second costs nothing next to a camera stream. */
 @interface CamMacReadersWatcher : NSObject
 - (instancetype)initWithSink:(camMacSink*)sink fn:(camMacReadersFn)fn context:(void*)context;
 - (void)stop;
