@@ -52,6 +52,7 @@
 #cmakedefine WITH_FAAC
 #cmakedefine WITH_SOXR
 #cmakedefine WITH_GFX_H264
+#cmakedefine WITH_GFX_H264_DEFAULT
 #cmakedefine WITH_OPENH264
 #cmakedefine WITH_OPENH264_LOADING
 #cmakedefine WITH_VIDEO_FFMPEG

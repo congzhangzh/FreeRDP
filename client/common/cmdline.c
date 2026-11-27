@@ -2384,8 +2384,9 @@ static int prepare_default_settings(rdpSettings* settings, COMMAND_LINE_ARGUMENT
 
 	if (!garg)
 	{
-		/* Automatically activate GFX and RFX codec support */
-#ifdef WITH_GFX_H264
+		/* Automatically activate GFX and RFX codec support; H.264 only when the build says so
+		 * (WITH_GFX_H264_DEFAULT), else it stays off until asked for (/gfx:AVC420, AVC444) */
+#if defined(WITH_GFX_H264) && defined(WITH_GFX_H264_DEFAULT)
 		if (!freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444v2, TRUE) ||
 		    !freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, TRUE) ||
 		    !freerdp_settings_set_bool(settings, FreeRDP_GfxH264, TRUE))
