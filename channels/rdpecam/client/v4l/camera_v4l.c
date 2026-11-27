@@ -27,7 +27,9 @@
 #include <linux/videodev2.h>
 
 #include "camera_v4l.h"
+#if defined(WITH_RDPECAM_UVC_H264)
 #include "uvc_h264.h"
+#endif
 
 #define TAG CHANNELS_TAG("rdpecam-v4l.client")
 
@@ -605,7 +607,12 @@ CamV4lStream* cam_v4l_stream_create(const char* deviceId, size_t streamIndex)
 	}
 	stream->streamIndex = streamIndex;
 	stream->fd = -1;
+#if defined(WITH_RDPECAM_UVC_H264)
 	stream->h264UnitId = get_uvc_h624_unit_id(deviceId);
+#else
+	WINPR_UNUSED(deviceId);
+	stream->h264UnitId = 0; /* built without libusb: no UVC H.264 extension unit */
+#endif
 
 	if (!InitializeCriticalSectionEx(&stream->lock, 0, 0))
 	{
