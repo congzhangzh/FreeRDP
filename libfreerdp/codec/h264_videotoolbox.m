@@ -1,6 +1,6 @@
 /**
  * FreeRDP: A Remote Desktop Protocol Implementation
- * Apple VideoToolbox H.264 decoder and encoder
+ * Apple VideoToolbox H.264 and HEVC decoder and encoder
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,9 +33,10 @@ typedef struct
 {
 	BYTE *data;
 	size_t size;
-	UINT32 spsId;
+	UINT32 spsId; /**< a PPS: its SPS; an HEVC SPS: its VPS */
 } H264_VT_PARAMETER_SET;
 
+/* The decoder takes H.264 or HEVC 4:2:0 (Main), an Annex B stream either way. */
 typedef struct
 {
 	VTDecompressionSessionRef session;
@@ -43,12 +44,25 @@ typedef struct
 	CVPixelBufferRef image;
 	BOOL imageLocked;
 	BOOL parametersChanged;
-	BOOL needsIdr;
+	BOOL needsIdr; /**< waits for a key picture: H.264 IDR, HEVC IRAP */
+	BOOL hevc;     /**< HEVC (H.265) instead of H.264 */
 	UINT32 ppsId;
 	OSType pixelFormat;
-	H264_VT_PARAMETER_SET sps[32];
-	H264_VT_PARAMETER_SET pps[256];
+	H264_VT_PARAMETER_SET vps[16];  /**< HEVC only */
+	H264_VT_PARAMETER_SET sps[32];  /**< HEVC uses the first 16 */
+	H264_VT_PARAMETER_SET pps[256]; /**< HEVC uses the first 64 */
 } H264_CONTEXT_VIDEOTOOLBOX;
+
+/* What the decoder does with a NAL unit */
+typedef enum
+{
+	VT_NAL_FAIL,      /**< not taken: the decode fails */
+	VT_NAL_SKIP,      /**< not passed on: delimiters, end of sequence or stream, filler */
+	VT_NAL_PARAMETER, /**< a parameter set, kept for the format description */
+	VT_NAL_SEI,       /**< passed on */
+	VT_NAL_SLICE,     /**< a slice of any other picture */
+	VT_NAL_KEY        /**< a slice of a key picture: H.264 IDR, HEVC IRAP (BLA, IDR, CRA) */
+} H264_VT_NAL_KIND;
 
 typedef struct
 {
@@ -187,6 +201,216 @@ static BOOL videotoolbox_next_nal(const BYTE *data, size_t size, size_t *offset,
 }
 
 WINPR_ATTR_NODISCARD
+static BOOL videotoolbox_skip_bits(H264_VT_BITS *bits, UINT32 count)
+{
+	UINT32 bit = 0;
+	for (UINT32 x = 0; x < count; x++)
+	{
+		if (!videotoolbox_read_bit(bits, &bit))
+			return FALSE;
+	}
+	return TRUE;
+}
+
+WINPR_ATTR_NODISCARD
+static BOOL videotoolbox_read_bits(H264_VT_BITS *bits, UINT32 count, UINT32 *value)
+{
+	WINPR_ASSERT(value);
+	WINPR_ASSERT(count <= 32);
+
+	UINT32 result = 0;
+	for (UINT32 x = 0; x < count; x++)
+	{
+		UINT32 bit = 0;
+		if (!videotoolbox_read_bit(bits, &bit))
+			return FALSE;
+		result = (result << 1) | bit;
+	}
+	*value = result;
+	return TRUE;
+}
+
+static const char *videotoolbox_codec_name(const H264_CONTEXT_VIDEOTOOLBOX *sys)
+{
+	WINPR_ASSERT(sys);
+	return sys->hevc ? "HEVC" : "H.264";
+}
+
+/* The NAL header is 1 byte in H.264 (type: 5 bits), 2 in HEVC (type: bits 1-6 of the first) */
+static size_t videotoolbox_nal_header(const H264_CONTEXT_VIDEOTOOLBOX *sys)
+{
+	WINPR_ASSERT(sys);
+	return sys->hevc ? 2 : 1;
+}
+
+WINPR_ATTR_NODISCARD
+static BYTE videotoolbox_nal_type(const H264_CONTEXT_VIDEOTOOLBOX *sys, const BYTE *nal)
+{
+	WINPR_ASSERT(sys);
+	WINPR_ASSERT(nal);
+	return sys->hevc ? ((nal[0] >> 1) & 0x3F) : (nal[0] & 0x1F);
+}
+
+/* ITU-T H.264 table 7-1, ITU-T H.265 table 7-1 */
+WINPR_ATTR_NODISCARD
+static H264_VT_NAL_KIND videotoolbox_nal_kind(const H264_CONTEXT_VIDEOTOOLBOX *sys, const BYTE *nal,
+                                              size_t length)
+{
+	WINPR_ASSERT(sys);
+	WINPR_ASSERT(nal);
+
+	/* an end of sequence or stream is the header alone */
+	if (length < videotoolbox_nal_header(sys))
+		return VT_NAL_FAIL;
+	const BYTE type = videotoolbox_nal_type(sys, nal);
+	if (!sys->hevc)
+	{
+		switch (type)
+		{
+			case 1:
+				return VT_NAL_SLICE;
+			case 5:
+				return VT_NAL_KEY;
+			case 6:
+				return VT_NAL_SEI;
+			case 7:
+			case 8:
+				return VT_NAL_PARAMETER;
+			case 9:
+			case 10:
+			case 11:
+			case 12:
+				return VT_NAL_SKIP;
+			default: /* Only ordinary AVC slices and SEI are submitted. */
+				return VT_NAL_FAIL;
+		}
+	}
+	/* TRAIL, TSA, STSA, RADL, RASL (0-9); BLA, IDR, CRA (16-21); 10-15 and 22-23 are reserved */
+	if (type <= 9)
+		return VT_NAL_SLICE;
+	if ((type >= 16) && (type <= 21))
+		return VT_NAL_KEY;
+	switch (type)
+	{
+		case 32: /* VPS */
+		case 33: /* SPS */
+		case 34: /* PPS */
+			return VT_NAL_PARAMETER;
+		case 35: /* access unit delimiter */
+		case 36: /* end of sequence */
+		case 37: /* end of bitstream */
+		case 38: /* filler data */
+			return VT_NAL_SKIP;
+		case 39: /* prefix SEI */
+		case 40: /* suffix SEI */
+			return VT_NAL_SEI;
+		default:
+			return VT_NAL_FAIL;
+	}
+}
+
+/* The PPS a slice refers to */
+WINPR_ATTR_NODISCARD
+static BOOL videotoolbox_slice_pps(const H264_CONTEXT_VIDEOTOOLBOX *sys, const BYTE *nal,
+                                   size_t length, BOOL key, UINT32 *ppsId)
+{
+	WINPR_ASSERT(sys);
+	WINPR_ASSERT(nal);
+	WINPR_ASSERT(ppsId);
+
+	const size_t header = videotoolbox_nal_header(sys);
+	H264_VT_BITS bits = { .data = nal + header, .size = length - header };
+	UINT32 value = 0;
+	if (sys->hevc)
+	{
+		/* first_slice_segment_in_pic_flag, no_output_of_prior_pics_flag (IRAP only), then
+		 * slice_pic_parameter_set_id: ITU-T H.265 7.3.6.1 */
+		if (!videotoolbox_skip_bits(&bits, key ? 2 : 1) || !videotoolbox_read_ue(&bits, ppsId))
+			return FALSE;
+		return *ppsId < 64;
+	}
+	/* first_mb_in_slice, slice_type, pic_parameter_set_id: ITU-T H.264 7.3.3 */
+	if (!videotoolbox_read_ue(&bits, &value) || !videotoolbox_read_ue(&bits, &value) ||
+	    !videotoolbox_read_ue(&bits, ppsId))
+		return FALSE;
+	return *ppsId < ARRAYSIZE(sys->pps);
+}
+
+/* HEVC profile_tier_level(1, maxSubLayersMinus1): ITU-T H.265 7.3.3. Only skipped: VideoToolbox
+ * reads the parameter sets itself. */
+WINPR_ATTR_NODISCARD
+static BOOL videotoolbox_skip_profile_tier_level(H264_VT_BITS *bits, UINT32 maxSubLayersMinus1)
+{
+	BOOL profilePresent[8] = { FALSE };
+	BOOL levelPresent[8] = { FALSE };
+
+	/* general profile space, tier, idc, compatibility flags, constraint flags, level_idc */
+	if (!videotoolbox_skip_bits(bits, 2 + 1 + 5 + 32 + 48 + 8))
+		return FALSE;
+	for (UINT32 x = 0; x < maxSubLayersMinus1; x++)
+	{
+		UINT32 profile = 0;
+		UINT32 level = 0;
+		if (!videotoolbox_read_bits(bits, 1, &profile) || !videotoolbox_read_bits(bits, 1, &level))
+			return FALSE;
+		profilePresent[x] = profile != 0;
+		levelPresent[x] = level != 0;
+	}
+	if ((maxSubLayersMinus1 > 0) && !videotoolbox_skip_bits(bits, 2 * (8 - maxSubLayersMinus1)))
+		return FALSE;
+	for (UINT32 x = 0; x < maxSubLayersMinus1; x++)
+	{
+		if (profilePresent[x] && !videotoolbox_skip_bits(bits, 2 + 1 + 5 + 32 + 48))
+			return FALSE;
+		if (levelPresent[x] && !videotoolbox_skip_bits(bits, 8))
+			return FALSE;
+	}
+	return TRUE;
+}
+
+/* The table entry an HEVC VPS, SPS or PPS goes in, and what it refers to */
+WINPR_ATTR_NODISCARD
+static H264_VT_PARAMETER_SET *videotoolbox_hevc_parameter(H264_CONTEXT_VIDEOTOOLBOX *sys,
+                                                          const BYTE *nal, size_t length,
+                                                          UINT32 *refId)
+{
+	WINPR_ASSERT(sys);
+	WINPR_ASSERT(nal);
+	WINPR_ASSERT(refId);
+
+	H264_VT_BITS bits = { .data = nal + 2, .size = length - 2 };
+	UINT32 id = 0;
+	switch (videotoolbox_nal_type(sys, nal))
+	{
+		case 32: /* vps_video_parameter_set_id u(4) */
+			if (!videotoolbox_read_bits(&bits, 4, &id))
+				return nullptr;
+			*refId = 0;
+			return &sys->vps[id];
+		case 33:
+		{
+			/* sps_video_parameter_set_id u(4), sps_max_sub_layers_minus1 u(3),
+			 * sps_temporal_id_nesting_flag u(1), profile_tier_level, sps_seq_parameter_set_id */
+			UINT32 maxSubLayersMinus1 = 0;
+			if (!videotoolbox_read_bits(&bits, 4, refId) ||
+			    !videotoolbox_read_bits(&bits, 3, &maxSubLayersMinus1) ||
+			    (maxSubLayersMinus1 > 6) || !videotoolbox_skip_bits(&bits, 1) ||
+			    !videotoolbox_skip_profile_tier_level(&bits, maxSubLayersMinus1) ||
+			    !videotoolbox_read_ue(&bits, &id) || (id >= 16))
+				return nullptr;
+			return &sys->sps[id];
+		}
+		case 34: /* pps_pic_parameter_set_id ue(v), pps_seq_parameter_set_id ue(v) */
+			if (!videotoolbox_read_ue(&bits, &id) || (id >= 64) ||
+			    !videotoolbox_read_ue(&bits, refId) || (*refId >= 16))
+				return nullptr;
+			return &sys->pps[id];
+		default:
+			return nullptr;
+	}
+}
+
+WINPR_ATTR_NODISCARD
 static BOOL videotoolbox_save_parameter(H264_CONTEXT_VIDEOTOOLBOX *sys, const BYTE *nal,
                                         size_t length)
 {
@@ -197,7 +421,13 @@ static BOOL videotoolbox_save_parameter(H264_CONTEXT_VIDEOTOOLBOX *sys, const BY
 	UINT32 id = 0;
 	UINT32 spsId = 0;
 	H264_VT_PARAMETER_SET *parameter = nullptr;
-	if ((nal[0] & 0x1F) == 7)
+	if (sys->hevc)
+	{
+		parameter = videotoolbox_hevc_parameter(sys, nal, length, &spsId);
+		if (!parameter)
+			return FALSE;
+	}
+	else if ((nal[0] & 0x1F) == 7)
 	{
 		/* profile_idc, constraint flags and level_idc precede seq_parameter_set_id. */
 		for (UINT32 x = 0; x < 24; x++)
@@ -307,15 +537,32 @@ static BOOL videotoolbox_ensure_session(H264_CONTEXT *h264, UINT32 ppsId)
 	const H264_VT_PARAMETER_SET *sps = &sys->sps[pps->spsId];
 	if (!pps->data || !sps->data)
 		return FALSE;
-	const BYTE *parameters[] = { sps->data, pps->data };
-	const size_t lengths[] = { sps->size, pps->size };
 	CMVideoFormatDescriptionRef format = nullptr;
-	OSStatus status = CMVideoFormatDescriptionCreateFromH264ParameterSets(
-	    kCFAllocatorDefault, ARRAYSIZE(parameters), parameters, lengths, 4, &format);
+	OSStatus status = kCMFormatDescriptionError_InvalidParameter;
+	if (sys->hevc)
+	{
+		const H264_VT_PARAMETER_SET *vps = &sys->vps[sps->spsId];
+		if (!vps->data)
+			return FALSE;
+		const BYTE *parameters[] = { vps->data, sps->data, pps->data };
+		const size_t lengths[] = { vps->size, sps->size, pps->size };
+		if (__builtin_available(macOS 10.13, iOS 11.0, tvOS 11.0, *))
+			status = CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+			    kCFAllocatorDefault, ARRAYSIZE(parameters), parameters, lengths, 4, nullptr,
+			    &format);
+	}
+	else
+	{
+		const BYTE *parameters[] = { sps->data, pps->data };
+		const size_t lengths[] = { sps->size, pps->size };
+		status = CMVideoFormatDescriptionCreateFromH264ParameterSets(
+		    kCFAllocatorDefault, ARRAYSIZE(parameters), parameters, lengths, 4, &format);
+	}
 	if (status != noErr)
 	{
 		char *str = osstatus2str(status);
-		WLog_Print(h264->log, WLOG_WARN, "VideoToolbox H.264 format creation failed: %s", str);
+		WLog_Print(h264->log, WLOG_WARN, "VideoToolbox %s format creation failed: %s",
+		           videotoolbox_codec_name(sys), str);
 		free(str);
 		return FALSE;
 	}
@@ -363,7 +610,8 @@ static BOOL videotoolbox_ensure_session(H264_CONTEXT *h264, UINT32 ppsId)
 	if (status != noErr)
 	{
 		char *str = osstatus2str(status);
-		WLog_Print(h264->log, WLOG_WARN, "VideoToolbox H.264 session creation failed: %s", str);
+		WLog_Print(h264->log, WLOG_WARN, "VideoToolbox %s session creation failed: %s",
+		           videotoolbox_codec_name(sys), str);
 		free(str);
 		CFRelease(format);
 		return FALSE;
@@ -387,8 +635,8 @@ static BOOL videotoolbox_ensure_session(H264_CONTEXT *h264, UINT32 ppsId)
 			h264->decoderHardware =
 			    h264->hwAccel ? FREERDP_DECODE_HARDWARE_YES : FREERDP_DECODE_HARDWARE_NO;
 			h264->lastDecode.hardware = h264->decoderHardware;
-			WLog_Print(h264->log, WLOG_DEBUG, "VideoToolbox H.264 decoder: %s",
-			           h264->hwAccel ? "hardware" : "software");
+			WLog_Print(h264->log, WLOG_DEBUG, "VideoToolbox %s decoder: %s",
+			           videotoolbox_codec_name(sys), h264->hwAccel ? "hardware" : "software");
 		}
 		if (hardware)
 			CFRelease(hardware);
@@ -461,30 +709,29 @@ static int videotoolbox_decompress(H264_CONTEXT *WINPR_RESTRICT h264,
 		size_t length = 0;
 		if (!videotoolbox_next_nal(data, size, &offset, &nal, &length))
 			goto fail;
-		const BYTE type = nal[0] & 0x1F;
-		if ((type == 7) || (type == 8))
+		const H264_VT_NAL_KIND kind = videotoolbox_nal_kind(sys, nal, length);
+		if (kind == VT_NAL_FAIL)
+			goto fail;
+		if (kind == VT_NAL_SKIP)
+			continue;
+		if (kind == VT_NAL_PARAMETER)
 		{
 			if (!videotoolbox_save_parameter(sys, nal, length))
 				goto fail;
 			continue;
 		}
-		if ((type == 1) || (type == 5))
+		if ((kind == VT_NAL_SLICE) || (kind == VT_NAL_KEY))
 		{
-			H264_VT_BITS bits = { .data = nal + 1, .size = length - 1 };
-			UINT32 value = 0;
+			const BOOL key = (kind == VT_NAL_KEY);
 			UINT32 slicePps = 0;
-			if (!videotoolbox_read_ue(&bits, &value) || !videotoolbox_read_ue(&bits, &value) ||
-			    !videotoolbox_read_ue(&bits, &slicePps) || (slicePps >= ARRAYSIZE(sys->pps)))
+			if (!videotoolbox_slice_pps(sys, nal, length, key, &slicePps))
 				goto fail;
-			if ((ppsId != UINT32_MAX) && ((ppsId != slicePps) || (idr != (type == 5))))
+			/* all slices of the picture: one PPS, all key or none */
+			if ((ppsId != UINT32_MAX) && ((ppsId != slicePps) || (idr != key)))
 				goto fail;
 			ppsId = slicePps;
-			idr = (type == 5);
+			idr = key;
 		}
-		else if ((type == 9) || (type == 10) || (type == 11) || (type == 12))
-			continue;
-		else if (type != 6) /* Only ordinary AVC slices and SEI are submitted. */
-			goto fail;
 		if ((length > UINT32_MAX - 4) || (sampleSize > UINT32_MAX - length - 4))
 			goto fail;
 		sampleSize += length + 4;
@@ -496,7 +743,8 @@ static int videotoolbox_decompress(H264_CONTEXT *WINPR_RESTRICT h264,
 		goto fail;
 	if (sys->needsIdr && !idr)
 	{
-		WLog_Print(h264->log, WLOG_WARN, "VideoToolbox H.264 decoder requires an IDR picture");
+		WLog_Print(h264->log, WLOG_WARN, "VideoToolbox %s decoder requires a key picture",
+		           videotoolbox_codec_name(sys));
 		goto fail;
 	}
 	OSStatus status = CMBlockBufferCreateWithMemoryBlock(
@@ -516,8 +764,8 @@ static int videotoolbox_decompress(H264_CONTEXT *WINPR_RESTRICT h264,
 		size_t length = 0;
 		if (!videotoolbox_next_nal(data, size, &offset, &nal, &length))
 			goto fail;
-		const BYTE type = nal[0] & 0x1F;
-		if ((type != 1) && (type != 5) && (type != 6))
+		const H264_VT_NAL_KIND kind = videotoolbox_nal_kind(sys, nal, length);
+		if ((kind != VT_NAL_SLICE) && (kind != VT_NAL_KEY) && (kind != VT_NAL_SEI))
 			continue;
 		bytes[written++] = (char)((length >> 24) & 0xFF);
 		bytes[written++] = (char)((length >> 16) & 0xFF);
@@ -539,9 +787,8 @@ static int videotoolbox_decompress(H264_CONTEXT *WINPR_RESTRICT h264,
 	{
 		char *str1 = osstatus2str(status);
 		char *str2 = osstatus2str(output.status);
-		WLog_Print(h264->log, WLOG_WARN,
-		           "VideoToolbox H.264 decode failed: %s / %s, outputs=%" PRIu32, str1, str2,
-		           output.count);
+		WLog_Print(h264->log, WLOG_WARN, "VideoToolbox %s decode failed: %s / %s, outputs=%" PRIu32,
+		           videotoolbox_codec_name(sys), str1, str2, output.count);
 		free(str1);
 		free(str2);
 		goto fail;
@@ -1223,6 +1470,8 @@ static void videotoolbox_uninit(H264_CONTEXT *h264)
 		return;
 	videotoolbox_release_image(h264);
 	videotoolbox_destroy_session(h264);
+	for (size_t x = 0; x < ARRAYSIZE(sys->vps); x++)
+		free(sys->vps[x].data);
 	for (size_t x = 0; x < ARRAYSIZE(sys->sps); x++)
 		free(sys->sps[x].data);
 	for (size_t x = 0; x < ARRAYSIZE(sys->pps); x++)
@@ -1236,20 +1485,25 @@ static BOOL videotoolbox_init(H264_CONTEXT *h264)
 {
 	WINPR_ASSERT(h264);
 
-	/* HEVC: encoder only, 4:2:0 only */
+	/* HEVC: 4:2:0 only (Main), in both directions */
 	if (h264->hevc444)
 		return FALSE;
 
 	if (h264->Compressor)
 		return videotoolbox_encoder_init(h264);
 
-	if (h264->hevc)
+	/* CMVideoFormatDescriptionCreateFromHEVCParameterSets exists since macOS 10.13 */
+	BOOL hevcFormat = FALSE;
+	if (__builtin_available(macOS 10.13, iOS 11.0, tvOS 11.0, *))
+		hevcFormat = TRUE;
+	if (h264->hevc && !hevcFormat)
 		return FALSE;
 
 	H264_CONTEXT_VIDEOTOOLBOX *sys = calloc(1, sizeof(*sys));
 	if (!sys)
 		return FALSE;
 	sys->needsIdr = TRUE;
+	sys->hevc = h264->hevc;
 	h264->pSystemData = sys;
 	h264->hwAccel = FALSE;
 	/* The actual session is created lazily when the stream supplies SPS/PPS. */

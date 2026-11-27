@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <freerdp/config.h>
 #include <freerdp/freerdp.h>
 #include <freerdp/codec/color.h>
 #include <freerdp/codec/h264.h>
@@ -155,6 +156,14 @@ static int round_trip(UINT32 profile)
 	}
 	if (!dec)
 		(void)fprintf(stderr, "HEVC %s: no decoder in this build, encode only\n", name);
+#if defined(__APPLE__) && defined(WITH_APPLE_VIDEOTOOLBOX)
+	/* VideoToolbox decodes HEVC 4:2:0 on macOS: the Mac client has no other HEVC decoder */
+	if (!dec && (profile == 0))
+	{
+		(void)fprintf(stderr, "HEVC %s: WRONG, VideoToolbox should decode it\n", name);
+		goto fail;
+	}
+#endif
 	if (!freerdp_hevc_context_reset(enc, TEST_WIDTH, TEST_HEIGHT) ||
 	    (dec && !freerdp_hevc_context_reset(dec, TEST_WIDTH, TEST_HEIGHT)) ||
 	    !freerdp_hevc_context_set_option(enc, FREERDP_HEVC_CONTEXT_OPTION_BITRATE, 8000000))
@@ -188,6 +197,29 @@ static int round_trip(UINT32 profile)
 		rc = -1;
 		goto fail;
 	}
+
+	/* which decoder made the picture: the client's stats and log name it the same way */
+	FREERDP_DECODE_RESULT result = WINPR_C_ARRAY_INIT;
+	if (!freerdp_hevc_context_get_last_decode(dec, &result))
+	{
+		rc = -1;
+		goto fail;
+	}
+	const char* backend = result.backend ? result.backend : "none";
+	const char* hardware = (result.hardware == FREERDP_DECODE_HARDWARE_YES)  ? "hardware"
+	                       : (result.hardware == FREERDP_DECODE_HARDWARE_NO) ? "software"
+	                                                                         : "unknown";
+	(void)fprintf(stderr, "HEVC %s: decoded by %s (%s), status %d (picture is %d)\n", name, backend,
+	              hardware, (int)result.status, (int)FREERDP_DECODE_PICTURE);
+	if (result.status != FREERDP_DECODE_PICTURE)
+		rc = -1;
+#if defined(__APPLE__) && defined(WITH_APPLE_VIDEOTOOLBOX)
+	if ((profile == 0) && (strcmp(backend, "VideoToolbox") != 0))
+	{
+		(void)fprintf(stderr, "HEVC %s: WRONG, want VideoToolbox\n", name);
+		rc = -1;
+	}
+#endif
 
 	for (size_t q = 0; q < 4; q++)
 	{
