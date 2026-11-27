@@ -44,6 +44,9 @@
 #if defined(WITH_GFX_AZURE)
 #include "shadow_gfx_caps.h"
 #endif
+#if defined(WITH_SHADOW_CAMERA)
+#include "camera/shadow_camera.h"
+#endif
 
 #define TAG CLIENT_TAG("shadow")
 
@@ -3769,6 +3772,9 @@ static DWORD WINAPI shadow_client_thread(LPVOID arg)
 	/* This should only be visited in client thread */
 	SHADOW_GFX_STATUS gfxstatus = WINPR_C_ARRAY_INIT;
 	BOOL dispTried = FALSE;
+#if defined(WITH_SHADOW_CAMERA)
+	BOOL cameraTried = FALSE;
+#endif
 	rdpUpdate* update = nullptr;
 
 	WINPR_ASSERT(client);
@@ -4053,6 +4059,15 @@ static DWORD WINAPI shadow_client_thread(LPVOID arg)
 						if (client->disp->Open(client->disp) != CHANNEL_RC_OK)
 							WLog_WARN(TAG, "Failed to open Display Control");
 					}
+
+#if defined(WITH_SHADOW_CAMERA)
+					/* asked for once: a client without a camera never answers */
+					if (!cameraTried)
+					{
+						cameraTried = TRUE;
+						shadow_camera_client_open(client);
+					}
+#endif
 
 					/* Init RDPGFX dynamic channel */
 					if (freerdp_settings_get_bool(settings, FreeRDP_SupportGraphicsPipeline) &&

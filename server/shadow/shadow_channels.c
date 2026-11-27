@@ -24,6 +24,9 @@
 
 #include "shadow_channels.h"
 #include "shadow_cliprdr.h"
+#if defined(WITH_SHADOW_CAMERA)
+#include "camera/shadow_camera.h"
+#endif
 
 UINT shadow_client_channels_post_connect(rdpShadowClient* client)
 {
@@ -48,6 +51,11 @@ UINT shadow_client_channels_post_connect(rdpShadowClient* client)
 	if (!shadow_client_audin_init(client))
 		return ERROR_NOT_READY;
 
+#if defined(WITH_SHADOW_CAMERA)
+	if (!shadow_camera_client_init(client))
+		return ERROR_NOT_READY;
+#endif
+
 	if (WTSVirtualChannelManagerIsChannelJoined(client->vcm, CLIPRDR_SVC_CHANNEL_NAME))
 	{
 		if (shadow_client_cliprdr_init(client) < 0)
@@ -68,6 +76,9 @@ void shadow_client_channels_free(rdpShadowClient* client)
 	shadow_client_disp_uninit(client);
 	shadow_client_rdpgfx_uninit(client);
 	shadow_client_cliprdr_uninit(client);
+#if defined(WITH_SHADOW_CAMERA)
+	shadow_camera_client_uninit(client);
+#endif
 	shadow_client_audin_uninit(client);
 	shadow_client_rdpsnd_uninit(client);
 	shadow_client_remdesk_uninit(client);

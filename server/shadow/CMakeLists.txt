@@ -85,7 +85,21 @@ if(WITH_RDTK)
   endif()
 endif()
 
+# a client's camera (MS-RDPECAM) as a camera of the host: server/shadow/camera
+option(WITH_SHADOW_CAMERA "Share a client's camera as a virtual camera of the host" OFF)
+if(WITH_SHADOW_CAMERA)
+  if(NOT CHANNEL_RDPECAM_SERVER)
+    message(FATAL_ERROR "WITH_SHADOW_CAMERA needs CHANNEL_RDPECAM_SERVER")
+  endif()
+  add_subdirectory(camera)
+  list(APPEND SRCS ${SHADOW_CAMERA_SRCS})
+endif()
+
 addtargetwithresourcefile(${MODULE_NAME} "FALSE" "${FREERDP_VERSION}" SRCS)
+
+if(WITH_SHADOW_CAMERA)
+  target_compile_definitions(${MODULE_NAME} PRIVATE WITH_SHADOW_CAMERA)
+endif()
 
 if(WITH_RDTK)
   target_compile_definitions(${MODULE_NAME} PRIVATE WITH_RDTK)
