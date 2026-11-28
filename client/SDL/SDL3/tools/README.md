@@ -35,3 +35,13 @@ by clock time: two machines' clocks differ. The connection is the one in the cli
 `strings.SERVER_CONNECTION_ID` (sent over the server's statistics channel), else the server's only
 connection, else the one given with `--connection`. `time_ms` and `started_at` (each machine's own
 clock) are printed for people only.
+
+A FreeRDP shadow server started with `/stats-ipc[:<path>]` has a socket of its own
+(`freerdp-shadow-<pid>.stats.sock`, on Windows `\\.\pipe\freerdp-shadow-<pid>.stats`; schema
+`freerdp-shadow-stats`): `--server --follow > server.jsonl` records it, `--server --once` prints
+its newest line. A server built with the camera (`WITH_SHADOW_CAMERA`) adds a `camera` object to
+each client: the host's virtual camera (`sink`, `readers`: apps reading it, -1 when the sink
+can't tell) and the client's `devices` (state, `owner`, media type, and `CAMERA_*` counters for the
+period: plain names count the period, `_TOTAL` since the device joined, `_NOW` at the period's
+end); its refused cameras are listed with their reason. `--camera` prints them as one row per
+device.

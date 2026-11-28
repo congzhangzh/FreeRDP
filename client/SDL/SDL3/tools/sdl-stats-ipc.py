@@ -26,10 +26,13 @@ r"""Read the statistics of a running sdl-freerdp started with /sdl-stats-ipc.
   sdl-stats-ipc.py --join run.jsonl server.jsonl [--connection ID]
                                               the client's lines beside a FreeRDP shadow server's
                                               statistics, per server period, lined up by frame id
+  sdl-stats-ipc.py [SOCKET] --server --once|--follow   a FreeRDP shadow server's /stats-ipc instead
+  sdl-stats-ipc.py [SOCKET] --camera          the shadow server's cameras: one row per client device
 
 Without SOCKET it takes the one sdl-freerdp-<pid>.stats.sock in $XDG_RUNTIME_DIR or $TMPDIR; on
 Windows SOCKET is the client's named pipe (\\.\pipe\sdl-freerdp-<pid>.stats, a bare name works too),
-by default the one such pipe there is. Only the Python standard library is used.
+by default the one such pipe there is. With --server (or --camera) the same for a shadow server's
+freerdp-shadow-<pid>.stats.sock (\\.\pipe\freerdp-shadow-<pid>.stats). Only the Python standard library is used.
 """
 
 import argparse
@@ -63,17 +66,18 @@ def pid_from_name(name):
     return int(m.group(1)) if m else None
 
 
-def find_socket():
+def find_socket(server=False):
+    base = "freerdp-shadow" if server else "sdl-freerdp"
     if WINDOWS:
-        found = sorted(n for n in os.listdir(PIPE_PREFIX) if re.fullmatch(r"sdl-freerdp-\d+\.stats", n))
+        found = sorted(n for n in os.listdir(PIPE_PREFIX) if re.fullmatch(base + r"-\d+\.stats", n))
         if len(found) != 1:
             raise SystemExit("give the pipe: %s" % ("none found" if not found else "several: " + ", ".join(found)))
         return PIPE_PREFIX + found[0]
     found = []
     for variable in ("XDG_RUNTIME_DIR", "TMPDIR"):
-        base = os.environ.get(variable)
-        if base:
-            found += glob.glob(os.path.join(base, "sdl-freerdp-*.stats.sock"))
+        directory = os.environ.get(variable)
+        if directory:
+            found += glob.glob(os.path.join(directory, base + "-*.stats.sock"))
     found = sorted(set(found))
     if len(found) != 1:
         raise SystemExit(
@@ -113,9 +117,9 @@ class Reader:
         raw, self.buffer = self.buffer.split(b"\n", 1)
         return raw.decode("utf-8", errors="replace")
 
-    def reading(self):
+    def reading(self, server=False):
         value = json.loads(self.line())
-        check(value)
+        check(value, server)
         return value
 
     def close(self):
@@ -143,11 +147,50 @@ def check_pipe_server(pipe, name):
         raise SystemExit("%s is served by pid %d, not %d: not the client's pipe" % (name, server.value, pid))
 
 
-def check(reading):
-    if reading.get("schema") != SCHEMA:
-        raise SystemExit("not %s: %r" % (SCHEMA, reading.get("schema")))
-    if reading.get("version") != VERSION:
-        raise SystemExit("schema version %r, this reader knows %d" % (reading.get("version"), VERSION))
+def check(reading, server=False):
+    schema, version = (SERVER_SCHEMA, SERVER_VERSION) if server else (SCHEMA, VERSION)
+    if reading.get("schema") != schema:
+        raise SystemExit("not %s: %r" % (schema, reading.get("schema")))
+    if reading.get("version") != version:
+        raise SystemExit("schema version %r, this reader knows %d" % (reading.get("version"), version))
+
+
+def camera_rows(line):
+    """A shadow server's line: per client its camera (the host's sink and readers), then one row
+    per device: state (* = owns the virtual camera), media type, and the period's counters."""
+    out = []
+    for client in line.get("clients", []):
+        camera = client.get("camera")
+        head = "client %s %s" % (client.get("connection_id"), client.get("peer") or "-")
+        if camera is None:
+            out.append(head + "  no camera (a server without it)")
+            continue
+        readers = camera.get("readers")
+        out.append("%s  sink %s, %s" % (head, camera.get("sink") or "none",
+                                        "readers ?" if readers is None or readers < 0 else "readers %d" % readers))
+        devices = camera.get("devices", [])
+        if not devices:
+            out.append("  no camera from this client")
+        for device in devices:
+            text = "  %-24s %s%s" % (device.get("name"), device.get("state"), " *" if device.get("owner") else "")
+            if "reason" in device:
+                text += " (%s)" % device["reason"]
+            if "format" in device:
+                den = device.get("fps_den") or 1
+                text += "  %s %dx%d %.4g fps" % (device["format"], device["width"], device["height"],
+                                                 device.get("fps_num", 0) / den)
+            k = device.get("counters")
+            if k:
+                text += "  %d kbit/s, %d frames, %d dropped, %d errors in %.1f s" % (
+                    k["CAMERA_KBIT_S"], k["CAMERA_FRAMES"], k["CAMERA_DROPPED"], k["CAMERA_SAMPLE_ERRORS"],
+                    k["CAMERA_PERIOD_MS"] / 1000)
+                if "CAMERA_DECODE_AVG_US" in k:
+                    text += ", decode %.1f/%.1f ms" % (k["CAMERA_DECODE_AVG_US"] / 1000, k["CAMERA_DECODE_MAX_US"] / 1000)
+                text += ", gap %d ms, requests %d/%d, %d frames total" % (
+                    k["CAMERA_SAMPLE_GAP_MAX_MS"], k["CAMERA_OUTSTANDING_NOW"], k["CAMERA_OUTSTANDING_TARGET_NOW"],
+                    k["CAMERA_FRAMES_TOTAL"])
+            out.append(text)
+    return "\n".join(out)
 
 
 def rate(first, second, name):
@@ -430,13 +473,46 @@ def self_test():
         raise AssertionError("a newer schema must be refused")
     except SystemExit:
         pass
+    server_line = {
+        "schema": SERVER_SCHEMA, "version": SERVER_VERSION, "seq": 3, "time_ms": 1, "pid": 7, "clients": [
+            {"connection_id": "00000000000000a1", "peer": "127.0.0.1:5000", "periods": 2, "counters": {},
+             "camera": {"sink": "file", "readers": 1, "devices": [
+                 {"name": "Other", "state": "refused", "owner": False, "reason": "another client owns the camera"},
+                 {"name": "Cam \u00e9", "state": "streaming", "owner": True, "format": "H264", "width": 640,
+                  "height": 480, "fps_num": 30, "fps_den": 1, "counters": {
+                      "CAMERA_PERIOD_MS": 2000, "CAMERA_SAMPLES": 60, "CAMERA_BYTES": 750000, "CAMERA_KBIT_S": 3000,
+                      "CAMERA_FRAMES": 59, "CAMERA_DROPPED": 1, "CAMERA_SAMPLE_ERRORS": 0,
+                      "CAMERA_DECODE_AVG_US": 17100, "CAMERA_DECODE_MAX_US": 43500,
+                      "CAMERA_SAMPLE_GAP_MAX_MS": 54, "CAMERA_OUTSTANDING_MAX": 2, "CAMERA_OUTSTANDING_NOW": 2,
+                      "CAMERA_OUTSTANDING_TARGET_NOW": 2, "CAMERA_FRAMES_TOTAL": 82, "CAMERA_STARTS_TOTAL": 1}}]}},
+            {"connection_id": "00000000000000b2", "peer": None, "periods": 1, "counters": {},
+             "camera": {"sink": None, "readers": None, "devices": []}},
+            {"connection_id": "00000000000000c3", "peer": None, "periods": 1, "counters": {}},
+        ]}
+    check(server_line, server=True)
+    try:
+        check(server_line)
+        raise AssertionError("a server line is not a client's")
+    except SystemExit:
+        pass
+    text = camera_rows(server_line)
+    lines = text.splitlines()
+    assert lines[0] == "client 00000000000000a1 127.0.0.1:5000  sink file, readers 1", lines[0]
+    assert "refused (another client owns the camera)" in lines[1], lines[1]
+    assert "Cam é" in lines[2] and "streaming *" in lines[2] and "H264 640x480 30 fps" in lines[2], lines[2]
+    assert "3000 kbit/s, 59 frames, 1 dropped, 0 errors in 2.0 s" in lines[2], lines[2]
+    assert "decode 17.1/43.5 ms, gap 54 ms, requests 2/2, 82 frames total" in lines[2], lines[2]
+    assert lines[3] == "client 00000000000000b2 -  sink none, readers ?", lines[3]
+    assert lines[4] == "  no camera from this client", lines[4]
+    assert lines[5].endswith("no camera (a server without it)"), lines[5]
     join_self_test()
     print("self test passed")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("socket", nargs="?", help="the client's socket (default: the only one there is)")
+    parser.add_argument("socket", nargs="?", help="the client's socket, or with --server the shadow server's "
+                        "(default: the only one there is)")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--once", action="store_true")
     mode.add_argument("--rows", action="store_true")
@@ -446,6 +522,8 @@ def main():
     mode.add_argument("--summary", metavar="FILE")
     mode.add_argument("--join", nargs=2, metavar=("CLIENT", "SERVER"))
     mode.add_argument("--self-test", action="store_true")
+    mode.add_argument("--camera", action="store_true", help="a shadow server's cameras (implies --server)")
+    parser.add_argument("--server", action="store_true", help="read a FreeRDP shadow server's /stats-ipc")
     parser.add_argument("--connection", help="--join: the server's connection_id to use")
     parser.add_argument("--count", type=int, default=0, help="--follow: stop after N readings")
     parser.add_argument("--timeout", type=float, default=10, help="seconds to wait for a reading")
@@ -463,19 +541,24 @@ def main():
             print(summary(f))
         return 0
 
-    reader = Reader(args.socket or find_socket(), args.timeout)
+    server = args.server or args.camera
+    if server and (args.rows or args.get or args.rate):
+        raise SystemExit("--rows, --get and --rate read a client: a server line has per-client counters")
+    reader = Reader(args.socket or find_socket(server), args.timeout)
     try:
         if args.follow:
             n = 0
             while args.count == 0 or n < args.count:
                 line = reader.line()
-                check(json.loads(line))
+                check(json.loads(line), server)
                 sys.stdout.write(line + "\n")
                 sys.stdout.flush()
                 n += 1
             return 0
-        first = reader.reading()
-        if args.once:
+        first = reader.reading(server)
+        if args.camera:
+            print(camera_rows(first))
+        elif args.once:
             print(json.dumps(first, indent=1, ensure_ascii=False))
         elif args.rows:
             print(rows_text(first))
