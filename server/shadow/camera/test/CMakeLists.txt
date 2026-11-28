@@ -23,10 +23,10 @@ disable_warnings_for_directory(${CMAKE_CURRENT_BINARY_DIR})
 set(${MODULE_PREFIX}_DRIVER ${MODULE_NAME}.c)
 
 set(${MODULE_PREFIX}_TESTS TestShadowCameraFormat.c TestShadowCameraOwner.c TestShadowCameraDemand.c TestShadowCameraPlaceholder.c
-                           TestShadowCameraImage.c TestShadowCameraFileSink.c
+                           TestShadowCameraImage.c TestShadowCameraFileSink.c TestShadowCameraStats.c
 )
 # the parts that need no channel and no client: their files are built in
-set(${MODULE_PREFIX}_PARTS ../camera_image.c ../camera_policy.c ../camera_decode.c ../placeholder.c ../sink_file.c)
+set(${MODULE_PREFIX}_PARTS ../camera_image.c ../camera_policy.c ../camera_decode.c ../placeholder.c ../sink_file.c ../camera_stats.c)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   list(APPEND ${MODULE_PREFIX}_TESTS TestShadowCameraV4l2.c)
   list(APPEND ${MODULE_PREFIX}_PARTS ../sink_v4l2.c)

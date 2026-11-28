@@ -58,6 +58,7 @@
 #include "camera_image.h"
 #include "camera_policy.h"
 #include "camera_sink.h"
+#include "camera_stats.h"
 #include "placeholder.h"
 #if defined(_WIN32)
 #include "win/sink_win.h"
@@ -108,9 +109,25 @@ typedef struct
 	CAM_MEDIA_TYPE_DESCRIPTION type;
 	ShadowCameraDecoder* decoder;
 	UINT32 outstanding;
+	UINT32 target; /* the outstanding requests camera_refill aims at */
 	UINT32 errors;
 	UINT64 frames;
 	char detail[64];
+	const char* failReason; /* the first one */
+
+	/* what the stats read on the client's thread (shadow_camera_client_stats_json), under
+	 * cc->lock: the device's thread writes it, the fields above stay its own */
+	struct
+	{
+		SHADOW_CAMERA_STATS_STATE state;
+		const char* reason;
+		BOOL hasType;
+		CAM_MEDIA_TYPE_DESCRIPTION type;
+		UINT32 starts;
+		UINT32 outstanding;
+		UINT32 target;
+		ShadowCameraStats stats;
+	} shared;
 } CameraDevice;
 
 struct s_camera_client
@@ -119,7 +136,8 @@ struct s_camera_client
 	CamDevEnumServerContext* enumerator;
 	BYTE version;
 	CRITICAL_SECTION lock;
-	wArrayList* devices; /* CameraDevice*, guarded by lock */
+	wArrayList* devices;           /* CameraDevice*, guarded by lock */
+	ShadowCameraRefusals refusals; /* guarded by lock */
 };
 
 typedef struct
@@ -407,6 +425,8 @@ static void camera_fail(CameraDevice* dev, const char* why)
 {
 	WINPR_ASSERT(dev);
 	dev->state = CAMERA_DEVICE_FAILED;
+	if (!dev->failReason)
+		dev->failReason = why;
 	camera_release(dev, why);
 }
 
@@ -450,6 +470,7 @@ static void camera_refill(CameraDevice* dev)
 	const UINT32 rtt = shadow_client_autodetect_rtt_ms(dev->cc->client);
 	const UINT32 target = shadow_camera_pacing_outstanding(dev->type.FrameRateNumerator,
 	                                                       dev->type.FrameRateDenominator, rtt);
+	dev->target = target;
 	while (dev->outstanding < target)
 	{
 		const CAM_SAMPLE_REQUEST request = { .Header = camera_header(dev, CAM_MSG_ID_SampleRequest),
@@ -508,6 +529,9 @@ static void camera_device_apply_demand(CameraDevice* dev)
 			dev->outstanding = 0;
 			dev->errors = 0;
 			dev->starts++;
+			EnterCriticalSection(&dev->cc->lock);
+			shadow_camera_stats_stream_started(&dev->shared.stats);
+			LeaveCriticalSection(&dev->cc->lock);
 			WLog_INFO(TAG, "camera: \"%s\" of client %s: Start Streams #%" PRIu32 " (%s)",
 			          dev->name, camera_client_name(dev->cc), dev->starts,
 			          (readers < 0) ? "the sink can't tell its readers"
@@ -695,15 +719,18 @@ static UINT camera_device_media_types(CameraDeviceServerContext* context,
 	return CHANNEL_RC_OK;
 }
 
-static void camera_submit(CameraDevice* dev, const ShadowCameraImage* image)
+/* @return whether the sink took the picture */
+static BOOL camera_submit(CameraDevice* dev, const ShadowCameraImage* image)
 {
+	BOOL written = FALSE;
 	EnterCriticalSection(&g_camera.lock);
 	if (g_camera.sink && shadow_camera_owner_is(&g_camera.owner, dev))
 	{
 		if (shadow_camera_image_letterbox(image, &g_camera.frame))
 		{
-			if (!g_camera.sink->Write(g_camera.sink, &g_camera.frame, SHADOW_CAMERA_FRAME_CLIENT,
-			                          dev->detail))
+			written = g_camera.sink->Write(g_camera.sink, &g_camera.frame,
+			                               SHADOW_CAMERA_FRAME_CLIENT, dev->detail);
+			if (!written)
 				WLog_DBG(TAG, "camera: writing a frame failed");
 			g_camera.clientFrames++;
 			g_camera.ownerStreaming = TRUE;
@@ -712,6 +739,7 @@ static void camera_submit(CameraDevice* dev, const ShadowCameraImage* image)
 		}
 	}
 	LeaveCriticalSection(&g_camera.lock);
+	return written;
 }
 
 static UINT camera_device_sample(CameraDeviceServerContext* context,
@@ -727,10 +755,15 @@ static UINT camera_device_sample(CameraDeviceServerContext* context,
 		dev->outstanding--;
 	dev->errors = 0;
 
+	const UINT64 arrivedMs = GetTickCount64();
 	ShadowCameraImage image = WINPR_C_ARRAY_INIT;
 	BOOL picture = FALSE;
-	if (shadow_camera_decoder_decode(dev->decoder, response->Sample, response->SampleSize, &image,
-	                                 &picture))
+	BOOL shown = FALSE;
+	const UINT64 decodeStartNs = winpr_GetTickCount64NS();
+	const BOOL decoded = shadow_camera_decoder_decode(dev->decoder, response->Sample,
+	                                                  response->SampleSize, &image, &picture);
+	const UINT64 decodeNs = winpr_GetTickCount64NS() - decodeStartNs;
+	if (decoded)
 	{
 		if (picture)
 		{
@@ -738,7 +771,7 @@ static UINT camera_device_sample(CameraDeviceServerContext* context,
 				WLog_INFO(TAG, "camera: first frame from \"%s\" of client %s: %s, %" PRIuz " bytes",
 				          dev->name, camera_client_name(dev->cc), dev->detail,
 				          response->SampleSize);
-			camera_submit(dev, &image);
+			shown = camera_submit(dev, &image);
 		}
 	}
 	else
@@ -746,6 +779,19 @@ static UINT camera_device_sample(CameraDeviceServerContext* context,
 		         response->SampleSize);
 
 	camera_refill(dev);
+
+	/* a sample shows a picture, nothing (undecodable, not written) or not yet (the decoder
+	 * holds it) */
+	EnterCriticalSection(&dev->cc->lock);
+	ShadowCameraStats* stats = &dev->shared.stats;
+	shadow_camera_stats_sample(stats, response->SampleSize, arrivedMs);
+	shadow_camera_stats_decoded(stats, decodeNs);
+	if (shown)
+		shadow_camera_stats_shown(stats);
+	else if (!decoded || picture)
+		shadow_camera_stats_dropped(stats);
+	shadow_camera_stats_outstanding(stats, dev->outstanding);
+	LeaveCriticalSection(&dev->cc->lock);
 	return CHANNEL_RC_OK;
 }
 
@@ -760,6 +806,9 @@ static UINT camera_device_sample_error(CameraDeviceServerContext* context,
 		return CHANNEL_RC_OK;
 	if (dev->outstanding > 0)
 		dev->outstanding--;
+	EnterCriticalSection(&dev->cc->lock);
+	shadow_camera_stats_sample_error(&dev->shared.stats);
+	LeaveCriticalSection(&dev->cc->lock);
 	if (++dev->errors >= CAMERA_MAX_SAMPLE_ERRORS)
 	{
 		WLog_WARN(TAG,
@@ -842,6 +891,54 @@ static CameraDevice* camera_client_find_locked(CameraClient* cc, const char* cha
 }
 
 /* the device's channel and its stream's demand, on one thread */
+/* where the device is, as the stats name it */
+static SHADOW_CAMERA_STATS_STATE camera_stats_state(const CameraDevice* dev)
+{
+	switch (dev->state)
+	{
+		case CAMERA_DEVICE_FAILED:
+			return SHADOW_CAMERA_STATS_FAILED;
+		case CAMERA_DEVICE_READY:
+			switch (dev->stream)
+			{
+				case SHADOW_CAMERA_STREAM_STARTING:
+					return SHADOW_CAMERA_STATS_STARTING;
+				case SHADOW_CAMERA_STREAM_STREAMING:
+					return SHADOW_CAMERA_STATS_STREAMING;
+				case SHADOW_CAMERA_STREAM_STOPPING:
+					return SHADOW_CAMERA_STATS_STOPPING;
+				case SHADOW_CAMERA_STREAM_IDLE:
+				default:
+					return SHADOW_CAMERA_STATS_IDLE;
+			}
+		case CAMERA_DEVICE_ACTIVATING:
+		case CAMERA_DEVICE_STREAM_LIST:
+		case CAMERA_DEVICE_MEDIA_TYPES:
+		default:
+			return SHADOW_CAMERA_STATS_NEGOTIATING;
+	}
+}
+
+/* the device's thread: its state, for the stats (the counters are kept as they happen) */
+static void camera_device_publish(CameraDevice* dev)
+{
+	WINPR_ASSERT(dev);
+	EnterCriticalSection(&dev->cc->lock);
+	dev->shared.state = camera_stats_state(dev);
+	dev->shared.reason = (dev->state == CAMERA_DEVICE_FAILED) ? dev->failReason : nullptr;
+	dev->shared.hasType = (dev->state == CAMERA_DEVICE_READY);
+	dev->shared.type = dev->type;
+	dev->shared.starts = dev->starts;
+	/* requests left from a stream that stopped are given up: the next start counts from 0 */
+	const BOOL running =
+	    (dev->state == CAMERA_DEVICE_READY) && ((dev->stream == SHADOW_CAMERA_STREAM_STARTING) ||
+	                                            (dev->stream == SHADOW_CAMERA_STREAM_STREAMING) ||
+	                                            (dev->stream == SHADOW_CAMERA_STREAM_STOPPING));
+	dev->shared.outstanding = running ? dev->outstanding : 0;
+	dev->shared.target = running ? dev->target : 0;
+	LeaveCriticalSection(&dev->cc->lock);
+}
+
 static DWORD WINAPI camera_device_thread(LPVOID arg)
 {
 	CameraDevice* dev = arg;
@@ -854,8 +951,10 @@ static DWORD WINAPI camera_device_thread(LPVOID arg)
 	if ((ctx->Poll(ctx) != CHANNEL_RC_OK) || !ctx->ChannelHandle(ctx, &channel) || !channel)
 	{
 		camera_fail(dev, "channel not opened");
+		camera_device_publish(dev);
 		return 0;
 	}
+	camera_device_publish(dev);
 
 	for (;;)
 	{
@@ -879,7 +978,9 @@ static DWORD WINAPI camera_device_thread(LPVOID arg)
 			break;
 		}
 		camera_device_apply_demand(dev);
+		camera_device_publish(dev);
 	}
+	camera_device_publish(dev);
 	return 0;
 }
 
@@ -932,6 +1033,7 @@ static UINT camera_enum_device_added(CamDevEnumServerContext* context,
 	if (!dev)
 		return CHANNEL_RC_NO_MEMORY;
 	dev->cc = cc;
+	shadow_camera_stats_init(&dev->shared.stats, GetTickCount64());
 	dev->channel = _strdup(notification->VirtualChannelName);
 	dev->name = ConvertWCharToUtf8Alloc(notification->DeviceName, nullptr);
 	if (!dev->channel || !dev->name)
@@ -981,6 +1083,9 @@ static UINT camera_enum_device_added(CamDevEnumServerContext* context,
 	{
 		WLog_INFO(TAG, "camera: \"%s\" of client %s refused: %s", dev->name, camera_client_name(cc),
 		          refused);
+		EnterCriticalSection(&cc->lock);
+		shadow_camera_refusals_add(&cc->refusals, dev->name, refused);
+		LeaveCriticalSection(&cc->lock);
 		camera_device_free(dev);
 		return CHANNEL_RC_OK;
 	}
@@ -1257,4 +1362,123 @@ void shadow_camera_client_uninit(rdpShadowClient* client)
 	ArrayList_Free(cc->devices);
 	DeleteCriticalSection(&cc->lock);
 	free(cc);
+}
+
+/* ---- the stats ---- */
+
+WINPR_ATTR_NODISCARD
+static BOOL camera_stats_device(char* buffer, size_t size, size_t* at, BOOL* first,
+                                const ShadowCameraDeviceInfo* info,
+                                const ShadowCameraStatsValues* values)
+{
+	const size_t start = *at;
+	if (!*first)
+	{
+		if (*at + 1 >= size)
+			return FALSE;
+		buffer[(*at)++] = ',';
+		buffer[*at] = '\0';
+	}
+	if (!shadow_camera_stats_json_device(buffer, size, at, info, values))
+	{
+		*at = start;
+		buffer[start] = '\0';
+		return FALSE;
+	}
+	*first = FALSE;
+	return TRUE;
+}
+
+BOOL shadow_camera_client_stats_json(rdpShadowClient* client, UINT64 nowMs, char* buffer,
+                                     size_t size)
+{
+	WINPR_ASSERT(client);
+	if (!buffer || (size == 0) || !camera_global())
+		return FALSE;
+
+	/* the host's camera, then this client's devices: the two locks one after the other */
+	const char* sink = nullptr;
+	INT32 readers = -1;
+	const void* owner = nullptr;
+	CameraClient* cc = nullptr;
+	EnterCriticalSection(&g_camera.lock);
+	if (g_camera.running && g_camera.sink)
+	{
+		sink = g_camera.sink->name;
+		readers = g_camera.readers;
+	}
+	owner = g_camera.owner.owner;
+	const size_t count = g_camera.clients ? ArrayList_Count(g_camera.clients) : 0;
+	for (size_t x = 0; x < count; x++)
+	{
+		CameraClient* c = ArrayList_GetItem(g_camera.clients, x);
+		if (c && (c->client == client))
+			cc = c;
+	}
+	LeaveCriticalSection(&g_camera.lock);
+
+	int rc = _snprintf(buffer, size, "{\"sink\":");
+	if ((rc < 0) || ((size_t)rc >= size))
+		return FALSE;
+	size_t at = (size_t)rc;
+	if (!shadow_camera_stats_json_string(buffer, size, &at, sink, sink ? strlen(sink) : 0))
+		return FALSE;
+	if (sink)
+		rc = _snprintf(&buffer[at], size - at, ",\"readers\":%" PRId32 ",\"devices\":[", readers);
+	else
+		rc = _snprintf(&buffer[at], size - at, ",\"readers\":null,\"devices\":[");
+	if ((rc < 0) || ((size_t)rc >= size - at))
+		return FALSE;
+	at += (size_t)rc;
+
+	BOOL ok = TRUE;
+	if (cc)
+	{
+		BOOL first = TRUE;
+		EnterCriticalSection(&cc->lock);
+		/* the refused ones, oldest first */
+		const ShadowCameraRefusals* refusals = &cc->refusals;
+		for (size_t x = 0; ok && (x < refusals->count); x++)
+		{
+			const size_t slot =
+			    (refusals->next + SHADOW_CAMERA_STATS_REFUSALS - refusals->count + x) %
+			    SHADOW_CAMERA_STATS_REFUSALS;
+			const ShadowCameraDeviceInfo info = { .name = refusals->names[slot],
+				                                  .state = SHADOW_CAMERA_STATS_REFUSED,
+				                                  .reason = refusals->reasons[slot] };
+			ok = camera_stats_device(buffer, size, &at, &first, &info, nullptr);
+		}
+		const size_t devices = ArrayList_Count(cc->devices);
+		for (size_t x = 0; ok && (x < devices); x++)
+		{
+			CameraDevice* dev = ArrayList_GetItem(cc->devices, x);
+			if (!dev)
+				continue;
+			const CAM_MEDIA_TYPE_DESCRIPTION* type = &dev->shared.type;
+			const ShadowCameraDeviceInfo info = {
+				.name = dev->name,
+				.state = dev->shared.state,
+				.reason = dev->shared.reason,
+				.owner = (owner != nullptr) && (owner == dev),
+				.format = dev->shared.hasType ? shadow_camera_format_name(type->Format) : nullptr,
+				.width = type->Width,
+				.height = type->Height,
+				.fpsNumerator = type->FrameRateNumerator,
+				.fpsDenominator = type->FrameRateDenominator,
+				.startsTotal = dev->shared.starts,
+				.outstandingNow = dev->shared.outstanding,
+				.outstandingTargetNow = dev->shared.target,
+			};
+			ShadowCameraStatsValues values = WINPR_C_ARRAY_INIT;
+			shadow_camera_stats_take_period(&dev->shared.stats, nowMs,
+			                                dev->shared.state == SHADOW_CAMERA_STATS_STREAMING,
+			                                &values);
+			ok = camera_stats_device(buffer, size, &at, &first, &info, &values);
+		}
+		LeaveCriticalSection(&cc->lock);
+	}
+	if (!ok)
+		return FALSE;
+	rc = _snprintf(&buffer[at], size - at, "]}");
+	return (rc > 0) && ((size_t)rc < size - at);
 }

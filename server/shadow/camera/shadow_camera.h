@@ -56,6 +56,14 @@ extern "C"
 	/** The client goes: its cameras are closed, the virtual camera freed if it owned it */
 	void shadow_camera_client_uninit(rdpShadowClient* client);
 
+	/** The client's cameras as one JSON object for the stats socket (the "camera" member of
+	 *  its period): the host's sink and readers, the client's refused cameras (the newest 4)
+	 *  and each of its devices with its counters (camera_stats.h). Takes each device's period,
+	 *  which ends at nowMs (GetTickCount64). The client's thread.
+	 *  @return FALSE when it does not fit, or the camera code can't run */
+	WINPR_ATTR_NODISCARD BOOL shadow_camera_client_stats_json(rdpShadowClient* client, UINT64 nowMs,
+	                                                          char* buffer, size_t size);
+
 #ifdef __cplusplus
 }
 #endif

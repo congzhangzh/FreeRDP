@@ -27,6 +27,8 @@ set(SHADOW_CAMERA_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/camera_policy.c
     ${CMAKE_CURRENT_SOURCE_DIR}/camera_policy.h
     ${CMAKE_CURRENT_SOURCE_DIR}/camera_sink.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/camera_stats.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/camera_stats.h
     ${CMAKE_CURRENT_SOURCE_DIR}/sink_file.c
     ${CMAKE_CURRENT_SOURCE_DIR}/placeholder.c
     ${CMAKE_CURRENT_SOURCE_DIR}/placeholder.h
