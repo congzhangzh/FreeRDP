@@ -296,7 +296,7 @@ BOOL shadow_gfx_stats_json(const SHADOW_GFX_VALUES* values, const SHADOW_GFX_PER
 	    ",\"GFX_ACK_DELAY_MAX_MS\":%" PRIu64 ",\"GFX_ACK_DELAY_MIN_MS\":%" PRIu64
 	    ",\"GFX_ENCODE_AVG_US\":%" PRIu64 ",\"GFX_ENCODE_MAX_US\":%" PRIu64
 	    ",\"GFX_IN_FLIGHT_MAX\":%" PRIu64 ",\"GFX_IN_FLIGHT_LIMIT\":%" PRIu64
-	    "%s%s%s,\"GFX_FRAME_ID_ACKED_LAST\":%" PRIu64 "}}",
+	    "%s%s%s,\"GFX_FRAME_ID_ACKED_LAST\":%" PRIu64 "}%s%s}",
 	    info->connectionId, peer ? "\"" : "", peer ? peer : "null", peer ? "\"" : "",
 	    info->connectedMs, startedAt ? "\"" : "", startedAt ? startedAt : "null",
 	    startedAt ? "\"" : "", info->periods, info->timeMs, info->ns, values->periodMs,
@@ -304,7 +304,8 @@ BOOL shadow_gfx_stats_json(const SHADOW_GFX_VALUES* values, const SHADOW_GFX_PER
 	    values->captured, values->sent, values->held, values->merged, values->acks,
 	    values->ackDelayAvgMs, values->ackDelayMaxMs, values->ackDelayMinMs, values->encodeAvgUs,
 	    values->encodeMaxUs, values->inFlightMax, values->inFlightLimit, frames, times, cpu,
-	    values->frameIdAckedLast);
+	    values->frameIdAckedLast, info->camera ? ",\"camera\":" : "",
+	    info->camera ? info->camera : "");
 	return (rc > 0) && ((size_t)rc < size);
 }
 

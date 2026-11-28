@@ -121,6 +121,9 @@ typedef struct
 	BOOL acksSuspended;
 	UINT32 fps;    /* the encoder's rate now (it slows down when frames are behind) */
 	UINT32 maxFps; /* its highest */
+	/* the client's cameras, a JSON object written as "camera" (shadow_camera_client_stats_json);
+	 * nullptr: left out (a server without the camera) */
+	const char* camera;
 } SHADOW_GFX_PERIOD_INFO;
 
 #ifdef __cplusplus

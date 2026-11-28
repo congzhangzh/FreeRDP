@@ -596,6 +596,23 @@ static BOOL test_json(void)
 	}
 	CHECK(strstr(object, ",\"GFX_FRAME_ID_ACKED_LAST\":0}}"));
 
+	/* the camera object goes after the counters; without one nothing changes */
+	{
+		SHADOW_GFX_PERIOD_INFO withCamera = info;
+		withCamera.camera = "{\"sink\":\"file\",\"readers\":1,\"devices\":[]}";
+		char camera[1200] = { 0 };
+		CHECK(shadow_gfx_stats_json(&values, &withCamera, camera, sizeof(camera)));
+		CHECK(strstr(camera, ",\"GFX_FRAME_ID_ACKED_LAST\":0},\"camera\":{\"sink\":\"file\","
+		                     "\"readers\":1,\"devices\":[]}}"));
+		const size_t length = strlen(camera);
+		CHECK((length > 2) && (strcmp(&camera[length - 2], "]}") != 0) &&
+		      (strcmp(&camera[length - 3], "]}}") == 0));
+		/* the rest is the same line */
+		CHECK(strncmp(camera, object, strlen(object) - 1) == 0);
+		/* too small for the camera too: refused, not cut */
+		CHECK(!shadow_gfx_stats_json(&values, &withCamera, camera, strlen(object) + 5));
+	}
+
 	/* a peer that is no address is left out */
 	SHADOW_GFX_PERIOD_INFO odd = info;
 	odd.peer = "a\"b";

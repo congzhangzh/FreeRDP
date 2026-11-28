@@ -3700,7 +3700,7 @@ static void shadow_client_gfx_stats(rdpShadowClient* client)
 		{
 			const UINT64 nowNs = winpr_GetTickCount64NS();
 			const UINT64 nowMs = winpr_GetUnixTimeNS() / 1000000ull;
-			const SHADOW_GFX_PERIOD_INFO info = {
+			SHADOW_GFX_PERIOD_INFO info = {
 				.connectionId = encoder->connectionId,
 				.peer = encoder->peer,
 				.startedAt = encoder->startedAt,
@@ -3712,7 +3712,15 @@ static void shadow_client_gfx_stats(rdpShadowClient* client)
 				.fps = encoder->fps,
 				.maxFps = encoder->maxFps,
 			};
-			char object[1024] = WINPR_C_ARRAY_INIT;
+			/* the client's cameras: one more period of theirs */
+#if defined(WITH_SHADOW_CAMERA)
+			char camera[3072] = WINPR_C_ARRAY_INIT;
+			if (shadow_camera_client_stats_json(client, now, camera, sizeof(camera)))
+				info.camera = camera;
+			else
+				WLog_DBG(TAG, "the camera's stats did not fit, left out");
+#endif
+			char object[4096] = WINPR_C_ARRAY_INIT;
 			if (shadow_gfx_stats_json(&values, &info, object, sizeof(object)))
 				shadow_stats_ipc_client_period(client->server->statsIpc, encoder->connectionId,
 				                               object);
