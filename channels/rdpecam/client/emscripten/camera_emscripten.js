@@ -20,7 +20,7 @@
 /* JavaScript side of camera_emscripten.c, linked with --js-library. Every function runs on the
  * main browser thread (proxied there from the channel's threads). The camera goes out as H.264:
  * each frame is encoded by a WebCodecs VideoEncoder (Constrained Baseline, real-time, the bit
- * rate camera_emscripten.c chose), a key frame first and every 10 s. Chunks come in the
+ * rate camera_emscripten.c chose), one key frame, the first. Chunks come in the
  * "avc" format (NAL units after their lengths, the SPS and PPS in the avcC record of the first
  * output), which camera_emscripten.c turns into Annex B samples.
  *
@@ -68,11 +68,10 @@ function cam_web_start(index, capture, width, height, fpsNum, fpsDen, bitrate, c
 	const SLOT_FREE = 0, SLOT_FULL = 1, SLOT_FAILED = 2;
 	const CHUNK_CONFIG = 0, CHUNK_KEY = 1, CHUNK_DELTA = 2;
 	const fps = fpsNum / fpsDen;
-	/* a key frame first, then every 10 s: RDP runs over TCP, so nothing is lost mid-stream, and
-	 * every recovery (on-demand restart, a new owner, a reconnect) starts the stream again, with a
-	 * key frame; more key frames would only cost bit rate */
-	const KEY_INTERVAL_S = 10;
-	const keyEvery = Math.max(1, Math.round(KEY_INTERVAL_S * fps));
+	/* One key frame per stream, the first: RDP runs over TCP, so nothing is lost mid-stream, and
+	 * every recovery (on-demand restart, a new owner, a reconnect, another size) is a new Start
+	 * Streams, a new encoder here, and so a new key frame. Periodic key frames would only cost bit
+	 * rate. The one other key frame: after a chunk had to be dropped (it did not fit the slot). */
 	const t0 = performance.now();
 
 	const stats = (Module.freerdpCameraStats = Module.freerdpCameraStats || {});
@@ -269,7 +268,7 @@ function cam_web_start(index, capture, width, height, fpsNum, fpsDen, bitrate, c
 			return;
 		}
 		const input = sized(frame);
-		const key = st.needKey || st.encoded % keyEvery === 0;
+		const key = st.needKey;
 		st.needKey = false;
 		st.encoded++;
 		st.started.set(input.timestamp, performance.now());

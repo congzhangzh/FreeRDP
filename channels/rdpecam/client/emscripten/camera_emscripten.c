@@ -28,9 +28,9 @@
  * The browser opens a camera only when the server starts a stream (the page asks for the
  * permission beforehand) and closes it when the server stops, or when the server stopped asking
  * for samples (RequestDrivenCapture). The main browser thread captures the frames and encodes
- * them with a VideoEncoder (camera_emscripten.js): Constrained Baseline, real-time, a key frame
- * first and every 10 s (MS-RDPECAM has no key frame request; RDP is TCP), at the bit rate chosen
- * here.
+ * them with a VideoEncoder (camera_emscripten.js): Constrained Baseline, real-time, at the bit
+ * rate chosen here, one key frame per stream, the first (MS-RDPECAM has no key frame request, RDP
+ * runs over TCP, and every recovery is a new Start Streams, which starts a new encoder).
  * It writes the encoder's avcC record, then each chunk, into a one-chunk slot in the shared wasm
  * memory and wakes the slot's state as a futex. A capture thread here waits on that futex, turns
  * each chunk into an Annex B sample with the SPS and PPS before every key frame
