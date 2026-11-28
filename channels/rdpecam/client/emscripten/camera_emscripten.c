@@ -297,6 +297,15 @@ static void cam_web_log_stats(const char* deviceId, const CamWebStream* stream,
 	          stream->rejected, encodeMs);
 }
 
+/* The slot is the page's again. The page may be waiting for it (Atomics.waitAsync on the state,
+ * which returns only on a notify): wake it, or the chunks pile up in the page and it skips every
+ * camera frame from then on. */
+static void cam_web_slot_free(cam_web_capture* capture)
+{
+	__atomic_store_n(&capture->state, CAM_WEB_SLOT_FREE, __ATOMIC_SEQ_CST);
+	(void)emscripten_futex_wake(&capture->state, INT32_MAX);
+}
+
 static DWORD WINAPI cam_web_capture_thread(LPVOID arg)
 {
 	CamWebStream* stream = arg;
@@ -369,14 +378,14 @@ static DWORD WINAPI cam_web_capture_thread(LPVOID arg)
 				          "camera %s: a chunk (kind %" PRIu32 ", %" PRIuz
 				          " bytes) cannot be sent (logged once)",
 				          stream->dev->deviceId, kind, size);
-			__atomic_store_n(&capture->state, CAM_WEB_SLOT_FREE, __ATOMIC_SEQ_CST);
+			cam_web_slot_free(capture);
 			continue;
 		}
 
 		const UINT rc =
 		    stream->callback(stream->dev, stream->streamIndex, stream->sample, sampleSize);
 		/* the channel copied the sample: the page may write the next frame */
-		__atomic_store_n(&capture->state, CAM_WEB_SLOT_FREE, __ATOMIC_SEQ_CST);
+		cam_web_slot_free(capture);
 		if (rc == ECAM_SAMPLE_CAPTURE_DRAINED)
 		{
 			drained = TRUE;

@@ -161,7 +161,9 @@ function cam_web_start(index, capture, width, height, fpsNum, fpsDen, bitrate, c
 				st.pumping = true;
 				if (typeof Atomics.waitAsync === "function")
 				{
-					const r = Atomics.waitAsync(HEAP32, STATE, SLOT_FULL);
+					/* the capture thread wakes this when it frees the slot; the timeout only guards
+					 * against a wake that never comes */
+					const r = Atomics.waitAsync(HEAP32, STATE, SLOT_FULL, 100);
 					if (r.async)
 						r.value.then(pump);
 					else
