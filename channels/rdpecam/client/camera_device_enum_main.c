@@ -601,8 +601,8 @@ FREERDP_ENTRY_POINT(UINT VCAPITYPE rdpecam_DVCPluginEntry(IDRDYNVC_ENTRY_POINTS*
 	ecam->iface.Attached = ecam_plugin_attached;
 	ecam->iface.Detached = ecam_plugin_detached;
 
-	/* TODO: camera redirect only supported for platforms with Video4Linux, Android, macOS/iOS
-	 * or Windows */
+	/* TODO: camera redirect only supported for platforms with Video4Linux, Android, macOS/iOS,
+	 * Windows or a browser */
 #if defined(WITH_V4L)
 	ecam->subsystem = "v4l";
 #elif defined(__ANDROID__)
@@ -611,6 +611,8 @@ FREERDP_ENTRY_POINT(UINT VCAPITYPE rdpecam_DVCPluginEntry(IDRDYNVC_ENTRY_POINTS*
 	ecam->subsystem = "avfoundation";
 #elif defined(WITH_RDPECAM_MF)
 	ecam->subsystem = "mf";
+#elif defined(__EMSCRIPTEN__)
+	ecam->subsystem = "emscripten";
 #else
 	ecam->subsystem = nullptr;
 #endif

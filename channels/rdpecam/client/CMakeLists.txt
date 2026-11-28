@@ -48,9 +48,9 @@ if(WITH_RDPECAM_MF)
   add_compile_definitions("WITH_RDPECAM_MF")
 endif()
 
-# currently camera redirect client is supported for platforms with Video4Linux, Android, macOS/iOS
-# or Windows
-if(NOT ANDROID AND NOT APPLE AND NOT WITH_RDPECAM_MF)
+# currently camera redirect client is supported for platforms with Video4Linux, Android, macOS/iOS,
+# Windows or a browser (Emscripten: the emscripten backend, getUserMedia)
+if(NOT ANDROID AND NOT APPLE AND NOT WITH_RDPECAM_MF AND NOT EMSCRIPTEN)
   find_package(V4L)
   if(V4L_FOUND)
     set(WITH_V4L ON)
@@ -77,6 +77,10 @@ endif()
 
 if(ANDROID)
   add_channel_client_subsystem(${MODULE_PREFIX} ${CHANNEL_NAME} "android" "")
+endif()
+
+if(EMSCRIPTEN)
+  add_channel_client_subsystem(${MODULE_PREFIX} ${CHANNEL_NAME} "emscripten" "")
 endif()
 
 if(APPLE)
