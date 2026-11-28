@@ -3891,6 +3891,12 @@ static DWORD WINAPI shadow_client_thread(LPVOID arg)
 		                  SOFTSYNC_TCP_TO_UDP) != 0;
 		if (udp && (timeout > 1000))
 			timeout = 1000;
+		/* With the stats socket on, the period goes out on time even when nothing else wakes
+		 * the loop (a still desktop); without it the wait is as before. */
+		if (client->activated)
+			timeout = MIN(timeout,
+			              shadow_gfx_stats_wait_ms(server->statsIpc != nullptr, server->statsPeriod,
+			                                       client->encoder->statsLogged, GetTickCount64()));
 		status = WaitForMultipleObjects(nCount, events, FALSE, timeout);
 
 		if (status == WAIT_FAILED)

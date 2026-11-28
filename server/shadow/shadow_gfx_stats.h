@@ -203,6 +203,15 @@ extern "C"
 	 */
 	WINPR_ATTR_NODISCARD FREERDP_LOCAL BOOL shadow_gfx_stats_debug(void);
 
+	/** How long a client's loop may wait before its next period is due, so the stats socket
+	 *  gets a period on time even on a still desktop that sends nothing.
+	 *  @param socketOn the stats socket is open; without it the loop waits as it would anyway
+	 *  @param seconds the period (rdpShadowServer::statsPeriod), 0: the default
+	 *  @param lastMs when the last period was taken (GetTickCount64), 0: none yet
+	 *  @return INFINITE when socketOn is FALSE; else the ms left in the period, at least 1 */
+	WINPR_ATTR_NODISCARD FREERDP_LOCAL DWORD shadow_gfx_stats_wait_ms(BOOL socketOn, UINT32 seconds,
+	                                                                  UINT64 lastMs, UINT64 nowMs);
+
 	/** writes the line (shadow_gfx_stats_format) at INFO on its own logger, SHADOW_GFX_STATS_TAG */
 	FREERDP_LOCAL void shadow_gfx_stats_write(const SHADOW_GFX_STATS* stats, UINT32 inFlightLimit,
 	                                          BOOL acksSuspended, UINT64 elapsedMs);

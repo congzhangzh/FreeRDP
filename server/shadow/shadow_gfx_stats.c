@@ -379,6 +379,21 @@ void shadow_gfx_stats_forget_frames(SHADOW_GFX_STATS* stats)
 	memset(stats->ring, 0, sizeof(stats->ring));
 }
 
+DWORD shadow_gfx_stats_wait_ms(BOOL socketOn, UINT32 seconds, UINT64 lastMs, UINT64 nowMs)
+{
+	if (!socketOn)
+		return INFINITE;
+	const UINT64 periodMs = 1000ull * ((seconds > 0) ? seconds : SHADOW_GFX_STATS_DEFAULT_SECONDS);
+	/* none taken yet, or a clock that went back: a whole period */
+	if ((lastMs == 0) || (nowMs < lastMs))
+		return (DWORD)MIN(periodMs, INFINITE - 1);
+	const UINT64 elapsed = nowMs - lastMs;
+	/* due now: the turn after a 1 ms wait takes it, never a loop that spins */
+	if (elapsed >= periodMs)
+		return 1;
+	return (DWORD)MIN(periodMs - elapsed, INFINITE - 1);
+}
+
 BOOL shadow_gfx_stats_debug(void)
 {
 	wLog* log = WLog_Get(SHADOW_GFX_STATS_TAG);

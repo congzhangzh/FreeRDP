@@ -294,6 +294,44 @@ static BOOL test_debug_switch(void)
 	return ok;
 }
 
+/* the client loop's wait: unchanged (INFINITE) with the socket off, the rest of the period with
+ * it on, never 0 */
+WINPR_ATTR_NODISCARD
+static BOOL test_wait(void)
+{
+	const struct
+	{
+		BOOL on;
+		UINT32 seconds;
+		UINT64 last;
+		UINT64 now;
+		DWORD expected;
+	} cases[] = {
+		{ FALSE, 0, 0, 1000, INFINITE },      { FALSE, 5, 1000, 1000, INFINITE },
+		{ FALSE, 5, 1000, 999999, INFINITE }, { TRUE, 0, 0, 1000, 5000 },
+		{ TRUE, 0, 1000, 1000, 5000 },        { TRUE, 0, 1000, 3500, 2500 },
+		{ TRUE, 0, 1000, 5999, 1 },           { TRUE, 0, 1000, 6000, 1 },
+		{ TRUE, 0, 1000, 90000, 1 },          { TRUE, 2, 1000, 1500, 1500 },
+		{ TRUE, 3600, 1000, 1000, 3600000 },  { TRUE, 5, 5000, 4000, 5000 },
+	};
+	BOOL ok = TRUE;
+	for (size_t x = 0; x < ARRAYSIZE(cases); x++)
+	{
+		const DWORD got =
+		    shadow_gfx_stats_wait_ms(cases[x].on, cases[x].seconds, cases[x].last, cases[x].now);
+		if (got != cases[x].expected)
+		{
+			(void)fprintf(stderr,
+			              "wait %" PRIuz ": socket %d, %" PRIu32 " s, last %" PRIu64
+			              ", now %" PRIu64 ": %" PRIu32 ", expected %" PRIu32 "\n",
+			              x, cases[x].on, cases[x].seconds, cases[x].last, cases[x].now, got,
+			              cases[x].expected);
+			ok = FALSE;
+		}
+	}
+	return ok;
+}
+
 int TestShadowGfxStats(int argc, char* argv[])
 {
 	WINPR_UNUSED(argc);
@@ -301,7 +339,7 @@ int TestShadowGfxStats(int argc, char* argv[])
 
 	if (!test_normal() || !test_zero_sent() || !test_elapsed_zero() || !test_ring_wrap() ||
 	    !test_suspended_and_periods() || !test_limits() || !test_debug_switch() || !test_window() ||
-	    !test_window_next())
+	    !test_window_next() || !test_wait())
 		return -1;
 	return 0;
 }
