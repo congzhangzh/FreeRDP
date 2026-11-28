@@ -1494,6 +1494,14 @@ static int mac_shadow_subsystem_start(rdpShadowSubsystem* subsystem)
 	if (!mac)
 		return -1;
 
+#if !defined(WITH_SHADOW_CAMERA_MAC)
+	/* A build without the virtual camera (WITH_SHADOW_CAMERA_MAC: a CoreMediaIO system
+	 * extension, which must be signed with a Developer ID; the ad hoc signed builds leave it out)
+	 * says so once, so a client's camera is not left unanswered without a word */
+	WLog_INFO(TAG, "camera: macOS needs the signed build for the server camera (a Developer ID "
+	               "system extension); this build has none");
+#endif
+
 	(void)ResetEvent(mac->stopEvent);
 	mac->thread = CreateThread(nullptr, 0, mac_shadow_subsystem_thread, mac, 0, nullptr);
 	if (!mac->thread)
