@@ -337,8 +337,9 @@ extern "C"
 	    UINT32 reservedAV2Tune[5];
 #endif
 		/** the GFX codecs in the order a client is tried with them (/gfx-codec-order, then the
-		 *  rest in the default order AV2, AV1, HEVC, AVC444, AVC420, RFX, progressive, planar);
-		 *  uncompressed comes last @since version 3.34.0 */
+		 *  rest in the default order AV2, AV1, HEVC, AVC444, AVC420, RFX, progressive, planar;
+		 *  on macOS HEVC first, its encoder being VideoToolbox hardware); uncompressed comes
+		 *  last @since version 3.34.0 */
 		SHADOW_GFX_CODEC GfxCodecOrder[SHADOW_GFX_CODEC_COUNT];
 		/** the most frames per second the server captures and sends, for every subsystem and
 		 *  encoder (/framerate, 1 to 120); 0 keeps the rate each of them has of its own

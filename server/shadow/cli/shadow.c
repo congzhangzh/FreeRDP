@@ -148,8 +148,9 @@ int main(int argc, char** argv)
 		{ "gfx-codec-order", COMMAND_LINE_VALUE_REQUIRED, "<codec>[,<codec>...]", nullptr, nullptr,
 		  -1, nullptr,
 		  "The order the GFX codecs are tried in, of av2, av1, hevc, avc444, avc420, rfx, "
-		  "progressive, planar: the ones given first, the others after them in this order. It "
-		  "only ranks: the /gfx-<codec> switches and the client decide which can be used" },
+		  "progressive, planar: the ones given first, the others after them in this order (on "
+		  "macOS hevc first: VideoToolbox encodes it in hardware). It only ranks: the "
+		  "/gfx-<codec> switches and the client decide which can be used" },
 		{ "gfx-progressive", COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueTrue, nullptr, -1, nullptr,
 		  "Allow GFX progressive codec" },
 		{ "gfx-rfx", COMMAND_LINE_VALUE_BOOL, nullptr, BoolValueTrue, nullptr, -1, nullptr,

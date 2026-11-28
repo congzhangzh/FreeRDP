@@ -43,6 +43,7 @@
 
 #include "shadow.h"
 #include "shadow_stats_ipc.h"
+#include "shadow_codec_order.h"
 #include "shadow_config.h"
 #include "shadow_cliprdr.h"
 #if defined(WITH_SHADOW_CAMERA)
@@ -431,8 +432,8 @@ static BOOL shadow_server_parse_codec(rdpShadowServer* server, const char* value
 	return TRUE;
 }
 
-/* The GFX codecs by the names /gfx uses for them, in the default order of
- * rdpShadowServer::GfxCodecOrder */
+/* The GFX codecs by the names /gfx uses for them (their default order:
+ * shadow_gfx_codec_default_order()) */
 static const struct
 {
 	const char* name;
@@ -495,19 +496,23 @@ static void shadow_server_set_codec_order(rdpShadowServer* server, const SHADOW_
 	WINPR_ASSERT(server);
 	WINPR_ASSERT(listed || (count == 0));
 
+	SHADOW_GFX_CODEC defaults[SHADOW_GFX_CODEC_COUNT] = WINPR_C_ARRAY_INIT;
+	const size_t total =
+	    shadow_gfx_codec_default_order(SHADOW_GFX_HEVC_FIRST, defaults, ARRAYSIZE(defaults));
+
 	size_t n = 0;
 	for (size_t x = 0; x < count; x++)
 		server->GfxCodecOrder[n++] = listed[x];
-	for (size_t x = 0; x < ARRAYSIZE(shadow_gfx_codecs); x++)
+	for (size_t x = 0; x < total; x++)
 	{
 		BOOL found = FALSE;
 		for (size_t y = 0; y < count; y++)
 		{
-			if (listed[y] == shadow_gfx_codecs[x].codec)
+			if (listed[y] == defaults[x])
 				found = TRUE;
 		}
 		if (!found)
-			server->GfxCodecOrder[n++] = shadow_gfx_codecs[x].codec;
+			server->GfxCodecOrder[n++] = defaults[x];
 	}
 	while (n < ARRAYSIZE(server->GfxCodecOrder))
 		server->GfxCodecOrder[n++] = SHADOW_GFX_CODEC_NONE;

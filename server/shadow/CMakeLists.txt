@@ -42,6 +42,8 @@ set(SRCS
     shadow_gfx_stats.h
     shadow_layout.c
     shadow_layout.h
+    shadow_codec_order.c
+    shadow_codec_order.h
     shadow_stats_ipc.c
     shadow_stats_ipc.h
     shadow_channels.c

@@ -41,6 +41,7 @@
 #include "shadow_rfx_dirty.h"
 #include "shadow_autodetect.h"
 #include "shadow_stats_ipc.h"
+#include "shadow_codec_order.h"
 #if defined(WITH_GFX_AZURE)
 #include "shadow_gfx_caps.h"
 #endif
@@ -1345,91 +1346,6 @@ static BOOL shadow_client_caps_test_version(RdpgfxServerContext* context, rdpSha
 	return FALSE;
 }
 
-/* The capability versions a client's caps are tried with, in the order of
- * rdpShadowServer::GfxCodecOrder: each codec's versions at its first place (AV2 FRDP_2, AV1
- * FRDP_1, HEVC 11x, the others 10x). The default order gives FRDP_2, FRDP_1, 11x, 10x. */
-WINPR_ATTR_NODISCARD
-static size_t shadow_client_caps_order(const rdpShadowServer* server, UINT32* versions, size_t size)
-{
-	WINPR_ASSERT(server);
-	WINPR_ASSERT(versions);
-
-#if defined(WITH_GFX_AV2)
-	static const UINT32 av2[] = { RDPGFX_CAPVERSION_FRDP_2 };
-#endif
-#if defined(WITH_GFX_AV1)
-	static const UINT32 av1[] = { RDPGFX_CAPVERSION_FRDP_1 };
-#endif
-#if defined(WITH_GFX_AZURE)
-	static const UINT32 hevc[] = { RDPGFX_CAPVERSION_115, RDPGFX_CAPVERSION_113,
-		                           RDPGFX_CAPVERSION_112, RDPGFX_CAPVERSION_111 };
-#endif
-	static const UINT32 v10[] = { RDPGFX_CAPVERSION_107,     RDPGFX_CAPVERSION_106,
-		                          RDPGFX_CAPVERSION_106_ERR, RDPGFX_CAPVERSION_105,
-		                          RDPGFX_CAPVERSION_104,     RDPGFX_CAPVERSION_103,
-		                          RDPGFX_CAPVERSION_102,     RDPGFX_CAPVERSION_101,
-		                          RDPGFX_CAPVERSION_10 };
-
-	enum
-	{
-		GROUP_AV2,
-		GROUP_AV1,
-		GROUP_HEVC,
-		GROUP_V10,
-		GROUP_COUNT
-	};
-	BOOL added[GROUP_COUNT] = WINPR_C_ARRAY_INIT;
-	size_t count = 0;
-
-	for (size_t x = 0; x < ARRAYSIZE(server->GfxCodecOrder); x++)
-	{
-		const UINT32* group = nullptr;
-		size_t groupSize = 0;
-		size_t id = GROUP_COUNT;
-		switch (server->GfxCodecOrder[x])
-		{
-#if defined(WITH_GFX_AV2)
-			case SHADOW_GFX_CODEC_AV2:
-				group = av2;
-				groupSize = ARRAYSIZE(av2);
-				id = GROUP_AV2;
-				break;
-#endif
-#if defined(WITH_GFX_AV1)
-			case SHADOW_GFX_CODEC_AV1:
-				group = av1;
-				groupSize = ARRAYSIZE(av1);
-				id = GROUP_AV1;
-				break;
-#endif
-#if defined(WITH_GFX_AZURE)
-			case SHADOW_GFX_CODEC_HEVC:
-				group = hevc;
-				groupSize = ARRAYSIZE(hevc);
-				id = GROUP_HEVC;
-				break;
-#endif
-			case SHADOW_GFX_CODEC_AVC444:
-			case SHADOW_GFX_CODEC_AVC420:
-			case SHADOW_GFX_CODEC_RFX:
-			case SHADOW_GFX_CODEC_PROGRESSIVE:
-			case SHADOW_GFX_CODEC_PLANAR:
-				group = v10;
-				groupSize = ARRAYSIZE(v10);
-				id = GROUP_V10;
-				break;
-			default:
-				break;
-		}
-		if (!group || added[id])
-			continue;
-		added[id] = TRUE;
-		for (size_t y = 0; (y < groupSize) && (count < size); y++)
-			versions[count++] = group[y];
-	}
-	return count;
-}
-
 /**
  * Function description
  *
@@ -1462,8 +1378,9 @@ static UINT shadow_client_rdpgfx_caps_advertise(RdpgfxServerContext* context,
 
 	UINT32 capsVersions[16] = WINPR_C_ARRAY_INIT;
 	WINPR_ASSERT(client->server);
-	const size_t capsCount =
-	    shadow_client_caps_order(client->server, capsVersions, ARRAYSIZE(capsVersions));
+	const size_t capsCount = shadow_gfx_caps_versions(client->server->GfxCodecOrder,
+	                                                  ARRAYSIZE(client->server->GfxCodecOrder),
+	                                                  capsVersions, ARRAYSIZE(capsVersions));
 
 	const BOOL h264 = freerdp_codec_supported(&client->context, FREERDP_CODEC_AVC420, TRUE) ||
 	                  freerdp_codec_supported(&client->context, FREERDP_CODEC_AVC444, TRUE);
